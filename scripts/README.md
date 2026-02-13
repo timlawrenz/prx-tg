@@ -27,33 +27,60 @@ python3 scripts/sync_approved_photos.py --progress-every 0
 
 ## generate_approved_image_dataset.py
 
-Generates/enriches a JSONL dataset from `data/approved/` containing DINOv3 embeddings, Gemma captions, and metadata (T5 attention masks, image dimensions).
+Generates/enriches a Stage 2 hybrid dataset from `data/approved/`: lightweight JSONL metadata + external .npy embedding files for training efficiency.
 
 **Key features:**
-- **Idempotent by default**: Automatically enriches existing records with missing fields
-- **Smart resumability**: Skips expensive operations (DINOv3, Gemma) when data already exists
-- **Incremental progress saving**: Writes to `.tmp` file during processing, so Ctrl+C preserves partial work
-- **Atomic commits**: Final output only updated on successful completion
+- **Stage 2 hybrid format**: Metadata JSONL (~5-10MB) + separate .npy files for embeddings (~18GB total)
+- **Three-pass architecture**: DINOv3 extraction, VAE latent encoding, T5 hidden state encoding run independently
+- **Idempotent by default**: Automatically detects existing .npy files and skips completed work
+- **Smart resumability**: Stage 1→2 migration, partial embedding completion, crash recovery
+- **Incremental progress saving**: Writes to `.tmp` file during processing, Ctrl+C preserves partial work
+- **Verification mode**: Check data integrity (missing/corrupt .npy files)
 
-### Output Format
+### Output Structure
 
-Each line in the JSONL file contains one JSON object with 6 fields:
+Stage 2 uses a hybrid format with separate directories per embedding type:
+
+```
+data/derived/
+  approved_image_dataset.jsonl           # Metadata only (~5-10MB)
+  dinov3/
+    o2jdtq9uz05whadn9jc8y4mz46xg.npy    # 1024 floats, float32 (~4KB each)
+  vae_latents/
+    o2jdtq9uz05whadn9jc8y4mz46xg.npy    # 16×H//8×W//8, float16 (~131KB each for 1024×1024)
+  t5_hidden/
+    o2jdtq9uz05whadn9jc8y4mz46xg.npy    # 77×1024, float16 (~158KB each)
+```
+
+**Total storage for 60k images:** ~18GB (240MB DINOv3 + 8GB VAE + 9.5GB T5 + 10MB JSONL)
+
+### JSONL Format (Stage 2)
+
+Each line contains one JSON object with metadata fields (no inline embeddings):
 
 ```json
 {
-  "image_path": "data/approved/abc123.jpg",
-  "dinov3_embedding": [0.123, -0.456, ...],  // 1024-dim float array
-  "caption": "A woman in a red dress...",     // Single paragraph description
-  "t5_attention_mask": [1, 1, 1, ..., 0, 0], // 77 ints (1=valid, 0=padding)
-  "height": 1024,                             // Image height in pixels
-  "width": 768                                // Image width in pixels
+  "image_id": "o2jdtq9uz05whadn9jc8y4mz46xg",
+  "image_path": "data/approved/o2jdtq9uz05whadn9jc8y4mz46xg",
+  "caption": "A woman in a red dress...",
+  "t5_attention_mask": [1, 1, 1, ..., 0, 0],
+  "height": 1024,
+  "width": 768,
+  "aspect_bucket": "832x1216",
+  "format_version": 2
 }
 ```
+
+**Key differences from Stage 1:**
+- ✅ Added: `image_id`, `aspect_bucket`, `format_version`
+- ❌ Removed: `dinov3_embedding` (now external .npy file)
+- ✅ External: VAE latents and T5 hidden states in separate .npy files
 
 ### Install
 
 ```bash
 python3 -m pip install -r scripts/requirements-approved-image-embeddings.txt
+pip install diffusers  # For Flux VAE
 
 # If needed, install torch using the PyTorch installer for your platform/CUDA/ROCm:
 # https://pytorch.org/get-started/locally/
@@ -61,28 +88,42 @@ python3 -m pip install -r scripts/requirements-approved-image-embeddings.txt
 
 ### Usage
 
-**First run (generate new dataset):**
+**First run (Stage 1 → Stage 2 migration):**
 ```bash
+# Full pipeline: extract DINOv3, encode VAE, encode T5, migrate JSONL
 python3 scripts/generate_approved_image_dataset.py \
   --output data/derived/approved_image_dataset.jsonl \
+  --pass all \
   --progress-every 100
 ```
 
-**Enrich existing dataset (add missing fields):**
+**Run specific passes (memory-efficient):**
 ```bash
-# Same command - script automatically detects existing records and enriches them
-python3 scripts/generate_approved_image_dataset.py \
-  --output data/derived/approved_image_dataset.jsonl
+# Pass 1: Extract DINOv3 from Stage 1 JSONL (safe, fast)
+python3 scripts/generate_approved_image_dataset.py --pass dinov3
+
+# Pass 2: Generate VAE latents (slow, ~8-10 hours for 60k images)
+python3 scripts/generate_approved_image_dataset.py --pass vae
+
+# Pass 3: Generate T5 hidden states (moderate, ~3-4 hours)
+python3 scripts/generate_approved_image_dataset.py --pass t5
+
+# Pass 4: JSONL migration only (update format_version, aspect_bucket)
+python3 scripts/generate_approved_image_dataset.py --pass migrate
+```
+
+**Verify data integrity:**
+```bash
+python3 scripts/generate_approved_image_dataset.py --verify
 ```
 
 **Force regeneration from scratch:**
 ```bash
-python3 scripts/generate_approved_image_dataset.py \
-  --output data/derived/approved_image_dataset.jsonl \
-  --no-resume
+python3 scripts/generate_approved_image_dataset.py --no-resume
+# Warning: Deletes output.jsonl and all .npy directories!
 ```
 
-**Smoke test (process 2 images):**
+**Smoke test (process 2 images, all passes):**
 ```bash
 python3 scripts/generate_approved_image_dataset.py \
   --limit 2 \
@@ -90,20 +131,87 @@ python3 scripts/generate_approved_image_dataset.py \
   --verbose
 ```
 
-### Enrichment Behavior
+### Three-Pass Architecture
 
-The script intelligently determines what to compute for each image:
+The script processes data in independent passes to avoid memory issues:
 
-| Existing Fields | Operation | What's Computed |
+| Pass | Models Loaded | What It Does | Time (60k images) |
+|---|---|---|---|
+| `dinov3` | DINOv3 + Gemma + T5 tokenizer | Extract inline embeddings to .npy, generate new images | ~5-8 hours |
+| `vae` | Flux VAE encoder | Encode images to latent space | ~8-10 hours |
+| `t5` | T5-Large encoder | Encode captions to hidden states | ~3-4 hours |
+| `migrate` | T5 tokenizer | Update JSONL to Stage 2 format | ~1 minute |
+| `all` (default) | All models (sequential) | Full pipeline, models unloaded between passes | ~16-22 hours |
+
+**Memory benefits:**
+- Single pass: ~10-15GB VRAM
+- Loading all models at once would require ~40GB VRAM (not feasible)
+
+### Progress Tracking
+
+The script tracks four operation types:
+
+```
+progress: 120 migrated, 980 enriched, 50 extracted, 3850 skipped (total: 5000) rate=2.3/s
+```
+
+| Counter | Meaning |
+|---|---|
+| **migrated** | Stage 1 records converted to Stage 2 with all embeddings generated |
+| **enriched** | Existing Stage 2 records with missing VAE/T5 embeddings filled in |
+| **extracted** | Stage 1 records where only DINOv3 extraction happened |
+| **skipped** | Fully complete Stage 2 records (format_version=2, all .npy files exist) |
+
+### Migration Guide (Stage 1 → Stage 2)
+
+If you have existing Stage 1 data (`dinov3_embedding` inline):
+
+**Step 1: Backup your data**
+```bash
+cp data/derived/approved_image_dataset.jsonl data/derived/approved_image_dataset.jsonl.stage1.backup
+```
+
+**Step 2: Run DINOv3 extraction (safe, fast)**
+```bash
+python3 scripts/generate_approved_image_dataset.py --pass dinov3
+# This extracts inline embeddings to data/derived/dinov3/*.npy
+```
+
+**Step 3: Generate VAE latents (slow)**
+```bash
+python3 scripts/generate_approved_image_dataset.py --pass vae
+# Creates data/derived/vae_latents/*.npy
+```
+
+**Step 4: Generate T5 hidden states**
+```bash
+python3 scripts/generate_approved_image_dataset.py --pass t5
+# Creates data/derived/t5_hidden/*.npy
+```
+
+**Step 5: Migrate JSONL format**
+```bash
+python3 scripts/generate_approved_image_dataset.py --pass migrate
+# Updates JSONL: adds image_id, aspect_bucket, format_version; removes dinov3_embedding
+```
+
+**Verification:**
+```bash
+python3 scripts/generate_approved_image_dataset.py --verify
+# Should show: all valid, 0 invalid, 0 missing
+```
+
+### Storage Requirements
+
+| Component | Size per Image | Total (60k images) |
 |---|---|---|
-| None (new image) | **Process new** | DINOv3 + Gemma + metadata |
-| Has embeddings/caption | **Enrich** | Only T5 mask + dimensions (fast) |
-| All 6 fields present | **Skip** | Nothing (already complete) |
+| DINOv3 embedding | ~4KB (1024 float32) | ~240MB |
+| VAE latent | ~131KB (16×64×64 float16) | ~8GB |
+| T5 hidden state | ~158KB (77×1024 float16) | ~9.5GB |
+| JSONL metadata | ~170 bytes | ~10MB |
+| **Total** | ~293KB | **~18GB** |
 
-Progress output shows:
-```
-progress: 150 new, 4800 enriched, 100 skipped (total: 5050) rate=2.5/s
-```
+**Disk space check:** Script aborts if < 20GB available at start.
 
 ### Crash Recovery
 
@@ -118,9 +226,35 @@ The script writes progress incrementally to `output.jsonl.tmp`:
 - Ctrl+C is **always safe** - it triggers a clean merge before exit
 - `output.jsonl` is **always up-to-date** after Ctrl+C
 - You never lose work from interrupted runs
+- `.npy` files are written atomically (safe to Ctrl+C mid-encoding)
+
+### Troubleshooting
+
+**Issue: "insufficient disk space"**
+- Solution: Free up 20GB+ or use `--output-base-dir /path/to/large/disk`
+
+**Issue: VAE encoding fails with "not found" error**
+- Solution: Ensure `diffusers` installed: `pip install diffusers`
+- Check model ID is correct (should auto-download on first run)
+
+**Issue: ROCm kernel compilation hangs**
+- Solution: First run compiles kernels (~15-30 min wait). Disable tuning for smoke tests:
+  ```bash
+  PYTORCH_TUNABLEOP_TUNING=0 python3 scripts/generate_approved_image_dataset.py --limit 2
+  ```
+
+**Issue: T5 hidden states have wrong shape**
+- Solution: Rerun with `--pass t5` - script validates shape automatically
+
+**Issue: Missing .npy files after crash**
+- Solution: Run `--verify` to identify missing files, then rerun with appropriate `--pass` flag
+
+**Issue: JSONL still has inline dinov3_embedding**
+- Solution: Run `--pass migrate` to update format (removes inline embedding, adds format_version=2)
 
 ### Notes
 
 - **Do not enable** `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1` on ROCm systems (causes hardware exceptions with Gemma 3)
-- **First run downloads large models** (~55GB for Gemma-3-27B, ~1.5GB for DINOv3)
-- **ROCm kernel compilation** may cause 15-30 min wait on first GPU inference (disable `PYTORCH_TUNABLEOP_TUNING=1` for smoke tests)
+- **First run downloads large models** (~55GB for Gemma-3-27B, ~1.5GB for DINOv3, ~2GB for Flux VAE, ~3GB for T5-Large)
+- **VAE latents are encoded at original resolution** (resizing happens in Stage 3 dataloader for training)
+- **Aspect buckets use 7 predefined resolutions** at 1024px equivalent area (all dims divisible by 64)
