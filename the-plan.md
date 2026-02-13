@@ -266,3 +266,99 @@ We calculate the final velocity field (![][image3]) by combining the uncondition
 [image5]: <data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACIAAAAYCAYAAACfpi8JAAABwUlEQVR4Xu2UzStEYRTGGZQIGxqmuffOjJtRdsbSdxYUpSwlf4OFlKJ8lsHkDzBLYqGUZjUbNZSVhRL/gGykNElW/E7zXt25zXfNRvepp/ec5z3zvOfe886tqXHhwoWL/whN0wYMw0jAJEzpuj7jrKk6AoFAL4e/mqbZITnxKnx01lUdHLoMP2moU3LWJTjrqBkPhUI9dq0SFPRhDBMU/Cg+0cQecq29Bu2B8Q3ZtUpQ1IcGpuA2vFUNzVt7MjLydCQSabD/plwU9OFtnEmXdo3id/QFFe/IPusLTMp9Ej0YDA6Tx2GU2l3RZLTkp/BYNBkx8QXsyufzB8Q3GLNydcAN3bdampiirVk58RhMyJMx7zbiE1V3FA6HW3w+n4b27ff7TdY0nkYunyywOS2m8Aruwy0xt9eg3fEEo7b8Wt4k6ybrCjPvFl0aUPtzMGnVW3D6lAWv19uMwQcGjRzUjlRH/kUDfc5aC+wfWk8u45I1l0/Wj4qBAwcxSKl4naWe/Fk+gKKpCxgl9Kh/hHwY74knlbaRzydzQomg+yZ5zRguwhHRyPuNzKWMwTij1JE9cpC6Bwesl9Sfq72cPi5clIpfE+h9+oLJUSwAAAAASUVORK5CYII=>
 
 [image6]: <data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACQAAAAYCAYAAACSuF9OAAACLUlEQVR4Xu2UTUiUURSGZyY3QaX9jMj8fvMDo7gKLZDAhbgRjZKESKtFFG5alGCEixCqhYlC4EIRjFDURQtDoqSFkLVxpxDhRjdBRJK0iJb5vMy5NHyQDCKuvhde7vl57znn3u/OhEIBAgQIEOD/SCaTjel0+g18D1dSqdRFv+bQ4HleLUN8y+fzUfnYA/CzX3dooHk//M1gNfJZ78PLfp2gONpNbnBcfqFQOI6/kUgk4n7tvkHxVor+NX6h6RDhsF/ngGaaPdfNjWDfCe2h3xdo0gafwE82WI9fYwiT22Zoz584EHC6eWqvl8Zo+JP4DefH4/HTuhU4BifhlumuwCnYLz+TyRSwZyx2lxoPWJf5wZwrqV0HX8ER8gusZ13OCbbhqPMp2oz/kQd+wkIRBl5lc5fpR+E0b+Yo6219Lg2gHLqHNI/h/6HOeYs915uUzcES5L6yp95qdcJF61MEyY508ee+CIfh42w2W+nyFLtEbDNkb0SnItarx8xahb+kwsrlcrlq078t2f9BMbOHyM26nA205vyyoAEp9NLcCP4OQ2SJ1dhtfNdtahjTj8AB2bFY7Az2r2g0eow9JzUc/q2S2s+kd35ZoMg9Nj2Vbbe5xdqgwvoUXvGTXCV2wfSr5JpMf1OHwW+BbfgvWLuV07AaUDf9r1sZ4K2cosiYXXcfnMOegFXwGk1esw6a/Aj5H6wVcrDb4XKq+J8V5kZz2O/gI316cnWuT4AAB4FdnK2L6HG7JgsAAAAASUVORK5CYII=>
+
+## **Part E: From-Scratch Stability (Critical Implementation Details)**
+
+**Goal:** Avoid the numerical instabilities and convergence failures that plague "from-scratch" generative models.
+
+### **1\. Weight Initialization (The Zero-Init Rule)**
+
+Training transformers from scratch is unstable unless you control the initial variance.
+
+**Standard Layers:** Initialize Linear/Conv layers with `xavier_uniform` or `kaiming_normal`.
+
+**The adaLN Gates (CRITICAL):** The final projection layer in every DiT block that outputs the modulation parameters (γ, β) **must be initialized to zero**.
+
+* **Why:** This ensures that at Step 0, every block acts as an **Identity function**. The model starts by passing the noise through unchanged, effectively behaving like a shallow network, and progressively "grows" deeper as training proceeds.
+* **Without this:** Random γ and β values cause exploding activations in the first 100 steps, collapsing training.
+
+**Code:**
+```python
+# In each DiT block, after creating the adaLN projection:
+self.adaLN_modulation = nn.Linear(hidden_dim, 2 * hidden_dim)
+nn.init.zeros_(self.adaLN_modulation.weight)
+nn.init.zeros_(self.adaLN_modulation.bias)
+```
+
+### **2\. Positional Embeddings (Dynamic 2D Sinusoidal)**
+
+Since you are using buckets (variable aspect ratios), do **not** use learnable positional embeddings (which expect a fixed H × W grid).
+
+**Recommendation:** Use **fixed 2D Sinusoidal (Sin-Cos) embeddings**.
+
+* **Implementation:** Generate the embeddings **on the fly** based on the specific Height/Width of the current batch bucket.
+* **Structure:** Concatenate row + column embeddings (first half encodes Y-position, second half X-position):
+  ```python
+  pos_emb_y = sincos_1d(height, dim // 2)  # Shape: [H, dim/2]
+  pos_emb_x = sincos_1d(width, dim // 2)   # Shape: [W, dim/2]
+  pos_emb_2d = concat([
+      repeat(pos_emb_y, 'h d -> h w d', w=width),
+      repeat(pos_emb_x, 'w d -> h w d', h=height)
+  ], dim=-1)  # Shape: [H, W, dim]
+  ```
+
+**Why fixed, not learned?**
+* Learnable embeddings waste parameters across buckets (a 1024×1024 embedding doesn't help a 832×1216 image).
+* Sinusoidal embeddings generalize to any resolution at inference time.
+
+### **3\. Bias Terms (Memory Optimization)**
+
+**Recommendation:** Set `bias=False` for all linear layers inside the core DiT blocks (Q, K, V, Projections, MLP).
+
+**Why:**
+* Biases consume memory and gradients but add very little expressivity to large Transformers.
+* Modern architectures (LLaMA, Gemma, Flux) mostly omit them.
+* Saves ~5-10% memory with negligible performance impact.
+
+**Keep biases in:**
+* LayerNorm (required for proper normalization)
+* Final output projection (helps calibrate the prediction scale)
+
+### **4\. EMA Decay Schedule (Warmup)**
+
+You specified an EMA decay of 0.9999, but this should **warm up from 0** to avoid copying garbage early weights.
+
+**Correct implementation:**
+```python
+# Gradually increase EMA influence over first 5000 steps
+ema_decay = min(0.9999, (step + 1) / 5000)
+
+# Update EMA weights
+for param_train, param_ema in zip(model.parameters(), ema_model.parameters()):
+    param_ema.data.mul_(ema_decay).add_(param_train.data, alpha=1 - ema_decay)
+```
+
+**Why:** If you use 0.9999 from step 0, the EMA is 99.99% random initialization for the first 10,000 steps. Warming up ensures it tracks the improving model, not the initial noise.
+
+### **5\. Gradient Checkpointing (Memory vs Speed Trade-off)**
+
+With 400M parameters on a 24GB 4090, you will likely need **activation checkpointing** to fit reasonable batch sizes.
+
+**Trade-off:**
+* **Memory:** Reduces activation memory by ~50-70% (recompute activations during backward pass instead of storing them).
+* **Speed:** Slows training by ~30% (due to recomputation).
+
+**Implementation:**
+```python
+from torch.utils.checkpoint import checkpoint
+
+# Inside your DiT forward pass, wrap each block:
+for block in self.blocks:
+    x = checkpoint(block, x, conditioning, use_reentrant=False)
+```
+
+**When to use:**
+* If you can't fit batch size ≥8 without checkpointing → enable it.
+* If you can fit batch size 16+ without it → skip it (faster training).
+
+**Note:** Use `use_reentrant=False` for PyTorch ≥2.0 (new, more stable API).
