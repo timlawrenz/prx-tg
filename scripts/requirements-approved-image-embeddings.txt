@@ -1,0 +1,7 @@
+# NOTE: On ROCm/CUDA systems, install torch/torchvision/torchaudio using
+# your platform-specific instructions, then install the remaining deps here.
+
+transformers==4.50.0
+pillow==10.4.0
+accelerate==0.34.2
+safetensors==0.4.5
