@@ -1049,6 +1049,11 @@ def main(argv):
                     extract_dinov3_to_npy(record, dinov3_dir)
                     extracted += 1
 
+            # Flush any pending batch before VAE/T5 passes
+            # This ensures captions are generated before T5 encoding attempts
+            if batch_buffer and (run_vae or run_t5):
+                flush_batch()
+
             # Handle VAE pass
             if run_vae and needs_vae_gen:
                 if args.verbose:
