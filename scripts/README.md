@@ -88,29 +88,46 @@ pip install diffusers  # For Flux VAE
 
 ### Usage
 
-**First run (Stage 1 → Stage 2 migration):**
+#### For High-VRAM Systems (>40GB VRAM recommended)
+
+**Process everything in one go** (all models loaded simultaneously):
 ```bash
-# Full pipeline: extract DINOv3, encode VAE, encode T5, migrate JSONL
+# Default behavior: loads all models, processes each image through all stages
 python3 scripts/generate_approved_image_dataset.py \
   --output data/derived/approved_image_dataset.jsonl \
-  --pass all \
   --progress-every 100
 ```
 
-**Run specific passes (memory-efficient):**
+**Benefits:**
+- ✅ Fastest approach (no model loading overhead between passes)
+- ✅ Simplest workflow for incremental updates
+- ✅ Each new image gets fully processed in one go
+- ⚠️ Requires ~30-40GB VRAM (DINOv3 + Gemma 27B + FLUX VAE + T5-Large)
+
+#### For Low-VRAM Systems (8-24GB VRAM)
+
+**Run passes separately** to avoid OOM errors:
 ```bash
-# Pass 1: Extract DINOv3 from Stage 1 JSONL (safe, fast)
+# Pass 1: Extract DINOv3 and generate captions (~10-15GB VRAM)
 python3 scripts/generate_approved_image_dataset.py --pass dinov3
 
-# Pass 2: Generate VAE latents (slow, ~8-10 hours for 60k images)
+# Pass 2: Generate VAE latents (~3-4GB VRAM)
 python3 scripts/generate_approved_image_dataset.py --pass vae
 
-# Pass 3: Generate T5 hidden states (moderate, ~3-4 hours)
+# Pass 3: Generate T5 hidden states (~5-8GB VRAM)
 python3 scripts/generate_approved_image_dataset.py --pass t5
 
-# Pass 4: JSONL migration only (update format_version, aspect_bucket)
+# Pass 4: JSONL migration only (no models loaded)
 python3 scripts/generate_approved_image_dataset.py --pass migrate
 ```
+
+**Benefits:**
+- ✅ Works on consumer GPUs (8-24GB VRAM)
+- ✅ Can spread work across multiple days
+- ✅ Easier to debug individual stages
+- ⚠️ Slower overall (model loading overhead)
+
+#### Common Commands
 
 **Verify data integrity:**
 ```bash
@@ -123,7 +140,7 @@ python3 scripts/generate_approved_image_dataset.py --no-resume
 # Warning: Deletes output.jsonl and all .npy directories!
 ```
 
-**Smoke test (process 2 images, all passes):**
+**Smoke test (process 2 images):**
 ```bash
 python3 scripts/generate_approved_image_dataset.py \
   --limit 2 \
@@ -131,21 +148,33 @@ python3 scripts/generate_approved_image_dataset.py \
   --verbose
 ```
 
-### Three-Pass Architecture
+### Three-Pass Architecture (Optional)
 
-The script processes data in independent passes to avoid memory issues:
+The `--pass` flag allows processing in independent stages. This is **optional** - by default, the script loads all models and processes everything in one go.
 
-| Pass | Models Loaded | What It Does | Time (60k images) |
-|---|---|---|---|
-| `dinov3` | DINOv3 + Gemma + T5 tokenizer | Extract inline embeddings to .npy, generate new images | ~5-8 hours |
-| `vae` | Flux VAE encoder | Encode images to latent space | ~8-10 hours |
-| `t5` | T5-Large encoder | Encode captions to hidden states | ~3-4 hours |
-| `migrate` | T5 tokenizer | Update JSONL to Stage 2 format | ~1 minute |
-| `all` (default) | All models (sequential) | Full pipeline, models unloaded between passes | ~16-22 hours |
+**When to use separate passes:**
+- Low VRAM systems (8-24GB) that can't load all models simultaneously
+- Want to spread work across multiple runs
+- Debugging specific pipeline stages
 
-**Memory benefits:**
-- Single pass: ~10-15GB VRAM
-- Loading all models at once would require ~40GB VRAM (not feasible)
+**When NOT needed:**
+- High VRAM systems (>40GB) - just run without `--pass` flag for best performance
+- Systems with sufficient memory can handle all models at once (~30-40GB VRAM total)
+
+#### Pass Details
+
+| Pass | Models Loaded | VRAM | What It Does | Time (60k images) |
+|---|---|---|---|---|
+| `dinov3` | DINOv3 + Gemma + T5 tokenizer | ~10-15GB | Extract inline embeddings to .npy, generate captions for new images | ~5-8 hours |
+| `vae` | Flux VAE encoder | ~3-4GB | Encode images to VAE latent space | ~8-10 hours |
+| `t5` | T5-Large encoder + tokenizer | ~5-8GB | Encode captions to T5 hidden states | ~3-4 hours |
+| `migrate` | T5 tokenizer only | <1GB | Update JSONL to Stage 2 format | ~1 minute |
+| **default** (no --pass) | All models simultaneously | **~30-40GB** | **Full pipeline in one go (fastest)** | **~16-22 hours** |
+
+**Memory comparison:**
+- **Separate passes**: Peak 10-15GB VRAM (one model at a time)
+- **Default (all-in-one)**: Peak 30-40GB VRAM (all models loaded)
+- **Recommendation**: Use default unless VRAM is constrained
 
 ### Progress Tracking
 

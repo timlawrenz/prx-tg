@@ -35,18 +35,24 @@ Stage 2 migrates to a hybrid format: lightweight JSONL metadata + separate .npy 
 
 ## Decisions
 
-### Decision 1: Three-Pass Architecture
+### Decision 1: Three-Pass Architecture (Optional)
 
-**Choice:** Process existing records in three independent passes: (1) DINOv3 extraction, (2) VAE latent generation, (3) T5 hidden state generation.
+**Choice:** Support processing in three independent passes: (1) DINOv3 extraction, (2) VAE latent generation, (3) T5 hidden state generation. Default behavior loads all models at once.
 
 **Rationale:**
-- Each pass can be run independently if one fails
-- Models loaded only once per pass (memory efficient)
-- Easy to resume partial work (check for existing .npy files)
-- Clear separation of concerns
+- **Default (no --pass flag)**: Load all models simultaneously for maximum speed (~30-40GB VRAM)
+- **Separate passes (--pass flag)**: Allow low-VRAM systems (8-24GB) to process one stage at a time
+- Each pass is idempotent (checks for existing .npy files)
+- Clear separation of concerns for debugging
+
+**VRAM Requirements:**
+- **All models at once**: ~30-40GB VRAM (DINOv3 ~8GB + Gemma 27B ~20GB + FLUX VAE ~4GB + T5-Large ~8GB)
+- **DINOv3 pass only**: ~10-15GB VRAM
+- **VAE pass only**: ~3-4GB VRAM
+- **T5 pass only**: ~5-8GB VRAM
 
 **Alternatives Considered:**
-- Single pass loading all models: Would require ~40GB VRAM (DINOv3 + Gemma + VAE + T5) - not feasible
+- Single pass only: Would exclude users with <40GB VRAM
 - On-demand model loading per record: Too slow, constant model load/unload overhead
 
 ### Decision 2: Aspect Ratio Bucketing Strategy
