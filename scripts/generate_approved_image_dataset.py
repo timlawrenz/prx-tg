@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -21,6 +22,7 @@ CAPTION_PROMPT = (
 
 DINO_MODEL_ID = "facebook/dinov3-vitl16-pretrain-lvd1689m"
 GEMMA_MODEL_ID = "google/gemma-3-27b-it"
+T5_MODEL_ID = "t5-large"
 
 
 def eprint(*args, **kwargs):
@@ -31,37 +33,6 @@ def iter_images(input_dir: Path):
     for p in sorted(input_dir.iterdir(), key=lambda x: x.name):
         if p.is_file():
             yield p
-
-
-def read_completed_paths(output_jsonl: Path, idx_path: Path):
-    completed = set()
-
-    if idx_path.exists():
-        with idx_path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    completed.add(line)
-        return completed
-
-    if not output_jsonl.exists():
-        return completed
-
-    # Fallback: scan existing JSONL to rebuild the index.
-    with output_jsonl.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            p = obj.get("image_path")
-            if isinstance(p, str) and p:
-                completed.add(p)
-
-    return completed
 
 
 def ensure_single_paragraph(text: str) -> str:
@@ -140,6 +111,98 @@ def compute_dinov3_embedding(dino, device, image):
     return emb.detach().cpu().float().tolist()
 
 
+def load_t5_tokenizer(model_id: str):
+    """Load T5 tokenizer for computing attention masks."""
+    from transformers import AutoTokenizer
+    return AutoTokenizer.from_pretrained(model_id)
+
+
+def compute_t5_attention_mask(tokenizer, caption: str) -> list[int]:
+    """
+    Tokenize caption with T5 and return attention mask.
+    
+    Returns a list of 77 integers (1 for valid tokens, 0 for padding).
+    """
+    tokens = tokenizer(
+        caption,
+        max_length=77,
+        padding="max_length",
+        truncation=True,
+        return_tensors="pt"
+    )
+    mask = tokens["attention_mask"][0].tolist()
+    
+    # Verify correctness
+    assert len(mask) == 77, f"Expected mask length 77, got {len(mask)}"
+    assert all(v in (0, 1) for v in mask), "Mask must contain only 0s and 1s"
+    
+    return mask
+
+
+def get_image_dimensions(image_path: Path) -> tuple[int, int] | None:
+    """
+    Read image dimensions from file header without full decode.
+    
+    Returns (width, height) tuple or None if image cannot be opened.
+    """
+    try:
+        from PIL import Image
+        with Image.open(image_path) as img:
+            return img.size  # PIL returns (width, height)
+    except Exception as e:
+        eprint(f"warning: could not read dimensions for {image_path}: {e}")
+        return None
+
+
+def load_existing_records(output_path: Path) -> dict[str, dict]:
+    """
+    Load existing JSONL records into a dict keyed by image_path.
+    
+    Returns empty dict if file doesn't exist.
+    Handles malformed lines gracefully (skips with warning).
+    """
+    if not output_path.exists():
+        return {}
+    
+    records = {}
+    with output_path.open("r", encoding="utf-8") as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                image_path = obj.get("image_path")
+                if isinstance(image_path, str) and image_path:
+                    records[image_path] = obj
+                else:
+                    eprint(f"warning: line {line_num} missing valid image_path, skipping")
+            except json.JSONDecodeError as e:
+                eprint(f"warning: line {line_num} is malformed JSON ({e}), skipping")
+    
+    return records
+
+
+def needs_field(record: dict, field_name: str) -> bool:
+    """
+    Check if a field is missing or null/empty in a record.
+    
+    Returns True if field needs to be computed.
+    """
+    if field_name not in record:
+        return True
+    value = record[field_name]
+    if value is None:
+        return True
+    # For lists/arrays, check if empty
+    if isinstance(value, (list, tuple)) and len(value) == 0:
+        return True
+    # For strings, check if empty
+    if isinstance(value, str) and not value:
+        return True
+    return False
+
+
 def load_caption_pipeline(device, model_id: str):
     import torch
     from transformers import pipeline
@@ -209,33 +272,11 @@ def generate_captions(caption_pipe, images: list, max_new_tokens: int) -> list[s
 
     return results
 
-    outputs = caption_pipe(
-        input_generator(),
-        max_new_tokens=max_new_tokens,
-        batch_size=len(images)
-    )
-    
-    results = []
-    for out in outputs:
-        if isinstance(out, list) and out:
-            item = out[0]
-            if isinstance(item, dict) and "generated_text" in item:
-                text = item["generated_text"]
-            else:
-                text = str(item)
-        else:
-            text = str(out)
-
-        # Strip the input prompt if it was echoed in the output
-        if text.startswith(prompt):
-            text = text[len(prompt):].lstrip()
-        results.append(ensure_single_paragraph(text))
-
-    return results
-
 
 def parse_args(argv):
-    p = argparse.ArgumentParser(description="Generate JSONL dataset from data/approved images")
+    p = argparse.ArgumentParser(
+        description="Generate/enrich JSONL dataset from approved images with DINOv3 embeddings, Gemma captions, and metadata"
+    )
     p.add_argument("--input-dir", default="data/approved", help="Directory of approved images")
     p.add_argument(
         "--output",
@@ -267,7 +308,7 @@ def parse_args(argv):
     p.add_argument(
         "--no-resume",
         action="store_true",
-        help="Do not skip images already present in output",
+        help="Delete output and regenerate everything from scratch",
     )
     p.add_argument(
         "--caption-max-new-tokens",
@@ -294,15 +335,78 @@ def main(argv):
 
     input_dir = Path(args.input_dir)
     output_path = Path(args.output)
-    idx_path = output_path.with_suffix(output_path.suffix + ".idx")
+    temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    completed = set()
-    if not args.no_resume:
-        completed = read_completed_paths(output_path, idx_path)
-        if completed:
-            eprint(f"resume: loaded {len(completed)} completed image_path entries")
+    # Track temp file for signal handler
+    temp_file = None
+    
+    def merge_and_exit(signum=None, frame=None):
+        """Graceful shutdown: merge .tmp into output.jsonl before exiting."""
+        eprint("\nInterrupted! Merging partial progress into output file...")
+        
+        # Close temp file if open
+        if temp_file and not temp_file.closed:
+            temp_file.close()
+        
+        # Perform merge if temp file has data
+        if temp_path.exists() and temp_path.stat().st_size > 0:
+            final_temp = output_path.with_suffix(output_path.suffix + ".final")
+            
+            # Load both files
+            final_records = {}
+            if output_path.exists():
+                final_records = load_existing_records(output_path)
+                eprint(f"  loaded {len(final_records)} records from {output_path}")
+            
+            all_temp_records = load_existing_records(temp_path)
+            eprint(f"  loaded {len(all_temp_records)} records from {temp_path}")
+            
+            # Merge (temp records win)
+            for path, record in all_temp_records.items():
+                final_records[path] = record
+            
+            # Write merged output
+            with final_temp.open("w", encoding="utf-8") as f:
+                for record in final_records.values():
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            
+            # Atomic rename
+            final_temp.rename(output_path)
+            temp_path.unlink()
+            
+            eprint(f"  merged to {output_path} ({len(final_records)} total records)")
+        else:
+            eprint("  no partial progress to merge")
+        
+        eprint("Exiting.")
+        sys.exit(0)
+    
+    # Register signal handler for Ctrl+C
+    signal.signal(signal.SIGINT, merge_and_exit)
+
+    # Handle --no-resume: delete output and temp file, start fresh
+    if args.no_resume:
+        if output_path.exists():
+            eprint(f"--no-resume: deleting existing {output_path}")
+            output_path.unlink()
+        if temp_path.exists():
+            eprint(f"--no-resume: deleting existing {temp_path}")
+            temp_path.unlink()
+
+    # Load existing records from both output and temp file
+    existing_records = load_existing_records(output_path)
+    if existing_records:
+        eprint(f"loaded {len(existing_records)} existing records from {output_path}")
+    
+    # Also load from temp file (partial progress from previous run)
+    temp_records = load_existing_records(temp_path)
+    if temp_records:
+        eprint(f"loaded {len(temp_records)} partial records from {temp_path}")
+        # Merge temp records into existing (temp takes precedence as it's newer)
+        for path, record in temp_records.items():
+            existing_records[path] = record
 
     try:
         from PIL import Image
@@ -311,6 +415,13 @@ def main(argv):
 
     device = pick_device(args.device)
     eprint(f"device: {device}")
+
+    # Load models
+    if args.verbose:
+        eprint("verbose: loading T5 tokenizer...")
+    t5_tokenizer = load_t5_tokenizer(T5_MODEL_ID)
+    if args.verbose:
+        eprint("verbose: T5 tokenizer loaded")
 
     if args.verbose:
         eprint("verbose: loading DINOv3 model...")
@@ -324,93 +435,199 @@ def main(argv):
     if args.verbose:
         eprint("verbose: caption model loaded")
 
-    processed = 0
+    # Counters for progress tracking
+    processed_new = 0
+    enriched = 0
     skipped = 0
-    emitted = 0
+    total_processed = 0
     started = time.time()
-    
-    batch_buffer = []
 
-    def flush_batch(batch, out_f, idx_f):
-        nonlocal emitted
-        if not batch:
+    # Batch buffer for caption generation
+    batch_buffer = []
+    
+    # Open temp file for incremental writes
+    temp_file = temp_path.open("a", encoding="utf-8")
+    records_written_this_session = 0
+
+    def flush_batch():
+        """Process batch: compute embeddings and captions."""
+        nonlocal processed_new, batch_buffer, records_written_this_session
+        if not batch_buffer:
             return
 
-        images = [item[1] for item in batch]
-        rels = [item[0] for item in batch]
-        
-        # Compute DINO embeddings (sequentially for now as it's fast)
-        embeddings = []
-        for i, rel in enumerate(rels):
-            if args.verbose:
-                eprint(f"verbose: computing DINOv3 embedding for {rel}...")
-            embeddings.append(compute_dinov3_embedding(dino, device, images[i]))
+        images = [item["image"] for item in batch_buffer]
+        records = [item["record"] for item in batch_buffer]
 
-        # Generate captions (batched)
-        if args.verbose:
-            eprint(f"verbose: generating captions for batch of {len(images)}...")
-        
-        captions = generate_captions(caption_pipe, images, args.caption_max_new_tokens)
-        
-        for i, rel in enumerate(rels):
-            if args.verbose:
-                eprint(f"verbose: caption generated for {rel}")
-            
-            record = {
-                "image_path": rel,
-                "dinov3_embedding": embeddings[i],
-                "caption": captions[i],
-            }
-            out_f.write(json.dumps(record, ensure_ascii=False) + "\n")
-            idx_f.write(rel + "\n")
-            emitted += 1
-            
-        out_f.flush()
-        idx_f.flush()
+        # Compute DINO embeddings for records that need them
+        for i, item in enumerate(batch_buffer):
+            if item["needs_dino"]:
+                if args.verbose:
+                    eprint(f"verbose: computing DINOv3 embedding for {item['record']['image_path']}...")
+                records[i]["dinov3_embedding"] = compute_dinov3_embedding(dino, device, images[i])
 
-    with output_path.open("a", encoding="utf-8") as out_f, idx_path.open(
-        "a", encoding="utf-8"
-    ) as idx_f:
+        # Generate captions for records that need them (batched)
+        needs_caption_indices = [i for i, item in enumerate(batch_buffer) if item["needs_caption"]]
+        if needs_caption_indices:
+            if args.verbose:
+                eprint(f"verbose: generating captions for batch of {len(needs_caption_indices)}...")
+            caption_images = [images[i] for i in needs_caption_indices]
+            captions = generate_captions(caption_pipe, caption_images, args.caption_max_new_tokens)
+            for idx, caption in zip(needs_caption_indices, captions):
+                records[idx]["caption"] = caption
+                if args.verbose:
+                    eprint(f"verbose: caption generated for {records[idx]['image_path']}")
+
+        # Compute T5 masks and write records incrementally
+        for item in batch_buffer:
+            rec = item["record"]
+            if item["needs_caption"] and "caption" in rec:
+                rec["t5_attention_mask"] = compute_t5_attention_mask(t5_tokenizer, rec["caption"])
+            
+            # Write to temp file immediately (incremental progress)
+            required_fields = ["image_path", "dinov3_embedding", "caption", "t5_attention_mask", "height", "width"]
+            if all(field in rec and rec[field] is not None for field in required_fields):
+                temp_file.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                temp_file.flush()
+                records_written_this_session += 1
+            else:
+                eprint(f"warning: skipping incomplete record {rec.get('image_path', '?')}")
+
+        batch_buffer = []
+
+    try:
+        # Process all images
         for img_path in iter_images(input_dir):
             rel = img_path.as_posix()
-            processed += 1
+            total_processed += 1
 
-            if completed and rel in completed:
+            # Check if record exists
+            if rel in existing_records:
+                record = existing_records[rel].copy()
+            else:
+                record = {"image_path": rel}
+
+            # Determine what needs to be computed
+            needs_dino = needs_field(record, "dinov3_embedding")
+            needs_caption = needs_field(record, "caption")
+            needs_t5_mask = needs_field(record, "t5_attention_mask")
+            needs_dimensions = needs_field(record, "height") or needs_field(record, "width")
+
+            # Check if fully complete (skip)
+            if not (needs_dino or needs_caption or needs_t5_mask or needs_dimensions):
                 skipped += 1
-                if args.progress_every and processed % args.progress_every == 0:
+                if args.verbose:
+                    eprint(f"verbose: skipping complete record {rel}")
+                if args.progress_every and total_processed % args.progress_every == 0:
                     eprint(
-                        f"progress: processed={processed} emitted={emitted} skipped={skipped} current={rel}"
+                        f"progress: {processed_new} new, {enriched} enriched, {skipped} skipped (total: {total_processed})"
                     )
                 continue
 
-            try:
-                with Image.open(img_path) as im:
-                    image = im.convert("RGB")
-            except Exception:
-                skipped += 1
-                continue
-            
-            batch_buffer.append((rel, image))
-            
-            if len(batch_buffer) >= args.batch_size:
-                flush_batch(batch_buffer, out_f, idx_f)
-                batch_buffer = []
+            # Determine operation type for tracking
+            is_new = needs_dino or needs_caption
+            if is_new:
+                processed_new += 1
+            else:
+                enriched += 1
 
-                if args.progress_every and processed % args.progress_every == 0:
-                    elapsed = max(time.time() - started, 1e-6)
-                    eprint(
-                        f"progress: processed={processed} emitted={emitted} skipped={skipped} "
-                        f"rate={emitted/elapsed:.3f}/s current={rel}"
-                    )
+            # Load image if needed for DINOv3/caption
+            image = None
+            if needs_dino or needs_caption:
+                try:
+                    with Image.open(img_path) as im:
+                        image = im.convert("RGB")
+                except Exception as e:
+                    eprint(f"warning: could not load image {rel}: {e}")
+                    continue
 
-                if args.limit and emitted >= args.limit:
-                    break
-        
-        # Flush remaining
-        if batch_buffer and (not args.limit or emitted < args.limit):
-            flush_batch(batch_buffer, out_f, idx_f)
+            # Compute metadata (fast operations, do immediately)
+            if needs_dimensions:
+                dims = get_image_dimensions(img_path)
+                if dims:
+                    record["width"], record["height"] = dims
+                else:
+                    # Skip if we can't get dimensions
+                    eprint(f"warning: skipping {rel} due to dimension read failure")
+                    continue
 
-    eprint(f"done: processed={processed} emitted={emitted} skipped={skipped}")
+            if needs_t5_mask and not needs_caption:
+                # Can compute T5 mask now if caption already exists
+                if "caption" in record and record["caption"]:
+                    record["t5_attention_mask"] = compute_t5_attention_mask(t5_tokenizer, record["caption"])
+
+            # If needs DINOv3 or caption, add to batch
+            if needs_dino or needs_caption:
+                batch_buffer.append({
+                    "record": record,
+                    "image": image,
+                    "needs_dino": needs_dino,
+                    "needs_caption": needs_caption,
+                })
+
+                if len(batch_buffer) >= args.batch_size:
+                    flush_batch()
+            else:
+                # No image loading needed, write record immediately
+                required_fields = ["image_path", "dinov3_embedding", "caption", "t5_attention_mask", "height", "width"]
+                if all(field in record and record[field] is not None for field in required_fields):
+                    temp_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    temp_file.flush()
+                    records_written_this_session += 1
+
+            # Progress reporting
+            if args.progress_every and total_processed % args.progress_every == 0:
+                elapsed = max(time.time() - started, 1e-6)
+                rate = (processed_new + enriched) / elapsed
+                eprint(
+                    f"progress: {processed_new} new, {enriched} enriched, {skipped} skipped "
+                    f"(total: {total_processed}) rate={rate:.2f}/s"
+                )
+
+            # Limit check
+            if args.limit and (processed_new + enriched) >= args.limit:
+                break
+
+        # Flush remaining batch
+        if batch_buffer:
+            flush_batch()
+
+    finally:
+        # Always close temp file
+        temp_file.close()
+
+    # Atomic commit: merge temp and original, write to new temp, rename
+    eprint(f"finalizing: merging {len(existing_records)} existing + {records_written_this_session} new records...")
+    
+    final_temp = output_path.with_suffix(output_path.suffix + ".final")
+    
+    # Reload temp file to get all records (including what was there before + new)
+    all_temp_records = load_existing_records(temp_path)
+    
+    # Merge: start with original records, overlay temp records
+    final_records = {}
+    if output_path.exists():
+        final_records = load_existing_records(output_path)
+    
+    # Overlay temp records (newer data wins)
+    for path, record in all_temp_records.items():
+        final_records[path] = record
+    
+    # Write final output
+    with final_temp.open("w", encoding="utf-8") as f:
+        for record in final_records.values():
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    
+    # Atomic rename
+    final_temp.rename(output_path)
+    
+    # Clean up temp file
+    if temp_path.exists():
+        temp_path.unlink()
+    
+    eprint(
+        f"done: {processed_new} new, {enriched} enriched, {skipped} skipped "
+        f"(total processed: {total_processed}, final output: {len(final_records)} records)"
+    )
 
 
 if __name__ == "__main__":
