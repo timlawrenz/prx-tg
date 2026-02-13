@@ -25,6 +25,7 @@ DINO_MODEL_ID = "facebook/dinov3-vitl16-pretrain-lvd1689m"
 GEMMA_MODEL_ID = "google/gemma-3-27b-it"
 T5_MODEL_ID = "t5-large"
 FLUX_VAE_MODEL_ID = "black-forest-labs/FLUX.1-dev"
+SDXL_VAE_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"  # Lighter alternative
 
 # Aspect ratio buckets at 1024px equivalent area (all dims divisible by 64)
 ASPECT_BUCKETS = [
@@ -267,6 +268,7 @@ def load_flux_vae():
         import torch
         
         eprint(f"loading Flux VAE from {FLUX_VAE_MODEL_ID}...")
+        # Load VAE component only (subfolder="vae")
         vae = AutoencoderKL.from_pretrained(
             FLUX_VAE_MODEL_ID,
             subfolder="vae",
@@ -1058,6 +1060,11 @@ def main(argv):
                     enriched += 1
                 else:
                     eprint(f"warning: VAE encoding failed for {image_id}")
+                
+                # Clear CUDA cache to prevent memory accumulation
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
             # Handle T5 pass
             if run_t5 and needs_t5_gen:
