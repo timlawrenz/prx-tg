@@ -6,32 +6,108 @@ Here is the technical roadmap split into Data Pipeline, Validation, Production T
 
 **Goal:** Convert raw images and JSONs into a high-performance, streamable format so the 4090 never waits for I/O.
 
-### **1\. Aspect Ratio Bucketing (The First Sort)**
+### **Three-Stage Pipeline Architecture**
+
+The data preprocessing follows a three-stage approach to balance flexibility, debuggability, and training performance:
+
+**Stage 1 (✅ COMPLETE): Initial Embeddings**
+* **Current format:** Single JSONL file (`data/embeddings/approved.jsonl`)
+* **Contents:** `image_path`, `dinov3_embedding` (1024-dim float array), `caption` (single paragraph)
+* **Purpose:** Exploration and validation (can inspect captions, run similarity searches)
+* **Script:** `scripts/generate_approved_image_dataset.py` (implemented)
+
+**Stage 2 (NEXT): Hybrid Format with Separate Binaries**
+* **Structure:**
+  ```
+  data/embeddings/
+    - approved_metadata.jsonl       # Lightweight: paths, captions, attention_mask, bucket info
+    - dinov3/
+        - 0003f2w244idsjjhjbuab82fqovy.npy      # 4KB each (1024 floats × float32)
+    - vae_latents/
+        - 0003f2w244idsjjhjbuab82fqovy.npy      # 131KB each (16×64×64 × float16)
+    - t5_hidden/
+        - 0003f2w244idsjjhjbuab82fqovy.npy      # 158KB each (77×1024 × float16)
+  ```
+* **JSONL metadata format:**
+  ```json
+  {
+    "image_id": "0003f2w244idsjjhjbuab82fqovy",
+    "image_path": "data/approved/0003f2w244idsjjhjbuab82fqovy.jpg",
+    "caption": "A woman in a red dress...",
+    "t5_attention_mask": [1,1,1,...,0,0],
+    "height": 1024,
+    "width": 768,
+    "aspect_bucket": "832x1216"
+  }
+  ```
+* **Why separate by type?**
+  - Easy to regenerate one embedding type without redoing everything
+  - Can inspect/debug by embedding type (e.g., visualize all VAE latents)
+  - Still manageable (~60k files per directory)
+* **File extensions:** `.npy` (NumPy standard format)
+
+**Stage 3 (BEFORE TRAINING): WebDataset Tar Shards**
+* **Structure:**
+  ```
+  data/shards/
+    bucket_1024x1024/
+      - shard-000000.tar  # ~1000 samples, ~300MB
+      - shard-000001.tar
+      ...
+    bucket_832x1216/
+      - shard-000000.tar
+      ...
+  ```
+* **Each tar contains entries like:**
+  ```
+  0003f2w244idsjjhjbuab82fqovy.json         # metadata + caption
+  0003f2w244idsjjhjbuab82fqovy.dinov3.npy   # DINOv3 embedding
+  0003f2w244idsjjhjbuab82fqovy.vae.npy      # VAE latent
+  0003f2w244idsjjhjbuab82fqovy.t5h.npy      # T5 hidden states
+  0003f2w244idsjjhjbuab82fqovy.t5m.npy      # T5 attention mask
+  ```
+* **Why WebDataset/tar?**
+  - **Sequential reads only:** Tar streams, never seeks (10-100× faster than individual files)
+  - **One file handle per ~1000 samples:** Eliminates filesystem overhead
+  - **Cloud-native:** Download one tar = 1000 samples ready to train
+  - **Zero-copy streaming:** Can train directly from tar without extraction
+  - **Built-in shuffling:** Shuffle shards + shuffle within shards
+* **Industry standard** for large-scale image training (used by LAION, Stability AI, etc.)
+
+### **1\. Aspect Ratio Bucketing (Stage 2)**
 
 Since you are not cropping, you must mathematically group your images.
 
-* **Analysis:** Scan all 100k images. Calculate their aspect ratios (W/H).  
-* **Clustering:** Define a set of target buckets (e.g., 1024x1024, 832x1216, 1216x832). Map every image to the closest bucket.  
+* **Analysis:** Scan all ~60k images. Calculate their aspect ratios (W/H).  
+* **Clustering:** Define a set of target buckets (e.g., 1024×1024, 832×1216, 1216×832, 768×1280). Map every image to the closest bucket.  
 * **Resizing:** Resize images to their bucket resolution. Do not crop. If the aspect ratio doesn't match perfectly, you have two choices: pad with noise (easiest) or slight crop (risky for framing). Given your "high quality" requirement, smart resizing to the nearest 64-pixel modulus is preferred.
+* **Record bucket assignment** in the JSONL metadata for Stage 3 sharding.
 
-### **2\. Latent Encoding (Flux VAE)**
+### **2\. Latent Encoding (Stage 2: Flux VAE)**
 
-* **Action:** Run all 100k images through the Flux VAE Encoder.  
+* **Action:** Run all ~60k images through the Flux VAE Encoder.  
 * **Normalization (Vital):** VAE latents are not naturally normally distributed. You must calculate the mean and standard deviation of your specific dataset's latents.  
   * **Why?** If you don't, your model will spend the first 5,000 steps just learning to shift the pixel values, rather than learning structure.  
-* **Output:** Save the latents as float16 or bfloat16.
+* **Output:** Save each latent as `data/embeddings/vae_latents/{image_id}.npy` (float16 or bfloat16).
+* **Size:** 16 channels × 64×64 spatial × 2 bytes = 131KB per image.
 
-### **3\. Text & Vision Encoding**
+### **3\. Text & Vision Encoding (Stage 2: T5-Large)**
 
-* **Text:** Run captions through T5-Large. Save the last\_hidden\_state (the sequence, not just the pooled vector) and the attention\_mask. You need the sequence for spatial control.  
-* **Vision:** Ensure your DINOv3 embeddings are normalized (L2 norm) if the model expects unit vectors, though usually, raw features are fine if the projection layer handles it.
+* **Text:** Run captions through T5-Large. Save the `last_hidden_state` (the sequence, not just the pooled vector) and the `attention_mask`. You need the sequence for spatial control.  
+  * **Output:** 
+    - `data/embeddings/t5_hidden/{image_id}.npy` (77 tokens × 1024-dim × float16 = 158KB)
+    - Store `attention_mask` in JSONL (77 ints, ~300 bytes - small enough for JSON)
+* **Vision:** DINOv3 embeddings already generated in Stage 1. Copy to `data/embeddings/dinov3/{image_id}.npy` during Stage 2 processing.
+  * **Normalization:** Check if L2 normalization is needed (usually raw features are fine if the projection layer handles it).
 
-### **4\. Sharding (WebDataset/Tar)**
+### **4\. Sharding (Stage 3: WebDataset Creation)**
 
-* **The Problem:** Reading 100k individual .npy files kills training speed due to inode lookups.  
-* **The Solution:** Pack your data into Shards (tar files).  
-  * Each shard should contain \~1,000 samples (Latent \+ Text Emb \+ DINO Emb).  
-  * This allows the data loader to read one large file and stream data to the GPU.
+* **The Problem:** Reading 60k individual .npy files kills training speed due to inode lookups and filesystem seeks.  
+* **The Solution:** Pack data into tar shards, grouped by aspect bucket.  
+  * Each shard contains ~1,000 samples (Latent + Text + DINO + Metadata).  
+  * Shard within each bucket (ensures uniform batch dimensions).
+  * This allows the dataloader to stream one large file sequentially to the GPU.
+* **Script to implement:** `scripts/create_webdataset_shards.py`
 
 ## **Part B: Minimal Validation (The "Sanity Check")**
 
