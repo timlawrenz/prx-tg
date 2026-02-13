@@ -1,0 +1,46 @@
+# Virtual environment
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data directories (large binary files - do not commit)
+data/
+
+# Model checkpoints and weights
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+*.bin
+models/
+checkpoints/
+
+# Generated outputs
+*.jsonl
+*.jsonl.idx
+*.tar
+*.wds
+
+# Training logs and artifacts
+wandb/
+logs/
+runs/
+tensorboard/
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
