@@ -223,7 +223,7 @@ class ValidationRunner:
             save_images(
                 gen_a_ref,
                 output_dir,
-                prefix=f'pair{pair_idx}_A{idx_a}_captionA_dinoA',
+                prefix=f'pair{pair_idx}_captionA{idx_a}_dinoA{idx_a}',
                 image_ids=None
             )
             
@@ -236,7 +236,7 @@ class ValidationRunner:
             save_images(
                 gen_a_swap,
                 output_dir,
-                prefix=f'pair{pair_idx}_A{idx_a}_captionA_dinoB{idx_b}',
+                prefix=f'pair{pair_idx}_captionA{idx_a}_dinoB{idx_b}',
                 image_ids=None
             )
             
@@ -249,7 +249,7 @@ class ValidationRunner:
             save_images(
                 gen_b_ref,
                 output_dir,
-                prefix=f'pair{pair_idx}_B{idx_b}_captionB_dinoB',
+                prefix=f'pair{pair_idx}_captionB{idx_b}_dinoB{idx_b}',
                 image_ids=None
             )
             
