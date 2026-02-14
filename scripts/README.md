@@ -288,97 +288,135 @@ The script writes progress incrementally to `output.jsonl.tmp`:
 - **VAE latents are encoded at original resolution** (resizing happens in Stage 3 dataloader for training)
 - **Aspect buckets use 7 predefined resolutions** at 1024px equivalent area (all dims divisible by 64)
 
-## create_webdataset_shards.py
+<<<<<<< HEAD
+---
 
-Creates WebDataset tar shards from Stage 2 embeddings for efficient sequential streaming during training.
+## prune_dataset.py
 
-**Purpose:** Package "ready" samples (caption + attention mask + DINOv3/VAE/T5 .npy files) into tar files following WebDataset naming conventions, grouped by aspect bucket.
+Removes orphaned data when images are deleted for quality reasons. Cleans up:
+- Broken symlinks in `data/approved/` (pointing to missing raw files)
+- Orphaned JSONL records (no corresponding symlink in approved/)
+- Orphaned `.npy` files in derived directories
 
-### Output Structure
+### When to Use
 
-```
-data/shards/
-  bucket_1024x1024/
-    shard-000000.tar  # ~1000 samples, ~300MB
-    shard-000001.tar
-    ...
-  bucket_832x1216/
-    shard-000000.tar
-    ...
-```
+Run this script after removing images from `data/raw/` or `data/approved/` to clean up derived data:
 
-**Each tar contains WebDataset entries:**
-```
-{image_id}.json         # Metadata (image_id, aspect_bucket, caption, etc.)
-{image_id}.dinov3.npy   # DINOv3 embedding (1024 floats, float32, ~4KB)
-{image_id}.vae.npy      # VAE latent (16×H//8×W//8, float16, ~131KB for 1024×1024)
-{image_id}.t5h.npy      # T5 hidden states (77×1024, float16, ~158KB)
-{image_id}.t5m.npy      # T5 attention mask (77 ints, uint8, ~77 bytes)
-```
+1. **After deleting raw files**: Broken symlinks remain in `data/approved/`
+2. **After deleting symlinks**: JSONL records and .npy files are orphaned
+3. **Periodic cleanup**: Remove stale data from dataset
 
 ### Usage
 
-#### Smoke Test (Verify Readiness)
+**IMPORTANT: Always run with `--dry-run` first to preview deletions!**
+
 ```bash
-# Dry-run with 2 samples - fast validation without writing files
-python3 scripts/create_webdataset_shards.py --limit 2 --dry-run
+# Preview what would be deleted (safe, no changes)
+python3 scripts/prune_dataset.py --dry-run --verbose
+
+# Actually delete orphaned data (permanent!)
+python3 scripts/prune_dataset.py
+
+# Custom paths
+python3 scripts/prune_dataset.py \
+  --approved-dir /path/to/approved \
+  --derived-dir /path/to/derived \
+  --jsonl /path/to/dataset.jsonl
 ```
 
-#### Create Validation Shard (100 samples, shuffled)
-```bash
-# For Part B validation testing
-python3 scripts/create_webdataset_shards.py \
-  --limit 100 \
-  --shuffle \
-  --output-dir data/shards/validation
+### What It Does
+
+1. **Scans for broken symlinks** in `data/approved/`
+   - Finds symlinks pointing to non-existent files in `data/raw/`
+   
+2. **Finds orphaned JSONL records**
+   - Records with no corresponding symlink in `data/approved/`
+   
+3. **Deletes broken symlinks** from `data/approved/`
+
+4. **Removes orphaned .npy files**
+   - `data/derived/dinov3/<image_id>.npy`
+   - `data/derived/vae_latents/<image_id>.npy`
+   - `data/derived/t5_hidden/<image_id>.npy`
+
+5. **Prunes JSONL file**
+   - Removes records for deleted images
+   - Uses atomic file replacement (safe, no corruption risk)
+
+### Output Example
+
+```
+Dataset Pruning Script - DELETION MODE
+Approved dir: data/approved
+Derived dir:  data/derived
+JSONL file:   data/derived/approved_image_dataset.jsonl
+
+⚠️  WARNING: This will permanently delete data!
+
+Phase 1: Discovering orphaned data...
+
+Discovery Results:
+  Broken symlinks:    23
+  Orphaned records:   5
+  Total unique IDs:   28
+
+Phase 2: Deleting orphaned data...
+
+Summary:
+  Broken symlinks deleted:     23
+  JSONL records removed:       28
+  DINOv3 embeddings deleted:   28
+  VAE latents deleted:         28
+  T5 hidden states deleted:    28
+  Total .npy files deleted:    84
+
+✅ Pruning complete.
 ```
 
-#### Create Full Training Shards
-```bash
-# All ready samples, grouped by bucket
-python3 scripts/create_webdataset_shards.py \
-  --output-dir data/shards/train
-```
+### Safety Features
 
-#### Bucket-Specific Shards
-```bash
-# Only create shards for 1024×1024 images
-python3 scripts/create_webdataset_shards.py \
-  --bucket 1024x1024 \
-  --output-dir data/shards/square_only
-```
+- **Dry-run mode**: Test before deleting (`--dry-run`)
+- **Verbose logging**: See exactly what's being deleted (`--verbose`)
+- **Atomic JSONL updates**: Writes to temp file, then renames (no corruption)
+- **Graceful error handling**: Continues on individual failures, reports errors
+- **Validation**: Checks directories exist before starting
 
-### Command-Line Options
+### Integration with Workflow
 
-| Flag | Default | Description |
-|---|---|---|
-| `--input-jsonl` | `data/derived/approved_image_dataset.jsonl` | Stage 2 metadata JSONL |
-| `--derived-dir` | `data/derived` | Base directory with dinov3/, vae_latents/, t5_hidden/ |
-| `--output-dir` | `data/shards` | Output directory for shards |
-| `--limit N` | `0` (all) | Write at most N ready samples total |
-| `--shard-size N` | `1000` | Max samples per tar file |
-| `--shuffle` | off | Shuffle ready samples before sharding (enables diverse validation sets) |
-| `--seed N` | `1337` | RNG seed when --shuffle is used |
-| `--bucket NAME` | (all) | Only include specific bucket (e.g., 832x1216). Repeatable. |
-| `--overwrite` | off | Overwrite existing shard tar files |
-| `--dry-run` | off | Simulate without writing files |
-| `--progress-every N` | `500` | Print progress every N ready records (0=disable) |
+**Recommended workflow when removing images:**
 
-### Ready Sample Requirements
+1. Delete images from `data/raw/` or symlinks from `data/approved/`
+2. Run prune script in dry-run mode:
+   ```bash
+   python3 scripts/prune_dataset.py --dry-run
+   ```
+3. Review the output, verify counts look correct
+4. Run prune script to actually delete:
+   ```bash
+   python3 scripts/prune_dataset.py
+   ```
+5. Verify dataset integrity:
+   ```bash
+   python3 scripts/generate_approved_image_dataset.py --verify
+   ```
 
-A sample is "ready" when:
-- ✅ JSONL record has `caption` (non-empty string)
-- ✅ JSONL record has `t5_attention_mask` (77-length list of 0s/1s)
-- ✅ JSONL record has `image_id` and `aspect_bucket`
-- ✅ All three .npy files exist: `dinov3/{id}.npy`, `vae_latents/{id}.npy`, `t5_hidden/{id}.npy`
+**Note:** Do not run pruning while dataset generation is running (may cause race conditions).
 
-Incomplete samples are skipped with `skipped_incomplete` counter incremented.
+### Troubleshooting
 
-### Notes
+**Issue: "warning: approved directory does not exist"**
+- Solution: Check that `data/approved/` exists and path is correct
 
-- **No WebDataset dependency required** - script uses Python's built-in `tarfile` module
-- **Preserves .npy files verbatim** - no re-encoding, float16/float32 precision maintained
-- **Default shard size (1000)** balances file handle efficiency with shuffling granularity (~300MB per tar)
-- **Bucket grouping** ensures training dataloader can stream one bucket's shards sequentially
-- **Progress is cheap** - scanning JSONL + filesystem checks for 60k samples takes <10 seconds
-- **Storage:** ~90GB for 60k images (metadata + embeddings packed into tars)
+**Issue: "warning: JSONL file does not exist"**
+- Solution: Check that JSONL file exists at specified path
+
+**Issue: Dry-run shows unexpected deletions**
+- Solution: Review the image IDs carefully - ensure they are actually orphaned
+- Verify symlinks are truly broken: `ls -l data/approved/<filename>`
+
+**Issue: "error: failed to delete symlink"**
+- Solution: Check file permissions - may need write access to `data/approved/`
+
+**Issue: JSONL corruption after pruning**
+- Solution: Script uses atomic updates - if interrupted, `.jsonl.prune-tmp` file may remain
+- Recovery: Restore from backup or rerun prune (will clean up temp file)
