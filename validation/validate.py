@@ -494,4 +494,4 @@ if __name__ == "__main__":
     print("Validation test configuration:")
     print(f"Reconstruction: {len(RECONSTRUCTION_TEST_INDICES)} samples")
     print(f"DINO swap: {len(DINO_SWAP_TEST_PAIRS)} pairs")
-    print(f"Text manipulation: {len(TEXT_MANIP_TEST_CASES)} cases")
+    print(f"Text manipulation: {len(TEXT_MANIP_TEST_INDICES)} indices")
