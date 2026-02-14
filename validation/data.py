@@ -23,12 +23,12 @@ def swap_left_right(caption):
 def resize_vae_latent(latent, target_size=64):
     """Resize VAE latent to target spatial size using bilinear interpolation.
     
-    WARNING: Resizing VAE latents with bilinear interpolation is "nonphysical"
-    relative to how the VAE manifold behaves. It can work, but it's not
-    equivalent to re-encoding resized images.
+    NOTE: This dataset stores VAE latents at their original resolution
+    (variable sizes matching the input images). Bilinear interpolation is
+    used to resize them to a uniform target_size for batching.
     
-    Best practice: Ensure shards are created at the target resolution and
-    avoid resizing altogether.
+    While resizing VAE latents is "nonphysical" relative to the VAE manifold,
+    it's a practical necessity for handling variable-resolution datasets.
     
     Args:
         latent: (C, H, W) numpy array
@@ -40,17 +40,8 @@ def resize_vae_latent(latent, target_size=64):
     # Convert to torch and add batch dimension
     latent_t = torch.from_numpy(latent).unsqueeze(0)  # (1, C, H, W)
     
-    # Resize using bilinear interpolation
+    # Resize using bilinear interpolation if needed
     if latent_t.shape[2] != target_size or latent_t.shape[3] != target_size:
-        # Issue warning if resizing is actually happening
-        if latent_t.shape[2] != target_size:
-            import warnings
-            warnings.warn(
-                f"Resizing VAE latent from {latent_t.shape[2]}x{latent_t.shape[3]} "
-                f"to {target_size}x{target_size}. Consider creating shards at target resolution.",
-                stacklevel=2
-            )
-        
         latent_t = F.interpolate(
             latent_t,
             size=(target_size, target_size),
