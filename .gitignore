@@ -28,6 +28,9 @@ wandb/
 logs/
 runs/
 tensorboard/
+validation/step*/
+validation/*.png
+validation/*.jpg
 
 # OS files
 .DS_Store
