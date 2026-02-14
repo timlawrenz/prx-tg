@@ -362,3 +362,35 @@ for block in self.blocks:
 * If you can fit batch size 16+ without it → skip it (faster training).
 
 **Note:** Use `use_reentrant=False` for PyTorch ≥2.0 (new, more stable API).
+
+---
+
+## **Part E: Monitoring & Debugging the Production Run**
+
+**Goal:** Identify failures early during the long training run.
+
+### **1. Survival Guide (Steps 0 - 1,000)**
+
+**Loss Spike:** Expect the loss to potentially increase or oscillate wildly in the first ~500 steps as AdamW states stabilize. This is normal.
+
+**Gradient Norm:** Monitor `grad_norm`.
+* **Healthy:** Starts high, spikes occasionally, then trends downward.
+* **Danger:** If `grad_norm > 10.0` consistently after step 1000, your Learning Rate is too high. Reduce it.
+
+### **2. Visual Debugging (Every 5,000 Steps)**
+
+**Velocity Field Norm:** Plot the average magnitude of the predicted $v$. It should stabilize near 1.0. If it hits 0.0 or >100, the model has collapsed.
+
+**Divergence Test:** Run two inference passes on the same noise:
+* `scale_text=4.0, scale_dino=0.0`
+* `scale_text=0.0, scale_dino=2.0`
+
+**Goal:** The images should look different (proving independence) but both should be valid humans. If they look identical, your dropout strategy isn't working.
+
+### **3. The "DINO Saturation" Warning**
+
+**Symptom:** The model generates perfect faces but ignores prompts like "looking left/right".
+
+**Cause:** DINO is too strong; the model is lazy and ignores text.
+
+**Fix:** Temporarily increase the Text-Only Dropout rate (Part D.4.B) from 10% to 20% or 25% for a few epochs to force the model to rely on text.
