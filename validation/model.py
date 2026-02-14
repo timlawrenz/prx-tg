@@ -7,7 +7,6 @@ Dual conditioning: DINOv3 (1024) → adaLN-Zero, T5 (77×1024) → Cross-Attenti
 import math
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 def modulate(x, shift, scale):
@@ -372,6 +371,11 @@ class NanoDiT(nn.Module):
         # Embed inputs
         x = self.x_embedder(x) + self.pos_embed  # (B, N, hidden_size)
         t_emb = self.t_embedder(t)  # (B, hidden_size)
+        
+        # Conditioning vectors
+        # Timestep is added to DINO conditioning (which goes through adaLN-Zero)
+        # This ensures timestep information reaches all blocks, even when DINO is dropped
+        # (null_dino still gets projected and adds t_emb)
         dino_cond = self.dino_proj(dino_emb) + t_emb  # (B, hidden_size)
         text_cond = self.text_proj(text_emb)  # (B, 77, hidden_size)
         
