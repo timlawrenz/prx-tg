@@ -2,6 +2,10 @@
 
 Validation training for the Nano DiT architecture before full-scale training. This proves the dual conditioning (DINOv3 + T5) and flow matching implementation work correctly on a 100-image overfit dataset in just **15-20 minutes** on an RTX 4090.
 
+> **⚠️ IMPORTANT:** Checkpoints created before commit `329c404` (2026-02-14) are **invalid**. 
+> They were trained with broken CFG dropout semantics and must be discarded and retrained.
+> See "CFG Dropout Fix" section below.
+
 ### Purpose
 
 Before committing weeks of GPU time to train the 400M+ parameter production model, we validate the architecture on a minimal scale in just 15-20 minutes:
@@ -193,6 +197,27 @@ After successful validation:
 3. Document results in `validation/RESULTS.md`
 4. **If successful**: Proceed to Part C (full-scale training)
 5. **If failed**: Debug architecture, re-run validation
+
+### CFG Dropout Fix (2026-02-14)
+
+**Issue:** Initial implementation used independent Bernoulli masks for CFG dropout, causing overlapping conditions:
+- Some samples had both text AND DINO dropped simultaneously
+- Model never learned clean unconditional/text-only/DINO-only modes
+- Dual CFG sampling expects distinct modes that weren't properly trained
+
+**Fixed in commit `329c404`:** Now uses mutually exclusive categorical sampling:
+- Exactly 70% both conditionings present
+- Exactly 10% unconditional (both dropped)
+- Exactly 10% text-only (DINO dropped)
+- Exactly 10% DINO-only (text dropped)
+
+**Impact:** Checkpoints trained before this fix are **invalid** and must be discarded. The model's conditioning behavior was corrupted, explaining high text sensitivity in validation (LPIPS diff 0.64).
+
+**Action:** Delete old checkpoints and retrain:
+```bash
+rm checkpoints/checkpoint_*.pt
+python -m validation.run_validation
+```
 
 ### Reference
 
