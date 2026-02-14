@@ -1,0 +1,385 @@
+"""Training loop for Nano DiT validation."""
+
+import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.nn.utils import clip_grad_norm_
+from pathlib import Path
+from tqdm import tqdm
+import json
+
+
+def logit_normal_sample(size, mean=0.0, std=1.0, device='cpu'):
+    """Sample timesteps from logit-normal distribution.
+    
+    Args:
+        size: tuple, shape of output
+        mean: float, mean of underlying normal distribution
+        std: float, std of underlying normal distribution
+        device: torch device
+    
+    Returns:
+        t: timesteps in range [0.001, 0.999]
+    """
+    # Sample from normal distribution
+    z = torch.randn(size, device=device) * std + mean
+    # Apply logistic function: sigma(z) = 1 / (1 + exp(-z))
+    t = torch.sigmoid(z)
+    # Clamp to avoid extreme values
+    t = torch.clamp(t, min=0.001, max=0.999)
+    return t
+
+
+def flow_matching_loss(model, x0, dino_emb, text_emb, text_mask, cfg_probs):
+    """Compute flow matching loss with independent CFG dropout.
+    
+    Args:
+        model: NanoDiT model
+        x0: (B, C, H, W) clean latents
+        dino_emb: (B, 1024) DINOv3 embeddings
+        text_emb: (B, 77, 1024) T5 hidden states
+        text_mask: (B, 77) T5 attention mask
+        cfg_probs: dict with p_drop_both, p_drop_text, p_drop_dino
+    
+    Returns:
+        loss: scalar tensor
+    """
+    B = x0.shape[0]
+    device = x0.device
+    
+    # Sample timesteps from logit-normal distribution
+    t = logit_normal_sample((B,), device=device)
+    
+    # Sample noise
+    z1 = torch.randn_like(x0)
+    
+    # Interpolate: z_t = (1-t) * z_0 + t * z_1
+    t_expanded = t.view(B, 1, 1, 1)
+    zt = (1 - t_expanded) * x0 + t_expanded * z1
+    
+    # Target velocity: v = z_0 - z_1 (for rectified flow)
+    v_target = z1 - x0
+    
+    # Apply independent CFG dropout
+    drop_both = torch.rand(B, device=device) < cfg_probs['p_drop_both']
+    drop_text = torch.rand(B, device=device) < cfg_probs['p_drop_text']
+    drop_dino = torch.rand(B, device=device) < cfg_probs['p_drop_dino']
+    
+    # Predict velocity
+    v_pred = model(
+        zt, t, dino_emb, text_emb, text_mask,
+        cfg_drop_both=drop_both,
+        cfg_drop_dino=drop_dino,
+        cfg_drop_text=drop_text,
+    )
+    
+    # MSE loss
+    loss = F.mse_loss(v_pred, v_target)
+    return loss
+
+
+class EMAModel:
+    """Exponential Moving Average of model weights."""
+    
+    def __init__(self, model, decay=0.9999, warmup_steps=5000):
+        """
+        Args:
+            model: PyTorch model
+            decay: EMA decay rate (target after warmup)
+            warmup_steps: number of steps to warm up decay from 0 to target
+        """
+        self.model = model
+        self.target_decay = decay
+        self.warmup_steps = warmup_steps
+        self.step = 0
+        
+        # Initialize EMA parameters
+        self.ema_params = {}
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                self.ema_params[name] = param.data.clone()
+    
+    def get_decay(self):
+        """Get current EMA decay with linear warmup."""
+        if self.step < self.warmup_steps:
+            return self.step / self.warmup_steps * self.target_decay
+        return self.target_decay
+    
+    def update(self):
+        """Update EMA parameters."""
+        decay = self.get_decay()
+        
+        with torch.no_grad():
+            for name, param in self.model.named_parameters():
+                if param.requires_grad and name in self.ema_params:
+                    self.ema_params[name].mul_(decay).add_(param.data, alpha=1 - decay)
+        
+        self.step += 1
+    
+    def copy_to(self, model):
+        """Copy EMA parameters to model."""
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if name in self.ema_params:
+                    param.data.copy_(self.ema_params[name])
+    
+    def state_dict(self):
+        """Get state dict for saving."""
+        return {
+            'ema_params': self.ema_params,
+            'step': self.step,
+        }
+    
+    def load_state_dict(self, state_dict):
+        """Load state dict."""
+        self.ema_params = state_dict['ema_params']
+        self.step = state_dict['step']
+
+
+def get_lr_schedule(step, warmup_steps, total_steps, peak_lr, min_lr):
+    """Get learning rate with linear warmup and cosine decay.
+    
+    Args:
+        step: current training step
+        warmup_steps: number of warmup steps
+        total_steps: total training steps
+        peak_lr: peak learning rate
+        min_lr: minimum learning rate
+    
+    Returns:
+        lr: learning rate for current step
+    """
+    if step < warmup_steps:
+        # Linear warmup
+        return peak_lr * step / warmup_steps
+    else:
+        # Cosine decay
+        progress = (step - warmup_steps) / (total_steps - warmup_steps)
+        return min_lr + (peak_lr - min_lr) * 0.5 * (1 + math.cos(math.pi * progress))
+
+
+class Trainer:
+    """Training orchestration for Nano DiT."""
+    
+    def __init__(
+        self,
+        model,
+        dataloader,
+        device='cuda',
+        total_steps=5000,
+        warmup_steps=5000,
+        peak_lr=3e-4,
+        min_lr=1e-6,
+        weight_decay=0.03,
+        grad_clip=1.0,
+        ema_decay=0.9999,
+        cfg_probs=None,
+        checkpoint_every=1000,
+        log_every=50,
+        checkpoint_dir='checkpoints',
+    ):
+        """
+        Args:
+            model: NanoDiT model
+            dataloader: iterable dataloader
+            device: torch device
+            total_steps: total training steps
+            warmup_steps: LR warmup steps
+            peak_lr: peak learning rate
+            min_lr: minimum learning rate
+            weight_decay: AdamW weight decay
+            grad_clip: gradient clipping norm
+            ema_decay: target EMA decay
+            cfg_probs: dict with CFG dropout probabilities
+            checkpoint_every: checkpoint save frequency
+            log_every: logging frequency
+            checkpoint_dir: directory for saving checkpoints
+        """
+        self.model = model.to(device)
+        self.dataloader = dataloader
+        self.device = device
+        self.total_steps = total_steps
+        self.warmup_steps = warmup_steps
+        self.peak_lr = peak_lr
+        self.min_lr = min_lr
+        self.grad_clip = grad_clip
+        self.checkpoint_every = checkpoint_every
+        self.log_every = log_every
+        self.checkpoint_dir = Path(checkpoint_dir)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        
+        # CFG dropout probabilities
+        self.cfg_probs = cfg_probs or {
+            'p_drop_both': 0.1,
+            'p_drop_text': 0.1,
+            'p_drop_dino': 0.1,
+        }
+        
+        # Optimizer
+        self.optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=peak_lr,
+            betas=(0.9, 0.95),
+            weight_decay=weight_decay,
+            eps=1e-8,
+        )
+        
+        # EMA
+        self.ema = EMAModel(model, decay=ema_decay, warmup_steps=warmup_steps)
+        
+        # Training state
+        self.step = 0
+        self.epoch = 0
+        
+        # Logging
+        self.log_file = self.checkpoint_dir / 'training_log.jsonl'
+    
+    def train_step(self, batch):
+        """Execute one training step.
+        
+        Args:
+            batch: dict with vae_latent, dino_embedding, t5_hidden, t5_mask
+        
+        Returns:
+            dict with loss and grad_norm
+        """
+        self.model.train()
+        
+        # Move batch to device
+        x0 = batch['vae_latent'].to(self.device)
+        dino_emb = batch['dino_embedding'].to(self.device)
+        text_emb = batch['t5_hidden'].to(self.device)
+        text_mask = batch['t5_mask'].to(self.device)
+        
+        # Compute loss
+        loss = flow_matching_loss(
+            self.model, x0, dino_emb, text_emb, text_mask, self.cfg_probs
+        )
+        
+        # Backward
+        self.optimizer.zero_grad()
+        loss.backward()
+        
+        # Gradient clipping
+        grad_norm = clip_grad_norm_(self.model.parameters(), self.grad_clip)
+        
+        # Optimizer step with current LR
+        lr = get_lr_schedule(
+            self.step, self.warmup_steps, self.total_steps,
+            self.peak_lr, self.min_lr
+        )
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
+        
+        self.optimizer.step()
+        
+        # EMA update
+        self.ema.update()
+        
+        return {
+            'loss': loss.item(),
+            'grad_norm': grad_norm.item(),
+            'lr': lr,
+        }
+    
+    def save_checkpoint(self, path=None):
+        """Save training checkpoint."""
+        if path is None:
+            path = self.checkpoint_dir / f'checkpoint_step{self.step:07d}.pt'
+        
+        torch.save({
+            'step': self.step,
+            'epoch': self.epoch,
+            'model': self.model.state_dict(),
+            'optimizer': self.optimizer.state_dict(),
+            'ema': self.ema.state_dict(),
+        }, path)
+        
+        print(f"Saved checkpoint to {path}")
+    
+    def load_checkpoint(self, path):
+        """Load training checkpoint."""
+        checkpoint = torch.load(path, map_location=self.device)
+        
+        self.model.load_state_dict(checkpoint['model'])
+        self.optimizer.load_state_dict(checkpoint['optimizer'])
+        self.ema.load_state_dict(checkpoint['ema'])
+        self.step = checkpoint['step']
+        self.epoch = checkpoint['epoch']
+        
+        print(f"Loaded checkpoint from {path} (step {self.step})")
+    
+    def log(self, metrics):
+        """Log metrics to file and console."""
+        metrics['step'] = self.step
+        metrics['epoch'] = self.epoch
+        
+        # Write to JSONL file
+        with open(self.log_file, 'a') as f:
+            f.write(json.dumps(metrics) + '\n')
+    
+    def train(self, validate_fn=None):
+        """Run full training loop.
+        
+        Args:
+            validate_fn: optional function(model, ema, step, device) for validation
+        """
+        print(f"Starting training for {self.total_steps} steps")
+        print(f"Warmup: {self.warmup_steps} steps")
+        print(f"Peak LR: {self.peak_lr}, Min LR: {self.min_lr}")
+        print(f"CFG probs: {self.cfg_probs}")
+        
+        pbar = tqdm(total=self.total_steps, initial=self.step, desc='Training')
+        
+        data_iter = iter(self.dataloader)
+        
+        while self.step < self.total_steps:
+            # Get batch
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                self.epoch += 1
+                data_iter = iter(self.dataloader)
+                batch = next(data_iter)
+            
+            # Training step
+            metrics = self.train_step(batch)
+            self.step += 1
+            
+            # Logging
+            if self.step % self.log_every == 0:
+                self.log(metrics)
+                pbar.set_postfix({
+                    'loss': f"{metrics['loss']:.4f}",
+                    'grad': f"{metrics['grad_norm']:.2f}",
+                    'lr': f"{metrics['lr']:.2e}",
+                })
+            
+            # Checkpointing
+            if self.step % self.checkpoint_every == 0:
+                self.save_checkpoint()
+                
+                # Run validation if provided
+                if validate_fn is not None:
+                    validate_fn(self.model, self.ema, self.step, self.device)
+            
+            pbar.update(1)
+        
+        pbar.close()
+        
+        # Final checkpoint
+        self.save_checkpoint(self.checkpoint_dir / 'checkpoint_final.pt')
+        print("Training complete!")
+
+
+if __name__ == "__main__":
+    import torch.nn.functional as F
+    
+    # Test timestep sampling
+    print("Testing logit-normal sampling...")
+    t = logit_normal_sample((1000,))
+    print(f"Median: {t.median():.3f}")
+    print(f"Min: {t.min():.3f}, Max: {t.max():.3f}")
+    print(f"In [0.3, 0.7]: {((t >= 0.3) & (t <= 0.7)).sum().item() / 1000:.2%}")
+    print("✓ Timestep sampling test passed")
