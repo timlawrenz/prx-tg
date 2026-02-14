@@ -41,7 +41,7 @@ def parse_args():
     # Training hyperparameters
     parser.add_argument('--batch-size', type=int, default=8,
                         help='Batch size')
-    parser.add_argument('--total-steps', type=int, default=5000,
+    parser.add_argument('--total-steps', type=int, default=10000,
                         help='Total training steps')
     parser.add_argument('--peak-lr', type=float, default=3e-4,
                         help='Peak learning rate')
