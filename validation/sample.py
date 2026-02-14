@@ -33,6 +33,12 @@ class EulerSampler:
     ):
         """Sample from model using Euler integration with dual CFG.
         
+        Rectified flow sampling integrates the learned velocity field backward in time:
+        - Start at t=1 (pure noise z1)
+        - Integrate to t=0 (clean data x0)
+        - Velocity field v = z1 - x0 points from data toward noise (forward time)
+        - Integration: z_{t+dt} = z_t + v * dt with negative dt moves toward data
+        
         Args:
             model: NanoDiT model
             shape: (B, C, H, W) output shape
@@ -56,7 +62,7 @@ class EulerSampler:
         for i in range(self.num_steps):
             t_curr = timesteps[i]
             t_next = timesteps[i + 1]
-            dt = t_next - t_curr
+            dt = t_next - t_curr  # Negative (moving from 1.0 to 0.0)
             
             t_batch = torch.full((B,), t_curr, device=device)
             
@@ -83,7 +89,8 @@ class EulerSampler:
             # v = v_uncond + text_scale * (v_text - v_uncond) + dino_scale * (v_dino - v_uncond)
             v_pred = v_uncond + text_scale * (v_text - v_uncond) + dino_scale * (v_dino - v_uncond)
             
-            # Euler integration: z_{t-dt} = z_t + v * dt
+            # Euler integration: z_{t+dt} = z_t + v * dt
+            # dt is negative, v points toward noise, so we move toward data
             zt = zt + v_pred * dt
         
         return zt

@@ -32,11 +32,17 @@ def logit_normal_sample(size, mean=0.0, std=1.0, device='cpu'):
 
 
 def flow_matching_loss(model, x0, dino_emb, text_emb, text_mask, cfg_probs):
-    """Compute flow matching loss with independent CFG dropout.
+    """Compute flow matching loss with mutually exclusive CFG dropout.
+    
+    CFG dropout uses categorical sampling to ensure exactly one of:
+    - 70% both conditionings present
+    - 10% both dropped (unconditional)
+    - 10% text dropped (DINO-only)
+    - 10% DINO dropped (text-only)
     
     Args:
         model: NanoDiT model
-        x0: (B, C, H, W) clean latents
+        x0: (B, C, H, W) clean latents (data at t=0)
         dino_emb: (B, 1024) DINOv3 embeddings
         text_emb: (B, 77, 1024) T5 hidden states
         text_mask: (B, 77) T5 attention mask
@@ -51,20 +57,33 @@ def flow_matching_loss(model, x0, dino_emb, text_emb, text_mask, cfg_probs):
     # Sample timesteps from logit-normal distribution
     t = logit_normal_sample((B,), device=device)
     
-    # Sample noise
+    # Sample noise z1 ~ N(0, I)
     z1 = torch.randn_like(x0)
     
-    # Interpolate: z_t = (1-t) * z_0 + t * z_1
+    # Linear interpolation: z_t = (1-t) * x0 + t * z1
+    # At t=0: zt = x0 (clean data)
+    # At t=1: zt = z1 (pure noise)
     t_expanded = t.view(B, 1, 1, 1)
     zt = (1 - t_expanded) * x0 + t_expanded * z1
     
-    # Target velocity: v = z_0 - z_1 (for rectified flow)
+    # Rectified flow target: velocity field v_t = d(z_t)/dt = z1 - x0
+    # This points from data (x0) towards noise (z1)
+    # Integrating forward in time: z_t -> z_{t+dt} moves toward noise
+    # Integrating backward in time (sampling): z_t -> z_{t-dt} moves toward data
     v_target = z1 - x0
     
-    # Apply independent CFG dropout
-    drop_both = torch.rand(B, device=device) < cfg_probs['p_drop_both']
-    drop_text = torch.rand(B, device=device) < cfg_probs['p_drop_text']
-    drop_dino = torch.rand(B, device=device) < cfg_probs['p_drop_dino']
+    # Mutually exclusive CFG dropout (categorical sampling)
+    # Sample one random number per batch item and threshold it
+    rand = torch.rand(B, device=device)
+    p_both = cfg_probs['p_drop_both']
+    p_text = cfg_probs['p_drop_text']
+    p_dino = cfg_probs['p_drop_dino']
+    
+    # Assign to exclusive categories
+    drop_both = rand < p_both
+    drop_text = (rand >= p_both) & (rand < p_both + p_text)
+    drop_dino = (rand >= p_both + p_text) & (rand < p_both + p_text + p_dino)
+    # Remainder (70% by default) has both conditionings present
     
     # Predict velocity
     v_pred = model(
@@ -155,7 +174,12 @@ def get_lr_schedule(step, warmup_steps, total_steps, peak_lr, min_lr):
         return peak_lr * step / warmup_steps
     else:
         # Cosine decay
+        # Avoid division by zero if warmup_steps == total_steps
+        if total_steps <= warmup_steps:
+            return peak_lr
+        
         progress = (step - warmup_steps) / (total_steps - warmup_steps)
+        progress = min(progress, 1.0)  # Clamp to [0, 1]
         return min_lr + (peak_lr - min_lr) * 0.5 * (1 + math.cos(math.pi * progress))
 
 
