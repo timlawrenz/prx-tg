@@ -186,6 +186,15 @@ class ValidationRunner:
     def run_dino_swap_test(self, step, sampler):
         """Test 2: Swap DINO embeddings, keep original captions.
         
+        For each pair (A, B):
+        - Generate with caption_A + dino_A (reference)
+        - Generate with caption_A + dino_B (swapped)
+        - Generate with caption_B + dino_B (reference)
+        
+        This lets you visually compare:
+        - captionA_dinoA vs captionA_dinoB to see DINO's effect
+        - captionA_dinoB vs captionB_dinoB to see caption's effect
+        
         Args:
             step: current training step
             sampler: ValidationSampler instance
@@ -205,30 +214,55 @@ class ValidationRunner:
             sample_a = samples[idx_a]
             sample_b = samples[idx_b]
             
-            # A's caption + B's DINO
-            dino_emb = sample_b['dino_embedding'].unsqueeze(0)
-            text_emb = sample_a['t5_hidden'].unsqueeze(0)
-            text_mask = sample_a['t5_mask'].unsqueeze(0)
-            
-            gen_images = sampler.generate(dino_emb, text_emb, text_mask)
-            
-            # Save with descriptive name
+            # 1. Reference: A's caption + A's DINO
+            gen_a_ref = sampler.generate(
+                sample_a['dino_embedding'].unsqueeze(0),
+                sample_a['t5_hidden'].unsqueeze(0),
+                sample_a['t5_mask'].unsqueeze(0)
+            )
             save_images(
-                gen_images,
+                gen_a_ref,
                 output_dir,
-                prefix=f'pair{pair_idx}_captionA{idx_a}_dinoB{idx_b}',
+                prefix=f'pair{pair_idx}_A{idx_a}_captionA_dinoA',
+                image_ids=None
+            )
+            
+            # 2. Swapped: A's caption + B's DINO
+            gen_a_swap = sampler.generate(
+                sample_b['dino_embedding'].unsqueeze(0),
+                sample_a['t5_hidden'].unsqueeze(0),
+                sample_a['t5_mask'].unsqueeze(0)
+            )
+            save_images(
+                gen_a_swap,
+                output_dir,
+                prefix=f'pair{pair_idx}_A{idx_a}_captionA_dinoB{idx_b}',
+                image_ids=None
+            )
+            
+            # 3. Reference: B's caption + B's DINO
+            gen_b_ref = sampler.generate(
+                sample_b['dino_embedding'].unsqueeze(0),
+                sample_b['t5_hidden'].unsqueeze(0),
+                sample_b['t5_mask'].unsqueeze(0)
+            )
+            save_images(
+                gen_b_ref,
+                output_dir,
+                prefix=f'pair{pair_idx}_B{idx_b}_captionB_dinoB',
                 image_ids=None
             )
             
             results.append({
                 'pair_idx': pair_idx,
-                'caption_source': idx_a,
-                'dino_source': idx_b,
-                'caption': sample_a['caption'],
+                'idx_a': idx_a,
+                'idx_b': idx_b,
+                'caption_a': sample_a['caption'][:100] + '...',
+                'caption_b': sample_b['caption'][:100] + '...',
             })
             
             # Clear GPU memory
-            del dino_emb, text_emb, text_mask, gen_images
+            del gen_a_ref, gen_a_swap, gen_b_ref
             torch.cuda.empty_cache()
         
         return {
@@ -438,7 +472,7 @@ class ValidationRunner:
         print("VALIDATION SUMMARY")
         print(f"{'='*60}")
         print(f"Reconstruction LPIPS: {results['reconstruction']['mean_lpips']:.4f}")
-        print(f"DINO swap: {results['dino_swap']['num_pairs']} pairs generated")
+        print(f"DINO swap: {results['dino_swap']['num_pairs']} pairs, 3 images each (A_ref, A_swap, B_ref)")
         print(f"Text manipulation: {results['text_manip']['num_successful']}/{results['text_manip']['num_cases']} cases, "
               f"mean LPIPS diff: {results['text_manip']['mean_lpips_difference']:.4f}")
         print(f"Results saved to: {results_file}")
