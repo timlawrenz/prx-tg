@@ -23,7 +23,7 @@ class TrainingConfig:
     """Training loop configuration."""
     batch_size: int = 8
     total_steps: int = 5000
-    warmup_steps: int = 5000
+    warmup_steps: int = 1000  # Warm up for first 20% of training
     peak_lr: float = 3e-4
     min_lr: float = 1e-6
     weight_decay: float = 0.03
