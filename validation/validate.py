@@ -447,24 +447,42 @@ class ValidationRunner:
         return results
 
 
-def create_validation_fn(dataloader, output_dir='validation'):
+def create_validation_fn(shard_dir, output_dir='validation'):
     """Create validation function for training loop.
     
+    IMPORTANT: This creates its own deterministic dataloader internally,
+    separate from the training dataloader. This ensures:
+    - Sample indices are stable across validation runs
+    - No shuffle (same idx always means same image)
+    - No augmentation (no flips)
+    - Finite iteration (no repeat)
+    
     Args:
-        dataloader: validation dataloader
-        output_dir: output directory
+        shard_dir: Path to validation shards
+        output_dir: Output directory for validation results
     
     Returns:
         validation_fn(model, ema, step, device)
     """
+    from .data import get_deterministic_validation_dataloader
+    
     runner = None
+    val_dataloader = None
     
     def validation_fn(model, ema, step, device):
-        nonlocal runner
+        nonlocal runner, val_dataloader
+        
+        # Create deterministic validation dataloader (first call only)
+        if val_dataloader is None:
+            print(f"Creating deterministic validation dataloader from {shard_dir}...")
+            val_dataloader = get_deterministic_validation_dataloader(
+                shard_dir=shard_dir,
+                batch_size=1,  # Process one at a time for validation
+            )
         
         if runner is None:
             runner = ValidationRunner(
-                model, ema, dataloader, device, output_dir
+                model, ema, val_dataloader, device, output_dir
             )
         
         runner.run_validation(step)

@@ -23,6 +23,13 @@ def swap_left_right(caption):
 def resize_vae_latent(latent, target_size=64):
     """Resize VAE latent to target spatial size using bilinear interpolation.
     
+    WARNING: Resizing VAE latents with bilinear interpolation is "nonphysical"
+    relative to how the VAE manifold behaves. It can work, but it's not
+    equivalent to re-encoding resized images.
+    
+    Best practice: Ensure shards are created at the target resolution and
+    avoid resizing altogether.
+    
     Args:
         latent: (C, H, W) numpy array
         target_size: int, target spatial size (default 64 for 512x512 images)
@@ -35,6 +42,15 @@ def resize_vae_latent(latent, target_size=64):
     
     # Resize using bilinear interpolation
     if latent_t.shape[2] != target_size or latent_t.shape[3] != target_size:
+        # Issue warning if resizing is actually happening
+        if latent_t.shape[2] != target_size:
+            import warnings
+            warnings.warn(
+                f"Resizing VAE latent from {latent_t.shape[2]}x{latent_t.shape[3]} "
+                f"to {target_size}x{target_size}. Consider creating shards at target resolution.",
+                stacklevel=2
+            )
+        
         latent_t = F.interpolate(
             latent_t,
             size=(target_size, target_size),
@@ -127,7 +143,11 @@ class ValidationDataset:
         }
     
     def create_dataloader(self):
-        """Create an infinite WebDataset dataloader with shuffling and batching."""
+        """Create WebDataset dataloader.
+        
+        If shuffle=True: Creates infinite dataloader with repeat() for training
+        If shuffle=False: Creates finite dataloader for deterministic validation
+        """
         # Convert Path objects to strings for webdataset
         shard_urls = [str(f) for f in self.shard_files]
         
@@ -139,7 +159,7 @@ class ValidationDataset:
             .batched(self.batch_size, collation_fn=self.collate_fn)
         )
         
-        # Make infinite by repeating
+        # Make infinite by repeating (only for training)
         if self.shuffle:
             dataset = dataset.repeat()
         
@@ -156,14 +176,16 @@ def get_validation_dataloader(
     batch_size=8,
     shuffle=True,
     flip_prob=0.5,
+    target_latent_size=64,
 ):
-    """Convenience function to create validation dataloader.
+    """Convenience function to create validation dataloader for training.
     
     Args:
         shard_dir: Path to validation shards
         batch_size: Number of samples per batch
         shuffle: Whether to shuffle between epochs
         flip_prob: Probability of horizontal flip augmentation
+        target_latent_size: Target spatial size for VAE latents
     
     Returns:
         iterable dataloader yielding batches
@@ -173,6 +195,40 @@ def get_validation_dataloader(
         batch_size=batch_size,
         shuffle=shuffle,
         flip_prob=flip_prob,
+        target_latent_size=target_latent_size,
+    )
+    return dataset
+
+
+def get_deterministic_validation_dataloader(
+    shard_dir='data/shards/validation',
+    batch_size=1,
+    target_latent_size=64,
+):
+    """Create deterministic validation dataloader for consistent testing.
+    
+    This dataloader:
+    - Does NOT shuffle (stable sample ordering)
+    - Does NOT flip (no augmentation)
+    - Does NOT repeat (finite, single pass)
+    
+    Use this for validation tests where you need consistent sample indices
+    across different training steps (reconstruction LPIPS, DINO swap, etc.)
+    
+    Args:
+        shard_dir: Path to validation shards
+        batch_size: Number of samples per batch (default 1 for validation)
+        target_latent_size: Target spatial size for VAE latents
+    
+    Returns:
+        iterable dataloader yielding batches
+    """
+    dataset = ValidationDataset(
+        shard_dir=shard_dir,
+        batch_size=batch_size,
+        shuffle=False,  # CRITICAL: no shuffle for deterministic ordering
+        flip_prob=0.0,   # CRITICAL: no augmentation for consistency
+        target_latent_size=target_latent_size,
     )
     return dataset
 

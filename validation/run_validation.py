@@ -152,7 +152,7 @@ def main():
     else:
         print("Creating validation function...")
         validation_fn = create_validation_fn(
-            dataloader,
+            shard_dir=str(config.paths.data_dir),
             output_dir=str(config.paths.validation_dir)
         )
     
