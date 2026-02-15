@@ -149,9 +149,26 @@ def main():
     if config.validation.enabled:
         from .validate import create_validation_fn
         print("Creating validation function...")
-        validate_fn = create_validation_fn(
+        # Note: TensorBoard writer will be passed from trainer after it's created
+        validate_fn_factory = lambda tb_writer: create_validation_fn(
             shard_dir=config.data.shard_base_dir,
             output_dir=config.validation.output_dir,
+            tensorboard_writer=tb_writer,
+        )
+    
+    # Create visual debugging function (if enabled)
+    visual_debug_fn = None
+    if config.validation.visual_debug_interval > 0:
+        print("Creating visual debug function...")
+        from .visual_debug import create_visual_debug_fn
+        visual_debug_fn = create_visual_debug_fn(
+            shard_dir=config.data.shard_base_dir,
+            output_dir=config.validation.visual_debug_dir,
+            num_samples=config.validation.visual_debug_num_samples,
+            text_scale=config.sampling.text_scale,
+            dino_scale=config.sampling.dino_scale,
+            num_steps=config.sampling.num_steps,
+            device=device,
         )
     
     # Create trainer
@@ -163,6 +180,10 @@ def main():
         device=device,
     )
     
+    # Now create actual validation function with TensorBoard writer
+    if config.validation.enabled:
+        validate_fn = validate_fn_factory(trainer.writer)
+    
     print_gpu_memory(device)
     
     # Resume if checkpoint provided
@@ -173,7 +194,10 @@ def main():
     # Train
     print("\nStarting training...\n")
     try:
-        trainer.train(validate_fn=validate_fn)
+        trainer.train(
+            validate_fn=validate_fn,
+            visual_debug_fn=visual_debug_fn,
+        )
     except KeyboardInterrupt:
         print("\n\n⚠️  Training interrupted by user (Ctrl+C)")
         print("Saving checkpoint...")

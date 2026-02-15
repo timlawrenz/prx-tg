@@ -343,11 +343,12 @@ class Trainer:
         with open(self.log_file, 'a') as f:
             f.write(json.dumps(metrics) + '\n')
     
-    def train(self, validate_fn=None):
+    def train(self, validate_fn=None, visual_debug_fn=None):
         """Run full training loop.
         
         Args:
             validate_fn: optional function(model, ema, step, device) for validation
+            visual_debug_fn: optional function(model, step) for visual debugging
         """
         print(f"Starting training for {self.total_steps} steps")
         print(f"Warmup: {self.warmup_steps} steps")
@@ -379,6 +380,13 @@ class Trainer:
                     'grad': f"{metrics['grad_norm']:.2f}",
                     'lr': f"{metrics['lr']:.2e}",
                 })
+            
+            # Visual debugging (more frequent than full validation)
+            if visual_debug_fn is not None:
+                # Check if visual_debug_interval is configured (ProductionTrainer only)
+                interval = getattr(self, 'visual_debug_interval', 0)
+                if interval > 0 and self.step % interval == 0:
+                    visual_debug_fn(self.ema.model if self.ema else self.model, self.step)
             
             # Checkpointing
             if self.step % self.checkpoint_every == 0:

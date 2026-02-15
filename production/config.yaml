@@ -76,7 +76,7 @@ sampling:
 
 validation:
   enabled: true                      # Enable validation runs
-  interval_steps: 5000               # Run validation every N steps
+  interval_steps: 5000               # Run validation every N steps (full suite)
   num_samples: 100                   # Number of samples to validate
   output_dir: "validation_outputs"   # Validation output directory
   
@@ -84,6 +84,11 @@ validation:
   run_reconstruction: true           # Test reconstruction LPIPS
   run_dino_swap: true                # Test DINO swap pairs
   run_text_manip: true               # Test text manipulation
+  
+  # Visual debugging (quick image generation during training)
+  visual_debug_interval: 1000        # Generate sample images every N steps (0 = disabled)
+  visual_debug_num_samples: 4        # Number of samples per visual debug checkpoint
+  visual_debug_dir: "visual_debug"   # Output directory for visual debugging images
 
 checkpoint:
   save_every: 5000                   # Save checkpoint every N steps

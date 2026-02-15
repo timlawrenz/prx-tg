@@ -5,6 +5,8 @@ import torch
 from pathlib import Path
 from tqdm import tqdm
 import lpips
+import numpy as np
+from PIL import Image
 
 from .sample import ValidationSampler, load_vae_decoder, save_images
 
@@ -36,6 +38,51 @@ TEXT_MANIP_REPLACEMENTS = [
 TEXT_MANIP_TEST_INDICES = [8, 15, 27, 39, 51]
 
 
+def create_image_collage(images, labels=None, spacing=10):
+    """Create a horizontal collage from multiple tensors or PIL images.
+    
+    Args:
+        images: List of torch tensors (C, H, W) in [-1, 1] or PIL Images
+        labels: Optional list of text labels for each image
+        spacing: Pixels between images
+    
+    Returns:
+        collage_array: numpy array (H, W, 3) in [0, 255] uint8
+    """
+    # Convert all to PIL Images
+    pil_images = []
+    for img in images:
+        if isinstance(img, torch.Tensor):
+            # Denormalize from [-1, 1] to [0, 1]
+            img_np = (img.cpu().numpy() * 0.5 + 0.5).clip(0, 1)
+            # Convert to (H, W, C) uint8
+            img_np = (img_np.transpose(1, 2, 0) * 255).astype(np.uint8)
+            pil_img = Image.fromarray(img_np)
+        else:
+            pil_img = img
+        pil_images.append(pil_img)
+    
+    # Calculate collage dimensions
+    max_height = max(img.height for img in pil_images)
+    total_width = sum(img.width for img in pil_images) + spacing * (len(pil_images) - 1)
+    
+    # Create white background
+    collage = Image.new('RGB', (total_width, max_height), color=(255, 255, 255))
+    
+    # Paste images
+    x_offset = 0
+    for pil_img in pil_images:
+        # Center vertically
+        y_offset = (max_height - pil_img.height) // 2
+        collage.paste(pil_img, (x_offset, y_offset))
+        x_offset += pil_img.width + spacing
+    
+    # Convert to numpy for TensorBoard
+    collage_array = np.array(collage)  # (H, W, 3) uint8
+    
+    return collage_array
+
+
 class ValidationRunner:
     """Run validation tests on Nano DiT model."""
     
@@ -47,6 +94,7 @@ class ValidationRunner:
         device='cuda',
         output_dir='validation',
         lpips_net='alex',
+        tensorboard_writer=None,
     ):
         """
         Args:
@@ -56,12 +104,14 @@ class ValidationRunner:
             device: torch device
             output_dir: directory for validation outputs
             lpips_net: LPIPS network ('alex' or 'vgg')
+            tensorboard_writer: Optional TensorBoard SummaryWriter
         """
         self.model = model
         self.ema = ema
         self.dataloader = dataloader
         self.device = device
         self.output_dir = Path(output_dir)
+        self.tb_writer = tensorboard_writer
         
         # Load VAE decoder
         print("Loading VAE decoder...")
@@ -219,39 +269,40 @@ class ValidationRunner:
                 sample_a['dino_embedding'].unsqueeze(0),
                 sample_a['t5_hidden'].unsqueeze(0),
                 sample_a['t5_mask'].unsqueeze(0)
-            )
-            save_images(
-                gen_a_ref,
-                output_dir,
-                prefix=f'pair{pair_idx}_captionA{idx_a}_dinoA{idx_a}',
-                image_ids=None
-            )
+            )[0]  # (3, H, W)
             
             # 2. Swapped: A's caption + B's DINO
             gen_a_swap = sampler.generate(
                 sample_b['dino_embedding'].unsqueeze(0),
                 sample_a['t5_hidden'].unsqueeze(0),
                 sample_a['t5_mask'].unsqueeze(0)
-            )
-            save_images(
-                gen_a_swap,
-                output_dir,
-                prefix=f'pair{pair_idx}_captionA{idx_a}_dinoB{idx_b}',
-                image_ids=None
-            )
+            )[0]  # (3, H, W)
             
             # 3. Reference: B's caption + B's DINO
             gen_b_ref = sampler.generate(
                 sample_b['dino_embedding'].unsqueeze(0),
                 sample_b['t5_hidden'].unsqueeze(0),
                 sample_b['t5_mask'].unsqueeze(0)
-            )
-            save_images(
-                gen_b_ref,
-                output_dir,
-                prefix=f'pair{pair_idx}_captionB{idx_b}_dinoB{idx_b}',
-                image_ids=None
-            )
+            )[0]  # (3, H, W)
+            
+            # Create collage: [A_ref | A_swap | B_ref]
+            collage_array = create_image_collage([gen_a_ref, gen_a_swap, gen_b_ref])
+            
+            # Save collage as file
+            collage_img = Image.fromarray(collage_array)
+            collage_path = output_dir / f'pair{pair_idx}_collage.png'
+            collage_img.save(collage_path)
+            
+            # Log to TensorBoard (if available)
+            if self.tb_writer is not None:
+                # TensorBoard expects (C, H, W) in [0, 255] or (H, W, C) in [0, 1]
+                collage_tensor = torch.from_numpy(collage_array).permute(2, 0, 1)  # (3, H, W)
+                self.tb_writer.add_image(
+                    f'validation/dino_swap_pair{pair_idx}',
+                    collage_tensor,
+                    global_step=step,
+                    dataformats='CHW'
+                )
             
             results.append({
                 'pair_idx': pair_idx,
@@ -366,30 +417,40 @@ class ValidationRunner:
             # Generate with original caption
             text_emb_orig = sample['t5_hidden'].unsqueeze(0)
             text_mask_orig = sample['t5_mask'].unsqueeze(0)
-            gen_orig = sampler.generate(dino_emb, text_emb_orig, text_mask_orig)
+            gen_orig = sampler.generate(dino_emb, text_emb_orig, text_mask_orig)[0]  # (3, H, W)
             
             # Re-encode modified caption with T5
             text_emb_mod, text_mask_mod = self.encode_caption(modified_caption)
             
             # Generate with modified caption
-            gen_mod = sampler.generate(dino_emb, text_emb_mod, text_mask_mod)
+            gen_mod = sampler.generate(dino_emb, text_emb_mod, text_mask_mod)[0]  # (3, H, W)
             
             # Compute LPIPS between original and modified generations
-            lpips_val = self.lpips_fn(gen_orig, gen_mod).item()
+            lpips_val = self.lpips_fn(gen_orig.unsqueeze(0), gen_mod.unsqueeze(0)).item()
             
-            # Save both versions
-            save_images(
-                gen_orig,
-                output_dir,
-                prefix=f'sample{idx}_original',
-                image_ids=None
-            )
-            save_images(
-                gen_mod,
-                output_dir,
-                prefix=f'sample{idx}_modified',
-                image_ids=None
-            )
+            # Create collage: [original | modified]
+            collage_array = create_image_collage([gen_orig, gen_mod])
+            
+            # Save collage as file
+            collage_img = Image.fromarray(collage_array)
+            collage_path = output_dir / f'sample{idx}_collage.png'
+            collage_img.save(collage_path)
+            
+            # Log to TensorBoard (if available)
+            if self.tb_writer is not None:
+                collage_tensor = torch.from_numpy(collage_array).permute(2, 0, 1)  # (3, H, W)
+                self.tb_writer.add_image(
+                    f'validation/text_manip_{idx}',
+                    collage_tensor,
+                    global_step=step,
+                    dataformats='CHW'
+                )
+                # Add caption as text
+                self.tb_writer.add_text(
+                    f'validation/text_manip_{idx}_caption',
+                    f"Original: {original_caption[:100]}\nModified: {modified_caption[:100]}",
+                    global_step=step
+                )
             
             results.append({
                 'idx': idx,
@@ -481,7 +542,7 @@ class ValidationRunner:
         return results
 
 
-def create_validation_fn(shard_dir, output_dir='validation'):
+def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=None):
     """Create validation function for training loop.
     
     IMPORTANT: This creates its own deterministic dataloader internally,
@@ -494,6 +555,7 @@ def create_validation_fn(shard_dir, output_dir='validation'):
     Args:
         shard_dir: Path to validation shards
         output_dir: Output directory for validation results
+        tensorboard_writer: Optional TensorBoard SummaryWriter
     
     Returns:
         validation_fn(model, ema, step, device)
@@ -516,7 +578,8 @@ def create_validation_fn(shard_dir, output_dir='validation'):
         
         if runner is None:
             runner = ValidationRunner(
-                model, ema, val_dataloader, device, output_dir
+                model, ema, val_dataloader, device, output_dir,
+                tensorboard_writer=tensorboard_writer,
             )
         
         runner.run_validation(step)
