@@ -93,6 +93,66 @@ def print_config_summary(config):
     print("="*60 + "\n")
 
 
+def create_experiment_dir(config_path):
+    """Create timestamped experiment directory and save metadata.
+    
+    Creates: experiments/YYYY-MM-DD_HHMM/
+    Saves: config.yaml, metadata.json (git commit, timestamp, command)
+    
+    Args:
+        config_path: Path to config file
+    
+    Returns:
+        experiment_dir: Path to created directory
+    """
+    # Create timestamp: 2026-02-15_1130
+    timestamp = datetime.now().strftime('%Y-%m-%d_%H%M')
+    
+    # Create experiment directory
+    exp_dir = Path('experiments') / timestamp
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Copy config file
+    config_dest = exp_dir / 'config.yaml'
+    shutil.copy2(config_path, config_dest)
+    print(f"Saved config to: {config_dest}")
+    
+    # Save metadata
+    metadata = {
+        'timestamp': datetime.now().isoformat(),
+        'config_path': str(config_path),
+        'command': ' '.join(sys.argv),
+    }
+    
+    # Try to get git commit hash
+    try:
+        git_hash = subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'],
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+        metadata['git_commit'] = git_hash
+        
+        # Check for uncommitted changes
+        git_status = subprocess.check_output(
+            ['git', 'status', '--porcelain'],
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+        metadata['git_dirty'] = bool(git_status)
+        if git_status:
+            metadata['warning'] = 'Uncommitted changes present'
+    except:
+        metadata['git_commit'] = 'unknown'
+        metadata['git_dirty'] = False
+    
+    # Save metadata
+    metadata_path = exp_dir / 'metadata.json'
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    print(f"Saved metadata to: {metadata_path}")
+    
+    return exp_dir
+
+
 def main():
     """Main training function."""
     args = parse_args()
@@ -100,6 +160,14 @@ def main():
     # Load config
     print(f"Loading config from: {args.config}")
     config = load_config(args.config)
+    
+    # Create experiment directory and save config
+    print("\n" + "="*60)
+    print("EXPERIMENT TRACKING")
+    print("="*60)
+    experiment_dir = create_experiment_dir(args.config)
+    print(f"Experiment directory: {experiment_dir}")
+    print("="*60 + "\n")
     
     # Setup device
     if args.device == 'cuda':
