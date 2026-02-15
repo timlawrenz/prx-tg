@@ -457,11 +457,52 @@ class ProductionTrainer(Trainer):
         self.accum_steps = 0
         self.accum_loss = 0.0
         
+        # TensorBoard logging
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+            tensorboard_dir = Path(checkpoint_cfg.output_dir) / 'tensorboard'
+            self.writer = SummaryWriter(log_dir=tensorboard_dir)
+            print(f"  TensorBoard logging: {tensorboard_dir}")
+        except ImportError:
+            print("  TensorBoard not available (install: pip install tensorboard)")
+            self.writer = None
+        
         print(f"ProductionTrainer initialized:")
         print(f"  Gradient accumulation: {self.grad_accumulation_steps} steps")
         print(f"  Effective batch size: {training.batch_size * self.grad_accumulation_steps}")
         print(f"  Timestep sampling: {self.timestep_sampling}")
         print(f"  EMA warmup: {self.ema_warmup_steps} steps")
+    
+    def log(self, metrics):
+        """Log metrics to file, console, and TensorBoard.
+        
+        Overrides parent log() to add TensorBoard support.
+        """
+        # Call parent logging (JSONL file)
+        super().log(metrics)
+        
+        # Log to TensorBoard
+        if self.writer is not None:
+            step = metrics.get('step', self.step)
+            
+            # Training metrics
+            if 'loss' in metrics:
+                self.writer.add_scalar('train/loss', metrics['loss'], step)
+            if 'grad_norm' in metrics:
+                self.writer.add_scalar('train/grad_norm', metrics['grad_norm'], step)
+            if 'lr' in metrics:
+                self.writer.add_scalar('train/learning_rate', metrics['lr'], step)
+            
+            # Additional monitoring
+            if 'velocity_norm' in metrics:
+                self.writer.add_scalar('monitor/velocity_norm', metrics['velocity_norm'], step)
+            if 'ema_decay' in metrics:
+                self.writer.add_scalar('train/ema_decay', metrics['ema_decay'], step)
+    
+    def __del__(self):
+        """Cleanup: close TensorBoard writer."""
+        if hasattr(self, 'writer') and self.writer is not None:
+            self.writer.close()
 
 
 if __name__ == "__main__":
