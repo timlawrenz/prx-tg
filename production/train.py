@@ -413,7 +413,7 @@ class ProductionTrainer(Trainer):
     separation of concerns.
     """
     
-    def __init__(self, model, dataloader, config, device='cuda'):
+    def __init__(self, model, dataloader, config, device='cuda', experiment_name=None):
         """Initialize from config object.
         
         Args:
@@ -421,6 +421,7 @@ class ProductionTrainer(Trainer):
             dataloader: iterable dataloader
             config: Config object from config_loader
             device: torch device
+            experiment_name: Optional experiment name for TensorBoard run name
         """
         from .config_loader import Config
         
@@ -449,6 +450,7 @@ class ProductionTrainer(Trainer):
         
         # Store additional config for production features
         self.config = config
+        self.experiment_name = experiment_name or "default"
         self.grad_accumulation_steps = training.grad_accumulation_steps
         self.ema_warmup_steps = training.ema_warmup_steps
         self.timestep_sampling = training.timestep_sampling
@@ -471,7 +473,8 @@ class ProductionTrainer(Trainer):
         # TensorBoard logging
         try:
             from torch.utils.tensorboard import SummaryWriter
-            tensorboard_dir = Path(checkpoint_cfg.output_dir) / 'tensorboard'
+            # Use experiment name as subdirectory for better organization
+            tensorboard_dir = Path(checkpoint_cfg.output_dir) / 'tensorboard' / self.experiment_name
             self.writer = SummaryWriter(log_dir=tensorboard_dir)
             print(f"  TensorBoard logging: {tensorboard_dir}")
         except ImportError:
