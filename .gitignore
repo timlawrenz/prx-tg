@@ -31,6 +31,10 @@ tensorboard/
 validation/step*/
 validation/*.png
 validation/*.jpg
+validation_outputs/step*/
+validation_outputs/*.png
+validation_outputs/*.jpg
+
 
 # OS files
 .DS_Store
