@@ -54,6 +54,10 @@ def create_visual_debug_fn(
         step_dir = output_path / f"step{step:07d}"
         step_dir.mkdir(exist_ok=True)
         
+        # Collect all generated images for collage
+        generated_images = []
+        captions_text = []
+        
         # Generate images for each debug sample
         for idx, sample in enumerate(debug_samples):
             # Extract conditioning
@@ -78,35 +82,95 @@ def create_visual_debug_fn(
             # Decode to image (64x64 latent -> 512x512 image via 8x VAE upsampling)
             images = decode_latents(vae, latents)
             img_tensor = images[0]  # (3, 512, 512) in [-1, 1]
-            pil_img = tensor_to_pil(img_tensor)
             
-            # Save with caption truncated for filename
+            # Save individual image to disk
+            pil_img = tensor_to_pil(img_tensor)
             safe_caption = caption[:50].replace(' ', '_').replace('/', '_')
             filename = f"sample{idx:02d}_{safe_caption}.png"
             pil_img.save(step_dir / filename)
             
-            # Log to TensorBoard (if available)
-            if tensorboard_writer is not None:
-                # Convert to [0, 255] uint8 for TensorBoard
-                img_np = (img_tensor.cpu().numpy() * 0.5 + 0.5).clip(0, 1)  # [-1,1] -> [0,1]
-                img_np = (img_np * 255).astype('uint8')  # [0,1] -> [0,255]
-                tensorboard_writer.add_image(
-                    f'visual_debug/sample{idx:02d}',
-                    img_np,
-                    global_step=step,
-                    dataformats='CHW'
-                )
-                # Add caption as text
-                tensorboard_writer.add_text(
-                    f'visual_debug/sample{idx:02d}_caption',
-                    caption[:200],
-                    global_step=step
-                )
+            # Collect for collage
+            generated_images.append(img_tensor)
+            captions_text.append(f"Sample {idx}: {caption[:80]}")
+        
+        # Create collage for TensorBoard (if available)
+        if tensorboard_writer is not None:
+            # Import create_image_collage from validate module
+            import numpy as np
+            from PIL import Image
+            
+            # Create horizontal collage
+            collage_array = create_image_collage_from_tensors(generated_images, spacing=10)
+            
+            # Save collage to disk
+            collage_img = Image.fromarray(collage_array)
+            collage_img.save(step_dir / "collage.png")
+            
+            # Log to TensorBoard
+            collage_tensor = torch.from_numpy(collage_array).permute(2, 0, 1)  # (H, W, 3) -> (3, H, W)
+            tensorboard_writer.add_image(
+                'visual_debug/collage',
+                collage_tensor,
+                global_step=step,
+                dataformats='CHW'
+            )
+            
+            # Log captions as text
+            caption_text = "\n\n".join(captions_text)
+            tensorboard_writer.add_text(
+                'visual_debug/captions',
+                caption_text,
+                global_step=step
+            )
         
         print(f"Visual debug: Generated {num_samples} images at step {step} -> {step_dir}")
         model.train()
     
     return debug_fn
+
+
+def create_image_collage_from_tensors(images, spacing=10):
+    """Create a horizontal collage from torch tensors.
+    
+    Args:
+        images: List of torch tensors (C, H, W) in [-1, 1]
+        spacing: Pixels between images
+    
+    Returns:
+        collage_array: numpy array (H, W, 3) in [0, 255] uint8
+    """
+    import numpy as np
+    from PIL import Image
+    
+    # Convert all to PIL Images
+    pil_images = []
+    for img in images:
+        # Denormalize from [-1, 1] to [0, 1]
+        img_np = (img.cpu().numpy() * 0.5 + 0.5).clip(0, 1)
+        # Convert to (H, W, C) uint8
+        img_np = (img_np.transpose(1, 2, 0) * 255).astype(np.uint8)
+        pil_img = Image.fromarray(img_np)
+        pil_images.append(pil_img)
+    
+    # Calculate collage dimensions
+    max_height = max(img.height for img in pil_images)
+    total_width = sum(img.width for img in pil_images) + spacing * (len(pil_images) - 1)
+    
+    # Create white background
+    collage = Image.new('RGB', (total_width, max_height), color=(255, 255, 255))
+    
+    # Paste images
+    x_offset = 0
+    for pil_img in pil_images:
+        # Center vertically
+        y_offset = (max_height - pil_img.height) // 2
+        collage.paste(pil_img, (x_offset, y_offset))
+        x_offset += pil_img.width + spacing
+    
+    # Convert to numpy for TensorBoard
+    collage_array = np.array(collage)  # (H, W, 3) uint8
+    
+    return collage_array
 
 
 def _load_debug_samples(shard_dir, num_samples, device):
