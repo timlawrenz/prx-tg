@@ -187,10 +187,7 @@ def main():
     # Train
     print("\nStarting training...\n")
     try:
-        trainer.train(
-            validate_fn=validate_fn,
-            interrupt_handler=interrupt_handler,
-        )
+        trainer.train(validate_fn=validate_fn)
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")
     except Exception as e:
