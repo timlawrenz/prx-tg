@@ -101,35 +101,28 @@ def _load_debug_samples(shard_dir, num_samples, device):
         samples: List of dicts with keys: dino, text_emb, text_mask, caption
     """
     from .data import ValidationDataset
-    from torch.utils.data import DataLoader
     
     # Create dataset (same as training)
     dataset = ValidationDataset(
         shard_dir=shard_dir,
         flip_prob=0.0,  # No flip for debug samples
         target_latent_size=64,  # Fixed for now (Stage 1)
-    )
-    
-    # Create dataloader to fetch samples
-    dataloader = DataLoader(
-        dataset,
         batch_size=1,
-        shuffle=True,
-        num_workers=0,  # Single threaded for simplicity
     )
     
-    # Load first N samples
+    # Load first N samples directly from iterator (yields batched dicts)
     samples = []
-    for idx, batch in enumerate(dataloader):
+    for idx, batch in enumerate(dataset):
         if idx >= num_samples:
             break
         
-        # Extract single sample from batch
+        # Extract single sample from batch (batch_size=1)
+        # collate_fn returns: dino_embedding, t5_hidden, t5_mask, captions (list), image_ids (list)
         sample = {
-            'dino': batch['dino_emb'][0].to(device),  # (1024,)
-            'text_emb': batch['text_emb'][0].to(device),  # (77, 1024)
-            'text_mask': batch['text_mask'][0].to(device),  # (77,)
-            'caption': batch['json'][0]['caption'],
+            'dino': batch['dino_embedding'][0].to(device),  # (1024,)
+            'text_emb': batch['t5_hidden'][0].to(device),  # (77, 1024)
+            'text_mask': batch['t5_mask'][0].to(device),  # (77,)
+            'caption': batch['captions'][0],
         }
         samples.append(sample)
     
