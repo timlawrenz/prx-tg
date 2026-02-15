@@ -7,7 +7,6 @@ Usage:
 """
 
 import argparse
-import signal
 import sys
 from pathlib import Path
 
@@ -17,18 +16,6 @@ from .config_loader import load_config
 from .model import NanoDiT
 from .data import get_production_dataloader
 from .train import ProductionTrainer
-
-
-class GracefulInterrupt:
-    """Handle Ctrl+C gracefully."""
-    
-    def __init__(self):
-        self.interrupted = False
-        signal.signal(signal.SIGINT, self.handle_interrupt)
-    
-    def handle_interrupt(self, signum, frame):
-        print("\n\nInterrupt received, saving checkpoint...")
-        self.interrupted = True
 
 
 def parse_args():
@@ -109,7 +96,6 @@ def print_config_summary(config):
 def main():
     """Main training function."""
     args = parse_args()
-    interrupt_handler = GracefulInterrupt()
     
     # Load config
     print(f"Loading config from: {args.config}")
@@ -189,18 +175,23 @@ def main():
     try:
         trainer.train(validate_fn=validate_fn)
     except KeyboardInterrupt:
-        print("\nTraining interrupted by user")
+        print("\n\n⚠️  Training interrupted by user (Ctrl+C)")
+        print("Saving checkpoint...")
+        trainer.save_checkpoint(
+            Path(config.checkpoint.output_dir) / 'checkpoint_interrupt.pt'
+        )
+        print(f"Checkpoint saved to: {config.checkpoint.output_dir}/checkpoint_interrupt.pt")
+        print("You can resume with: --resume checkpoints/checkpoint_interrupt.pt")
     except Exception as e:
         print(f"\nTraining failed with error: {e}")
         raise
+    else:
+        # Training completed normally
+        trainer.save_checkpoint(
+            Path(config.checkpoint.output_dir) / 'checkpoint_final.pt'
+        )
+        print("Training complete!")
     finally:
-        # Final checkpoint
-        if not interrupt_handler.interrupted:
-            trainer.save_checkpoint(
-                Path(config.checkpoint.output_dir) / 'checkpoint_final.pt'
-            )
-            print("Training complete!")
-        
         print_gpu_memory(device)
 
 
