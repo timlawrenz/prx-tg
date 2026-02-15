@@ -16,7 +16,8 @@ def create_visual_debug_fn(
     text_scale=3.0,
     dino_scale=2.0,
     num_steps=50,
-    device='cuda'
+    device='cuda',
+    tensorboard_writer=None,
 ):
     """Create visual debugging function for training loop.
     
@@ -28,6 +29,7 @@ def create_visual_debug_fn(
         dino_scale: CFG DINO scale
         num_steps: Number of sampling steps
         device: Device to run on
+        tensorboard_writer: Optional TensorBoard SummaryWriter for logging
     
     Returns:
         debug_fn: Function that takes (model, step) and generates images
@@ -82,6 +84,24 @@ def create_visual_debug_fn(
             safe_caption = caption[:50].replace(' ', '_').replace('/', '_')
             filename = f"sample{idx:02d}_{safe_caption}.png"
             pil_img.save(step_dir / filename)
+            
+            # Log to TensorBoard (if available)
+            if tensorboard_writer is not None:
+                # Convert to [0, 255] uint8 for TensorBoard
+                img_np = (img_tensor.cpu().numpy() * 0.5 + 0.5).clip(0, 1)  # [-1,1] -> [0,1]
+                img_np = (img_np * 255).astype('uint8')  # [0,1] -> [0,255]
+                tensorboard_writer.add_image(
+                    f'visual_debug/sample{idx:02d}',
+                    img_np,
+                    global_step=step,
+                    dataformats='CHW'
+                )
+                # Add caption as text
+                tensorboard_writer.add_text(
+                    f'visual_debug/sample{idx:02d}_caption',
+                    caption[:200],
+                    global_step=step
+                )
         
         print(f"Visual debug: Generated {num_samples} images at step {step} -> {step_dir}")
         model.train()

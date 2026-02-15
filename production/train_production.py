@@ -161,7 +161,8 @@ def main():
     if config.validation.visual_debug_interval > 0:
         print("Creating visual debug function...")
         from .visual_debug import create_visual_debug_fn
-        visual_debug_fn = create_visual_debug_fn(
+        # Note: TensorBoard writer will be passed from trainer after it's created
+        visual_debug_fn_factory = lambda tb_writer: create_visual_debug_fn(
             shard_dir=config.data.shard_base_dir,
             output_dir=config.validation.visual_debug_dir,
             num_samples=config.validation.visual_debug_num_samples,
@@ -169,6 +170,7 @@ def main():
             dino_scale=config.sampling.dino_scale,
             num_steps=config.sampling.num_steps,
             device=device,
+            tensorboard_writer=tb_writer,
         )
     
     # Create trainer
@@ -180,9 +182,11 @@ def main():
         device=device,
     )
     
-    # Now create actual validation function with TensorBoard writer
+    # Now create actual validation and visual debug functions with TensorBoard writer
     if config.validation.enabled:
         validate_fn = validate_fn_factory(trainer.writer)
+    if config.validation.visual_debug_interval > 0:
+        visual_debug_fn = visual_debug_fn_factory(trainer.writer)
     
     print_gpu_memory(device)
     
