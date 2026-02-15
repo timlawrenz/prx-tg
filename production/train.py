@@ -461,6 +461,9 @@ class ProductionTrainer(Trainer):
         self.velocity_warning = logging_cfg.velocity_norm_warning
         self.grad_warning = logging_cfg.grad_norm_warning
         
+        # Visual debugging interval
+        self.visual_debug_interval = config.validation.visual_debug_interval
+        
         # Gradient accumulation state
         self.accum_steps = 0
         self.accum_loss = 0.0
