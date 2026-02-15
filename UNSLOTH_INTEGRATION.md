@@ -159,3 +159,30 @@ verbose: loading caption model...
 loading Unsloth Gemma3 model from unsloth/gemma-3-27b-it-bnb-4bit...
 ✓ Unsloth Gemma3 loaded successfully
 ```
+
+## Update: Diffusers Version Fix (2026-02-15)
+
+### Issue
+Diffusers 0.31+ introduced a bug in `torchao_quantizer.py` where `logger` is not defined:
+```
+RuntimeError: Failed to import diffusers.models.autoencoders.autoencoder_kl
+NameError: name 'logger' is not defined
+```
+
+This breaks VAE loading: `--pass vae` would fail immediately.
+
+### Fix
+Pinned diffusers to `0.30.3` (last stable version before the bug).
+
+### Updated Requirements
+```
+diffusers==0.30.3  # Pinned to avoid torchao bug in 0.31+
+```
+
+### Verification
+```bash
+# Test VAE pass (should work now)
+python scripts/generate_approved_image_dataset.py --pass vae --limit 10
+```
+
+This fix is essential for the full pipeline to work correctly.
