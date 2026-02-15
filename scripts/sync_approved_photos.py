@@ -4,17 +4,22 @@
 Fetches the paginated approved photo list from:
   https://crawlr.lawrenz.com/photos.json?page=N
 
-For each item, checks for a matching raw file at `data/raw/<filename>` (no extension),
-detects its type from magic bytes, then creates/updates a symlink:
-  data/approved/<filename>.<ext> -> ../raw/<filename>
+For each item:
+1. Checks for raw file at `data/raw/<filename>` (no extension)
+2. If missing, downloads from `exportable_url` to `data/raw/<filename>`
+3. Detects file type from magic bytes
+4. Creates/updates symlink: data/approved/<filename>.<ext> -> ../raw/<filename>
 
 Notes:
-- Pruning (removing stale links) is intentionally NOT implemented in this change.
-- This script does NOT enumerate `data/raw/`; it does per-filename path lookups.
+- Automatically downloads missing files from exportable_url (CDN)
+- In dry-run mode, downloads are skipped (only reported)
+- Pruning (removing stale links) is intentionally NOT implemented
+- Does NOT enumerate `data/raw/`; uses per-filename path lookups
 
 Examples:
   python3 scripts/sync_approved_photos.py --dry-run --end-page 1 --limit 20
   python3 scripts/sync_approved_photos.py --start-page 10 --end-page 12
+  python3 scripts/sync_approved_photos.py --verbose
 """
 
 from __future__ import annotations
@@ -36,6 +41,8 @@ DEFAULT_BASE_URL = "https://crawlr.lawrenz.com/photos.json"
 class Counters:
     processed: int = 0
     missing_raw: int = 0
+    downloaded: int = 0
+    download_failed: int = 0
     unknown_type: int = 0
     symlink_created: int = 0
     symlink_updated: int = 0
@@ -81,6 +88,44 @@ def fetch_json_array(url: str, timeout_s: float, retries: int) -> list[Any]:
             time.sleep(min(60, 2**attempt))
 
     raise RuntimeError(f"Failed to fetch {url}: {last_err}")
+
+
+def download_raw_file(url: str, dest_path: str, timeout: float) -> bool:
+    """
+    Download raw file from URL to dest_path.
+    
+    Args:
+        url: Source URL to download from
+        dest_path: Destination file path
+        timeout: HTTP timeout in seconds
+    
+    Returns:
+        True on success, False on any error
+    """
+    try:
+        req = Request(url, headers={"User-Agent": "approved-photo-symlinks/1.0"})
+        with urlopen(req, timeout=timeout) as resp:
+            data = resp.read()
+        
+        with open(dest_path, 'wb') as f:
+            f.write(data)
+        
+        return True
+    except HTTPError as e:
+        print(f"warning: download failed (HTTP {e.code}): {url}", file=sys.stderr)
+        return False
+    except URLError as e:
+        print(f"warning: download failed (network error): {url} - {e.reason}", file=sys.stderr)
+        return False
+    except TimeoutError:
+        print(f"warning: download timed out: {url}", file=sys.stderr)
+        return False
+    except OSError as e:
+        print(f"warning: failed to write file {dest_path}: {e}", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"warning: unexpected error downloading {url}: {e}", file=sys.stderr)
+        return False
 
 
 def detect_extension(path: str) -> str | None:
@@ -185,21 +230,54 @@ def main(argv: list[str]) -> int:
             counters.processed += 1
             if args.progress_every and (counters.processed % args.progress_every == 0):
                 print(
-                    f"progress: processed={counters.processed} missing_raw={counters.missing_raw} "
+                    f"progress: processed={counters.processed} downloaded={counters.downloaded} "
+                    f"missing_raw={counters.missing_raw} download_failed={counters.download_failed} "
                     f"unknown_type={counters.unknown_type} created={counters.symlink_created} updated={counters.symlink_updated}",
                     file=sys.stderr,
                 )
 
             filename = None
+            exportable_url = None
             if isinstance(item, dict):
                 filename = item.get("filename")
+                exportable_url = item.get("exportable_url")
             if not filename:
                 continue
 
             raw_path = os.path.join(raw_dir, filename)
+            
+            # Download missing raw file if possible
             if not os.path.exists(raw_path):
-                counters.missing_raw += 1
-                continue
+                # Check if we have a URL to download from
+                if not exportable_url:
+                    counters.missing_raw += 1
+                    continue
+                
+                # Validate URL
+                if not isinstance(exportable_url, str) or not exportable_url.startswith("https://"):
+                    if args.verbose:
+                        print(f"warning: invalid exportable_url for {filename}: {exportable_url}", file=sys.stderr)
+                    counters.missing_raw += 1
+                    continue
+                
+                # Skip download in dry-run mode
+                if args.dry_run:
+                    if args.verbose:
+                        print(f"dry-run: would download {filename} from {exportable_url}")
+                    continue
+                
+                # Download the file
+                if args.verbose:
+                    print(f"downloading: {filename} from {exportable_url}", file=sys.stderr)
+                
+                if not download_raw_file(exportable_url, raw_path, timeout=args.timeout):
+                    counters.download_failed += 1
+                    continue
+                
+                counters.downloaded += 1
+                if args.verbose:
+                    size_kb = os.path.getsize(raw_path) / 1024
+                    print(f"downloaded: {filename} ({size_kb:.1f} KB)", file=sys.stderr)
 
             ext = detect_extension(raw_path)
             if ext is None:
@@ -235,6 +313,8 @@ def summarize_and_exit(c: Counters) -> int:
             [
                 "Summary:",
                 f"  processed:        {c.processed}",
+                f"  downloaded:       {c.downloaded}",
+                f"  download failed:  {c.download_failed}",
                 f"  missing raw:      {c.missing_raw}",
                 f"  unknown type:     {c.unknown_type}",
                 f"  symlink created:  {c.symlink_created}",

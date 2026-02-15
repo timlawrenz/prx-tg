@@ -7,23 +7,76 @@ Creates/updates an extension-correct symlinked view of the approved photo list:
 - Source of truth: `https://crawlr.lawrenz.com/photos.json?page=N` (paginate until empty)
 - Raw files: `data/raw/<filename>` (no extension)
 - Output symlinks: `data/approved/<filename>.<ext>` pointing to `../raw/<filename>`
+- **Automatic download**: If raw file is missing, downloads from `exportable_url` in JSON
 
 Pruning is **not** performed in this change (stale entries in `data/approved/` are left as-is).
+
+### Features
+
+- **Downloads missing files**: Automatically fetches raw files from CDN if not present locally
+- **Dry-run support**: Use `--dry-run` to preview actions without downloading or modifying filesystem
+- **Progress tracking**: Shows download counts, missing files, symlink operations
+- **Error handling**: Skips and continues on download failures (logs warnings)
+- **Resume-friendly**: Can be interrupted and rerun; only processes what's needed
 
 ### Usage
 
 ```bash
 python3 scripts/sync_approved_photos.py --help
 
-# Smoke test
+# Dry-run to see what would be downloaded/created
 python3 scripts/sync_approved_photos.py --dry-run --end-page 1 --limit 20
+
+# Process first 100 photos with verbose output
+python3 scripts/sync_approved_photos.py --limit 100 --verbose
 
 # Create just one symlink for quick verification
 python3 scripts/sync_approved_photos.py --stop-after-links 1 --verbose
 
+# Full sync (downloads missing files, creates all symlinks)
+python3 scripts/sync_approved_photos.py
+
 # Disable progress output
 python3 scripts/sync_approved_photos.py --progress-every 0
 ```
+
+### How It Works
+
+1. **Fetch photo list**: Paginates through `photos.json` API
+2. **Check raw file**: Looks for `data/raw/<filename>`
+3. **Download if missing**: Fetches from `exportable_url` in JSON (CDN)
+4. **Detect type**: Reads magic bytes to determine extension (jpg/png/webp/gif)
+5. **Create symlink**: `data/approved/<filename>.<ext>` → `../raw/<filename>`
+
+### Output Example
+
+```
+page 1: fetching https://crawlr.lawrenz.com/photos.json?page=1
+page 1: 14 items
+downloading: abc123xyz from https://crawlr-assets.lawrenz.com/abc123xyz
+downloaded: abc123xyz (847.3 KB)
+downloading: def456uvw from https://crawlr-assets.lawrenz.com/def456uvw
+downloaded: def456uvw (1203.5 KB)
+progress: processed=1000 downloaded=45 missing_raw=2 download_failed=1 unknown_type=0 created=997 updated=0
+
+Summary:
+  processed:        2500
+  downloaded:       118
+  download failed:  3
+  missing raw:      5
+  unknown type:     0
+  symlink created:  2492
+  symlink updated:  0
+  symlink unchanged:0
+```
+
+### Notes
+
+- **Downloads are automatic**: Missing files are fetched from CDN without user confirmation
+- **Dry-run skips downloads**: Use `--dry-run` to preview without downloading
+- **Failed downloads are skipped**: Script continues on errors, logs warnings to stderr
+- **Resume-friendly**: Rerun anytime; only downloads missing files, updates changed symlinks
+- **No authentication**: CDN URLs are public (exportable_url)
 
 ## generate_approved_image_dataset.py
 
