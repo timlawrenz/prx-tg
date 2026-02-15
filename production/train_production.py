@@ -252,6 +252,7 @@ def main():
         dataloader=dataloader,
         config=config,
         device=device,
+        experiment_name=experiment_dir.name,  # Pass experiment name for TensorBoard
     )
     
     # Now create actual validation and visual debug functions with TensorBoard writer
