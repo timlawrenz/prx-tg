@@ -341,7 +341,170 @@ The script writes progress incrementally to `output.jsonl.tmp`:
 - **VAE latents are encoded at original resolution** (resizing happens in Stage 3 dataloader for training)
 - **Aspect buckets use 7 predefined resolutions** at 1024px equivalent area (all dims divisible by 64)
 
-<<<<<<< HEAD
+---
+
+## create_webdataset_shards.py
+
+Creates WebDataset tar shards from Stage 2 embeddings for efficient sequential streaming during training.
+
+**Purpose:** Package "ready" samples (caption + attention mask + DINOv3/VAE/T5 .npy files) into tar files following WebDataset naming conventions, grouped by aspect bucket.
+
+### Output Structure
+
+```
+data/shards/
+  bucket_1024x1024/
+    shard-000000.tar  # ~1000 samples, ~300MB
+    shard-000001.tar
+    ...
+  bucket_832x1216/
+    shard-000000.tar
+    ...
+```
+
+Each tar contains WebDataset-formatted files:
+```
+shard-000000.tar:
+  000000.json          # {"caption": "...", "t5_attention_mask": [...]}
+  000000.dinov3.npy    # 1024 float32 values
+  000000.vae.npy       # 16×H/8×W/8 float16 latents
+  000000.t5.npy        # 77×1024 float16 hidden states
+  000001.json
+  000001.dinov3.npy
+  ...
+```
+
+### Usage
+
+```bash
+# Create shards from Stage 2 data (default: 1000 samples per shard)
+python3 scripts/create_webdataset_shards.py
+
+# Custom shard size and output location
+python3 scripts/create_webdataset_shards.py \
+  --shard-size 500 \
+  --output-dir /path/to/shards
+
+# Only shard specific aspect buckets
+python3 scripts/create_webdataset_shards.py \
+  --bucket 1024x1024 \
+  --bucket 832x1216
+
+# Shuffle samples before sharding (loads all into RAM)
+python3 scripts/create_webdataset_shards.py --shuffle --seed 42
+
+# Dry-run to see what would be created
+python3 scripts/create_webdataset_shards.py --dry-run
+
+# Limit to first N ready samples (testing)
+python3 scripts/create_webdataset_shards.py --limit 100
+```
+
+### How It Works
+
+1. **Scans JSONL**: Reads `data/derived/approved_image_dataset.jsonl`
+2. **Validates completeness**: Checks each record has:
+   - Valid `caption` string
+   - Valid `t5_attention_mask` (77 integers, 0s and 1s)
+   - Existing `dinov3/<image_id>.npy` file
+   - Existing `vae_latents/<image_id>.npy` file
+   - Existing `t5_hidden/<image_id>.npy` file
+   - Valid `aspect_bucket` string
+3. **Groups by bucket**: Separates samples by aspect ratio
+4. **Creates shards**: Writes tar files with WebDataset naming
+   - Default: 1000 samples per shard (~300MB)
+   - Each sample gets sequential ID within shard (000000, 000001, etc.)
+   - JSON metadata + three .npy files per sample
+
+### Output Example
+
+```
+page 1: fetching JSONL...
+progress: scanned_total=5000 ready=4850 skipped_incomplete=150
+progress: scanned_total=10000 ready=9730 skipped_incomplete=270
+
+ready_samples=29450 buckets=7 shard_size=1000 dry_run=False output_dir=data/shards
+
+bucket 1024x1024: samples=12340
+  writing shard-000000.tar (1000 samples)
+  writing shard-000001.tar (1000 samples)
+  ...
+  writing shard-000012.tar (340 samples)
+  
+bucket 832x1216: samples=8920
+  writing shard-000000.tar (1000 samples)
+  ...
+
+done: total_records=31000 ready_records=29450 skipped_incomplete=1550 
+      written_samples=29450 written_shards=30
+```
+
+### CLI Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--input-jsonl` | Stage 2 JSONL path | `data/derived/approved_image_dataset.jsonl` |
+| `--derived-dir` | Base dir with .npy subdirs | `data/derived` |
+| `--output-dir` | Output directory for shards | `data/shards` |
+| `--shard-size` | Max samples per shard | `1000` |
+| `--bucket` | Filter to specific bucket(s) | All buckets |
+| `--shuffle` | Shuffle before sharding | `False` |
+| `--seed` | RNG seed for shuffle | `1337` |
+| `--limit` | Max samples to write | `0` (all) |
+| `--overwrite` | Overwrite existing shards | `False` |
+| `--dry-run` | Report without writing | `False` |
+| `--progress-every` | Progress frequency | `500` |
+
+### What Gets Skipped
+
+Records are skipped if:
+- Missing or invalid `image_id`
+- Missing or invalid `aspect_bucket`
+- Missing or empty `caption`
+- Invalid `t5_attention_mask` (not 77 ints or contains non-0/1 values)
+- Any of the three .npy files don't exist
+- Bucket filtered out by `--bucket` flag
+
+### Storage Requirements
+
+| Component | Size per Sample | Total (30k samples) |
+|---|---|---|
+| JSON metadata | ~200 bytes | ~6MB |
+| DINOv3 .npy | ~4KB | ~120MB |
+| VAE .npy | ~131KB | ~4GB |
+| T5 .npy | ~158KB | ~5GB |
+| **Per shard (1000)** | **~293MB** | - |
+| **Total shards** | - | **~9GB** |
+
+Note: Tar overhead is minimal (~1%). Shards are uncompressed for fast streaming.
+
+### WebDataset Integration
+
+Shards are compatible with the [WebDataset](https://github.com/webdataset/webdataset) library:
+
+```python
+import webdataset as wds
+
+dataset = wds.WebDataset("data/shards/bucket_1024x1024/shard-{000000..000012}.tar")
+dataset = dataset.decode()  # Automatically decodes .npy files
+
+for sample in dataset:
+    caption = sample["json"]["caption"]
+    dinov3 = sample["dinov3.npy"]    # numpy array (1024,)
+    vae = sample["vae.npy"]           # numpy array (16, H/8, W/8)
+    t5 = sample["t5.npy"]             # numpy array (77, 1024)
+    # ... training code
+```
+
+### Notes
+
+- **No WebDataset dependency required** - script uses Python's built-in `tarfile` module
+- **Preserves .npy files verbatim** - no re-encoding, float16/float32 precision maintained
+- **Default shard size (1000)** balances file handle efficiency with shuffling granularity (~300MB per tar)
+- **Bucket grouping** ensures training dataloader can stream one bucket's shards sequentially
+- **Progress is cheap** - scanning JSONL + filesystem checks for 60k samples takes <10 seconds
+- **Storage:** ~9GB for 30k images (metadata + embeddings packed into tars)
+
 ---
 
 ## prune_dataset.py
