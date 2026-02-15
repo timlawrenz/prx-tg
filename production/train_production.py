@@ -166,7 +166,6 @@ def main():
         validate_fn = create_validation_fn(
             shard_dir=config.data.shard_base_dir,
             output_dir=config.validation.output_dir,
-            vae_path=config.paths.vae_path,
         )
     
     # Create trainer
