@@ -48,15 +48,17 @@ training:
   precision: "bfloat16"              # "bfloat16" or "float32"
 
 data:
-  shard_base_dir: "data/shards"      # Base directory for WebDataset shards
+  shard_base_dir: "data/shards/3000"      # Base directory for WebDataset shards
   
   # Aspect ratio buckets to read (each bucket is a subdirectory with tar files)
   buckets:
-    - "1024x1024"
-    - "832x1216"
-    - "1216x832"
-    - "768x1280"
-    - "1280x768"
+    - "bucket_1024x1024"
+    - "bucket_1216x832"
+    - "bucket_1280x768"
+    - "bucket_1344x704"
+    - "bucket_704x1344"
+    - "bucket_768x1280"
+    - "bucket_832x1216"
   
   # Augmentation (smart augmentation from the-plan.md)
   horizontal_flip_prob: 0.5          # Flip probability
