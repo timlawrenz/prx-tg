@@ -475,72 +475,76 @@ def needs_field(record: dict, field_name: str) -> bool:
 
 
 def load_caption_pipeline(device, model_id: str):
-    import torch
-    from transformers import pipeline
-
-    dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
-    dev = 0 if device.type == "cuda" else -1
-    return pipeline("image-text-to-text", model=model_id, device=dev, torch_dtype=dtype)
+    """
+    Return a simple dict with Ollama configuration.
+    No longer loads HuggingFace transformers.
+    
+    Args:
+        device: Ignored (Ollama manages its own resources)
+        model_id: Ignored (we use gemma3:27b from Ollama)
+    
+    Returns:
+        dict with ollama_url and model_name
+    """
+    return {
+        "ollama_url": "http://localhost:11434/api/generate",
+        "model_name": "gemma3:27b"
+    }
 
 
 def generate_captions(caption_pipe, images: list, max_new_tokens: int) -> list[str]:
-    # Use the tokenizer's chat template to construct the correct prompt with image tokens.
-    # This avoids guessing the correct <image> token string.
+    """
+    Generate captions using Ollama API.
     
-    chat = [
-        {"role": "user", "content": [
-            {"type": "image"},
-            {"type": "text", "text": CAPTION_PROMPT}
-        ]}
-    ]
+    Args:
+        caption_pipe: dict with ollama_url and model_name
+        images: list of PIL Images
+        max_new_tokens: max tokens to generate
     
-    # Render the prompt to a string. 
-    # Note: apply_chat_template handles the insertion of the correct image token.
-    try:
-        prompt = caption_pipe.tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
-    except Exception as e:
-        # Fallback if tokenizer doesn't support image type in chat template (older versions)
-        # But Gemma 3 should support it.
-        eprint(f"warning: apply_chat_template failed ({e}), falling back to manual <image> token.")
-        prompt = "<image>\n" + CAPTION_PROMPT
-
-    # The pipeline expects a generator of dicts for batching
-    def input_generator():
-        for img in images:
-            yield {"images": img, "text": prompt}
-
-    outputs = caption_pipe(
-        input_generator(),
-        max_new_tokens=max_new_tokens,
-        batch_size=len(images)
-    )
+    Returns:
+        list of caption strings
+    """
+    import base64
+    from io import BytesIO
+    import requests
+    
+    url = caption_pipe["ollama_url"]
+    model = caption_pipe["model_name"]
     
     results = []
-    for out in outputs:
-        if isinstance(out, list) and out:
-            item = out[0]
-            if isinstance(item, dict) and "generated_text" in item:
-                text = item["generated_text"]
-            else:
-                text = str(item)
-        else:
-            text = str(out)
-
-        # Strip the input prompt if it was echoed in the output
-        # With chat template, the prompt is complex, so we might need a better way to strip.
-        # Gemma 3 usually returns just the new text? Or echoes?
-        # If it echoes, it will start with the prompt.
+    
+    for img in images:
+        # Convert PIL Image to base64
+        buffer = BytesIO()
+        img.save(buffer, format='JPEG')
+        image_b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
         
-        # Simple heuristic: remove the prompt string if it matches
-        if text.startswith(prompt):
-            text = text[len(prompt):].lstrip()
+        # Prepare Ollama request
+        payload = {
+            "model": model,
+            "prompt": CAPTION_PROMPT,
+            "images": [image_b64],
+            "stream": False,
+            "options": {
+                "temperature": 0.7,
+                "num_predict": max_new_tokens
+            }
+        }
+        
+        try:
+            response = requests.post(url, json=payload, timeout=120)
+            response.raise_for_status()
+            result = response.json()
+            caption = result.get('response', '')
             
-        # Also strip typical chat headers if they remain (e.g. "model\n")
-        if text.startswith("model\n"):
-            text = text[6:].lstrip()
-
-        results.append(ensure_single_paragraph(text))
-
+            # Clean up the caption
+            caption = ensure_single_paragraph(caption)
+            results.append(caption)
+            
+        except Exception as e:
+            eprint(f"warning: Ollama caption generation failed: {e}")
+            results.append("")  # Empty caption on failure
+    
     return results
 
 
