@@ -1,25 +1,8 @@
 # NOTE: On ROCm/CUDA systems, install torch/torchvision/torchaudio using
 # your platform-specific instructions, then install the remaining deps here.
 
-# Core dependencies
-transformers==4.57.6  # Unsloth requires <=4.57.6
+transformers==4.50.0
 pillow==10.4.0
-accelerate>=1.4.0  # trl 0.24.0 requires >=1.4.0, unsloth requires >=0.34.1
+accelerate==0.34.2
 safetensors==0.4.5
-diffusers==0.30.3  # CRITICAL: 0.36.0+ has logger bug in torchao_quantizer.py when importing AutoencoderKL
-
-# Unsloth for optimized Gemma3 vision inference
-unsloth==2026.2.1
-unsloth_zoo
-
-# Unsloth dependencies
-datasets==4.3.0  # Unsloth requires <=4.3.0 (4.5.0 causes recursion errors)
-trl==0.24.0  # Unsloth requires <=0.24.0
-tyro
-wheel>=0.42.0
-sentencepiece>=0.2.0
-protobuf
-msgspec
-peft
-hf_transfer
-bitsandbytes
+diffusers==0.30.3  # Pinned to avoid torchao logger bug in 0.36.0+
