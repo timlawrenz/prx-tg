@@ -209,12 +209,15 @@ def main():
         depth=config.model.depth,
         num_heads=config.model.num_heads,
         mlp_ratio=config.model.mlp_ratio,
+        use_gradient_checkpointing=config.training.gradient_checkpointing,
     ).to(device)
     
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total parameters: {total_params/1e6:.1f}M")
     print(f"Trainable parameters: {trainable_params/1e6:.1f}M")
+    if config.training.gradient_checkpointing:
+        print(f"Gradient checkpointing: ENABLED (trades ~20-30% speed for 3-4x memory savings)")
     
     # Create validation function if enabled
     validate_fn = None

@@ -41,7 +41,7 @@ training:
   logit_normal_scale: 1.0            # Std of logit-normal distribution
   
   # Memory optimization
-  gradient_checkpointing: false      # Enable if OOM (trades speed for memory)
+  gradient_checkpointing: true       # Enable to trade 20-30% speed for 3-4x memory savings
   
   # Precision
   mixed_precision: true              # Use bfloat16 (required for flow matching)
