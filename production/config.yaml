@@ -12,9 +12,9 @@ model:
 
 training:
   total_steps: 50000           # Total training steps
-  warmup_steps: 5000           # Linear LR warmup (10% of total)
-  batch_size: 24               # Per-GPU batch size
-  grad_accumulation_steps: 11  # Effective batch
+  warmup_steps: 7500           # Linear LR warmup (10% of total)
+  batch_size: 16               # Per-GPU batch size
+  grad_accumulation_steps: 16  # Effective batch
   
   optimizer:
     type: "AdamW"
@@ -48,7 +48,7 @@ training:
   precision: "bfloat16"              # "bfloat16" or "float32"
 
 data:
-  shard_base_dir: "data/shards/3000"      # Base directory for WebDataset shards
+  shard_base_dir: "data/shards/4000"      # Base directory for WebDataset shards
   
   # Aspect ratio buckets to read (each bucket is a subdirectory with tar files)
   buckets:
