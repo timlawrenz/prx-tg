@@ -9,17 +9,6 @@ import sys
 import time
 from pathlib import Path
 
-
-# Set environment variables BEFORE any imports that might use them
-# os.environ['UNSLOTH_SKIP_TORCHVISION_CHECK'] = '1'
-# os.environ['HF_HOME'] = os.environ.get('HF_HOME', os.path.expanduser('~/.cache/huggingface'))
-
-# Import unsloth FIRST for optimizations (must be before transformers)
-try:
-    import unsloth
-except ImportError:
-    unsloth = None  # Unsloth not available, will use standard transformers
-
 CAPTION_PROMPT = (
     "Generate a single, dense paragraph describing this image for a text-to-image training dataset. "
     "Write in a strictly dry, objective, and descriptive tone. "
@@ -33,8 +22,7 @@ CAPTION_PROMPT = (
 )
 
 DINO_MODEL_ID = "facebook/dinov3-vitl16-pretrain-lvd1689m"
-# Using Unsloth's optimized Gemma3 for 1.6x faster captioning with 60% less VRAM
-GEMMA_MODEL_ID = "unsloth/gemma-3-27b-it-bnb-4bit"  # Unsloth dynamic 4-bit quantization
+GEMMA_MODEL_ID = "google/gemma-3-27b-it"
 T5_MODEL_ID = "t5-large"
 FLUX_VAE_MODEL_ID = "black-forest-labs/FLUX.1-dev"
 SDXL_VAE_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"  # Lighter alternative
@@ -286,9 +274,7 @@ def load_flux_vae(device, compile_encoder: bool = True):
     try:
         from diffusers import AutoencoderKL
         import torch
-        import logging
-        logger = logging.getLogger(__name__)
-                
+        
         eprint(f"loading Flux VAE from {FLUX_VAE_MODEL_ID}...")
         # Load VAE component only (subfolder="vae")
         # Use bfloat16 for faster computation on modern GPUs (RTX 3090+)
@@ -350,9 +336,8 @@ def encode_vae_latent(image_path: Path, vae_encoder) -> np.ndarray | None:
             latent_dist = vae_encoder.encode(tensor)
             latent = latent_dist.latent_dist.sample()
         
-        # Convert to float16 before numpy conversion (bfloat16 -> numpy can fail)
-        latent_fp16 = latent.squeeze(0).to(torch.float16).cpu()
-        result = latent_fp16.numpy().astype(np.float16)
+        # Convert to numpy float16 for storage (half precision saves disk space)
+        result = latent.squeeze(0).cpu().numpy().astype(np.float16)
         
         # Verify shape (16, H//8, W//8)
         expected_shape = (16, h // 8, w // 8)
@@ -362,10 +347,7 @@ def encode_vae_latent(image_path: Path, vae_encoder) -> np.ndarray | None:
         return result
         
     except Exception as e:
-        import traceback
-        eprint(f"warning: VAE encoding failed for {image_path}:")
-        eprint(f"  Error: {type(e).__name__}: {e}")
-        eprint(f"  Traceback: {traceback.format_exc()}")
+        eprint(f"warning: VAE encoding failed for {image_path}: {e}")
         return None
 
 
@@ -375,7 +357,7 @@ def load_t5_encoder():
     import torch
     
     eprint(f"loading T5-Large encoder from {T5_MODEL_ID}...")
-    model = T5EncoderModel.from_pretrained(T5_MODEL_ID, dtype=torch.float16)
+    model = T5EncoderModel.from_pretrained(T5_MODEL_ID, torch_dtype=torch.float16)
     model.eval()
     return model
 
@@ -472,55 +454,18 @@ def needs_field(record: dict, field_name: str) -> bool:
 
 
 def load_caption_pipeline(device, model_id: str):
-    """Load Unsloth-optimized Gemma3 model for image captioning.
-    
-    Uses Unsloth's FastVisionModel for 1.6x faster inference with 60% less VRAM.
-    Unsloth handles float16 stability fixes automatically for RTX 4090/ROCm.
-    """
     import torch
-    from unsloth import FastVisionModel
-    
-    # Determine dtype based on device
-    # Unsloth handles float16 stability internally, so we can use bfloat16 safely
+    from transformers import pipeline
+
     dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
-    
-    eprint(f"loading Unsloth Gemma3 model from {model_id}...")
-    
-    # Load model with Unsloth optimizations
-    # load_in_4bit is automatically handled if model_id contains "bnb-4bit"
-    model, tokenizer = FastVisionModel.from_pretrained(
-        model_id,
-        dtype=dtype,
-        device_map={"": device.index if device.type == "cuda" and device.index is not None else device},
-    )
-    
-    # Enable inference mode
-    FastVisionModel.for_inference(model)
-    
-    eprint(f"✓ Unsloth Gemma3 loaded successfully")
-    
-    return {"model": model, "tokenizer": tokenizer, "device": device}
+    dev = 0 if device.type == "cuda" else -1
+    return pipeline("image-text-to-text", model=model_id, device=dev, torch_dtype=dtype)
 
 
 def generate_captions(caption_pipe, images: list, max_new_tokens: int) -> list[str]:
-    """Generate captions using Unsloth-optimized Gemma3 model.
+    # Use the tokenizer's chat template to construct the correct prompt with image tokens.
+    # This avoids guessing the correct <image> token string.
     
-    Args:
-        caption_pipe: dict with 'model', 'tokenizer', 'device' keys
-        images: list of PIL Image objects
-        max_new_tokens: maximum tokens to generate
-    
-    Returns:
-        list of caption strings
-    """
-    import torch
-    from PIL import Image
-    
-    model = caption_pipe["model"]
-    tokenizer = caption_pipe["tokenizer"]
-    device = caption_pipe["device"]
-    
-    # Construct chat template for each image
     chat = [
         {"role": "user", "content": [
             {"type": "image"},
@@ -528,135 +473,54 @@ def generate_captions(caption_pipe, images: list, max_new_tokens: int) -> list[s
         ]}
     ]
     
-    # Render the prompt using tokenizer's chat template
+    # Render the prompt to a string. 
+    # Note: apply_chat_template handles the insertion of the correct image token.
     try:
-        prompt = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+        prompt = caption_pipe.tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
     except Exception as e:
-        # Fallback for older tokenizer versions
-        eprint(f"warning: apply_chat_template failed ({e}), using manual image token.")
+        # Fallback if tokenizer doesn't support image type in chat template (older versions)
+        # But Gemma 3 should support it.
+        eprint(f"warning: apply_chat_template failed ({e}), falling back to manual <image> token.")
         prompt = "<image>\n" + CAPTION_PROMPT
+
+    # The pipeline expects a generator of dicts for batching
+    def input_generator():
+        for img in images:
+            yield {"images": img, "text": prompt}
+
+    outputs = caption_pipe(
+        input_generator(),
+        max_new_tokens=max_new_tokens,
+        batch_size=len(images)
+    )
     
     results = []
-    
-    # Process images in batch
-    # Note: For vision models, batch size > 1 can be unstable. Process individually if issues occur.
-    if len(images) == 1:
-        # Single image - straightforward processing
-        img = images[0]
-        inputs = tokenizer(
-            images=img,
-            text=prompt,
-            return_tensors="pt"
-        ).to(device)
+    for out in outputs:
+        if isinstance(out, list) and out:
+            item = out[0]
+            if isinstance(item, dict) and "generated_text" in item:
+                text = item["generated_text"]
+            else:
+                text = str(item)
+        else:
+            text = str(out)
+
+        # Strip the input prompt if it was echoed in the output
+        # With chat template, the prompt is complex, so we might need a better way to strip.
+        # Gemma 3 usually returns just the new text? Or echoes?
+        # If it echoes, it will start with the prompt.
         
-        with torch.inference_mode():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                temperature=1.0,
-                top_p=1.0,
-            )
-        
-        generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        text = _clean_caption_output(generated_text, prompt)
+        # Simple heuristic: remove the prompt string if it matches
+        if text.startswith(prompt):
+            text = text[len(prompt):].lstrip()
+            
+        # Also strip typical chat headers if they remain (e.g. "model\n")
+        if text.startswith("model\n"):
+            text = text[6:].lstrip()
+
         results.append(ensure_single_paragraph(text))
-    
-    else:
-        # Multiple images - try batch processing first, fallback to individual on error
-        try:
-            # Prepare batch inputs
-            # Most vision-language models expect list of images with repeated text prompts
-            inputs = tokenizer(
-                images=images,
-                text=[prompt] * len(images),
-                return_tensors="pt",
-                padding=True
-            ).to(device)
-            
-            with torch.inference_mode():
-                outputs = model.generate(
-                    **inputs,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    temperature=1.0,
-                    top_p=1.0,
-                )
-            
-            # Decode each output
-            for i in range(len(images)):
-                generated_text = tokenizer.decode(outputs[i], skip_special_tokens=True)
-                text = _clean_caption_output(generated_text, prompt)
-                results.append(ensure_single_paragraph(text))
-                
-        except Exception as e:
-            eprint(f"warning: batch processing failed ({e}), falling back to individual processing")
-            # Fallback: process one at a time
-            for img in images:
-                inputs = tokenizer(
-                    images=img,
-                    text=prompt,
-                    return_tensors="pt"
-                ).to(device)
-                
-                with torch.inference_mode():
-                    outputs = model.generate(
-                        **inputs,
-                        max_new_tokens=max_new_tokens,
-                        do_sample=False,
-                        temperature=1.0,
-                        top_p=1.0,
-                    )
-                
-                generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-                text = _clean_caption_output(generated_text, prompt)
-                results.append(ensure_single_paragraph(text))
-    
+
     return results
-
-
-def _clean_caption_output(generated_text: str, prompt: str) -> str:
-    """Clean up generated caption text by removing prompts and chat markers.
-    
-    Args:
-        generated_text: Raw output from model
-        prompt: The input prompt that may be echoed
-    
-    Returns:
-        Cleaned caption text
-    """
-    text = generated_text
-    
-    # Handle various chat template formats
-    # Format 1: "user [prompt] model [response]" (simple role markers)
-    if " model " in text:
-        parts = text.split(" model ", 1)
-        if len(parts) > 1:
-            text = parts[1].strip()
-    
-    # Format 2: "<start_of_turn>user\n...<start_of_turn>model\n[response]" (Gemma format)
-    elif "<start_of_turn>model" in text:
-        parts = text.split("<start_of_turn>model")
-        if len(parts) > 1:
-            text = parts[-1].strip()
-    
-    # Format 3: Just remove the prompt if it's at the start
-    elif text.startswith("user ") and prompt in text:
-        text = text.replace("user " + prompt, "").strip()
-        if text.startswith("model "):
-            text = text[6:].strip()
-    
-    # Clean up any remaining chat markers
-    text = text.replace("<start_of_turn>", "").replace("<end_of_turn>", "").strip()
-    text = text.replace("user ", "", 1).replace("model ", "", 1).strip()
-    
-    # Remove common preambles if present
-    for preamble in ["The image shows", "This image shows", "The image depicts", "This image depicts"]:
-        if text.startswith(preamble):
-            text = text[len(preamble):].lstrip().lstrip(":.,").lstrip()
-            break
-    
-    return text
 
 
 def needs_dinov3_extraction(record: dict, dinov3_dir: Path) -> bool:
