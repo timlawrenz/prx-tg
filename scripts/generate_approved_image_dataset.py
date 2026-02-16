@@ -362,7 +362,10 @@ def encode_vae_latent(image_path: Path, vae_encoder) -> np.ndarray | None:
         return result
         
     except Exception as e:
-        eprint(f"warning: VAE encoding failed for {image_path}: {e}")
+        import traceback
+        eprint(f"warning: VAE encoding failed for {image_path}:")
+        eprint(f"  Error: {type(e).__name__}: {e}")
+        eprint(f"  Traceback: {traceback.format_exc()}")
         return None
 
 
