@@ -31,6 +31,13 @@ tensorboard/
 validation/step*/
 validation/*.png
 validation/*.jpg
+validation_outputs/step*/
+validation_outputs/*.png
+validation_outputs/*.jpg
+visual_debug/  # Generated images from training
+experiments/*/  # Experiment tracking directories (config snapshots)
+!experiments/README.md  # But keep the README
+*.csv  # Tuning results
 
 # OS files
 .DS_Store
@@ -47,3 +54,6 @@ Thumbs.db
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
+
+# Unsloth compiled cache
+unsloth_compiled_cache/

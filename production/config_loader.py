@@ -108,6 +108,10 @@ class ValidationConfig:
     run_reconstruction: bool = True
     run_dino_swap: bool = True
     run_text_manip: bool = True
+    
+    visual_debug_interval: int = 1000
+    visual_debug_num_samples: int = 4
+    visual_debug_dir: str = "visual_debug"
 
 
 @dataclass

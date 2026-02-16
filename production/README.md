@@ -5,6 +5,9 @@ Production-scale training for the dual-conditioned DiT model.
 ## Quick Start
 
 ```bash
+# Install dependencies
+pip install -r production/requirements.txt
+
 # Train with default config
 python -m production.train_production
 
@@ -13,7 +16,22 @@ python -m production.train_production --config my_config.yaml
 
 # Resume from checkpoint
 python -m production.train_production --resume checkpoints/checkpoint_step010000.pt
+
+# Monitor with TensorBoard
+tensorboard --logdir checkpoints/tensorboard
 ```
+
+## Monitoring
+
+**TensorBoard**: Automatically logs to `checkpoints/tensorboard/`
+- `train/loss`: Flow matching loss
+- `train/grad_norm`: Gradient norm (watch for explosions)
+- `train/learning_rate`: Current LR (warmup + cosine decay)
+- `monitor/velocity_norm`: Predicted velocity magnitude
+
+**JSONL Logs**: Raw metrics in `checkpoints/training_log.jsonl`
+
+**Validation Outputs**: Images and metrics in `validation_outputs/step*/`
 
 ## Configuration
 

@@ -236,22 +236,19 @@ def get_production_dataloader(config, device='cuda'):
     """
     from .config_loader import Config
     
-    # For now, use single bucket validation dataset
-    # TODO Stage 3: implement multi-bucket sampling
+    # For now, use all buckets found in shard_base_dir
+    # TODO Stage 3: implement bucket-weighted sampling and smart batching
     data_cfg = config.data
     training_cfg = config.training
     
-    # Use first bucket for initial testing
-    if data_cfg.buckets:
-        first_bucket = data_cfg.buckets[0]
-        shard_dir = f"{data_cfg.shard_base_dir}/{first_bucket}"
-    else:
-        shard_dir = data_cfg.shard_base_dir
+    # Pass base directory - ValidationDataset will glob for bucket_*/shard-*.tar
+    shard_dir = data_cfg.shard_base_dir
     
-    print(f"  Shard dir: {shard_dir}")
+    print(f"  Shard base dir: {shard_dir}")
+    print(f"  Will search for: {shard_dir}/bucket_*/shard-*.tar")
     print(f"  Batch size: {training_cfg.batch_size}")
     print(f"  Flip prob: {data_cfg.horizontal_flip_prob}")
-    print(f"  TODO: Multi-bucket sampling (Stage 3)")
+    print(f"  TODO Stage 3: Bucket-aware batching (uniform resolution per batch)")
     
     dataset = ValidationDataset(
         shard_dir=shard_dir,
