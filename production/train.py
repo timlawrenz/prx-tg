@@ -304,7 +304,7 @@ class Trainer:
         
         if is_accumulation_step:
             # Gradient clipping
-            grad_norm = clip_grad_norm_(self.model.parameters(), self.grad_clip)
+            grad_norm = clip_grad_norm_(self.model.parameters(), self.grad_clip).item()
             
             # Apply LR to optimizer
             for param_group in self.optimizer.param_groups:
