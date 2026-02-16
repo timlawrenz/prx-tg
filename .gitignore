@@ -54,6 +54,3 @@ Thumbs.db
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
-
-# Unsloth compiled cache
-unsloth_compiled_cache/
