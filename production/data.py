@@ -10,6 +10,42 @@ import numpy as np
 import webdataset as wds
 
 
+# Flux VAE latent normalization (computed from dataset statistics)
+# Run scripts/calculate_latent_stats.py to compute these values
+# Usage: normalize before training, denormalize before VAE decoding
+FLUX_LATENT_MEAN = None  # Set after running calculate_latent_stats.py
+FLUX_LATENT_STD = None   # Set after running calculate_latent_stats.py
+USE_LATENT_NORMALIZATION = False  # Enable after computing stats
+
+
+def normalize_vae_latent(latent):
+    """Normalize VAE latent to zero mean, unit variance.
+    
+    Args:
+        latent: torch.Tensor, VAE latent
+    
+    Returns:
+        normalized: torch.Tensor, normalized latent
+    """
+    if not USE_LATENT_NORMALIZATION or FLUX_LATENT_MEAN is None:
+        return latent
+    return (latent - FLUX_LATENT_MEAN) / FLUX_LATENT_STD
+
+
+def denormalize_vae_latent(latent):
+    """Denormalize VAE latent back to original scale.
+    
+    Args:
+        latent: torch.Tensor, normalized latent
+    
+    Returns:
+        denormalized: torch.Tensor, original scale latent
+    """
+    if not USE_LATENT_NORMALIZATION or FLUX_LATENT_MEAN is None:
+        return latent
+    return latent * FLUX_LATENT_STD + FLUX_LATENT_MEAN
+
+
 def swap_left_right(caption):
     """Swap 'left' and 'right' in caption for horizontal flip augmentation."""
     # Temporary placeholder to avoid double-swapping
@@ -111,6 +147,9 @@ class ValidationDataset:
         
         # Resize VAE latent to target size
         vae_latent = resize_vae_latent(vae_latent, self.target_latent_size)
+        
+        # Normalize VAE latent (if enabled)
+        vae_latent = normalize_vae_latent(vae_latent)
         
         # Convert to tensors
         return {
