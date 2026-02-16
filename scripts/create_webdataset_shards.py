@@ -34,7 +34,10 @@ def eprint(*args, **kwargs):
 
 
 def is_mask_ok(mask) -> bool:
-    if not isinstance(mask, list) or len(mask) != 77:
+    if not isinstance(mask, list):
+        return False
+    # Accept both 77-token (old) and 512-token (new) masks
+    if len(mask) not in (77, 512):
         return False
     return all(v in (0, 1) for v in mask)
 
