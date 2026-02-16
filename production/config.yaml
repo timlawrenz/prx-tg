@@ -13,8 +13,8 @@ model:
 training:
   total_steps: 50000           # Total training steps
   warmup_steps: 5000           # Linear LR warmup (10% of total)
-  batch_size: 8                # Per-GPU batch size
-  grad_accumulation_steps: 32  # Effective batch = 8×32 = 256
+  batch_size: 24               # Per-GPU batch size
+  grad_accumulation_steps: 11  # Effective batch
   
   optimizer:
     type: "AdamW"
@@ -48,15 +48,17 @@ training:
   precision: "bfloat16"              # "bfloat16" or "float32"
 
 data:
-  shard_base_dir: "data/shards"      # Base directory for WebDataset shards
+  shard_base_dir: "data/shards/3000"      # Base directory for WebDataset shards
   
   # Aspect ratio buckets to read (each bucket is a subdirectory with tar files)
   buckets:
-    - "1024x1024"
-    - "832x1216"
-    - "1216x832"
-    - "768x1280"
-    - "1280x768"
+    - "bucket_1024x1024"
+    - "bucket_1216x832"
+    - "bucket_1280x768"
+    - "bucket_1344x704"
+    - "bucket_704x1344"
+    - "bucket_768x1280"
+    - "bucket_832x1216"
   
   # Augmentation (smart augmentation from the-plan.md)
   horizontal_flip_prob: 0.5          # Flip probability
@@ -74,7 +76,7 @@ sampling:
 
 validation:
   enabled: true                      # Enable validation runs
-  interval_steps: 5000               # Run validation every N steps
+  interval_steps: 5000               # Run validation every N steps (full suite)
   num_samples: 100                   # Number of samples to validate
   output_dir: "validation_outputs"   # Validation output directory
   
@@ -82,6 +84,11 @@ validation:
   run_reconstruction: true           # Test reconstruction LPIPS
   run_dino_swap: true                # Test DINO swap pairs
   run_text_manip: true               # Test text manipulation
+  
+  # Visual debugging (quick image generation during training)
+  visual_debug_interval: 1000        # Generate sample images every N steps (0 = disabled)
+  visual_debug_num_samples: 4        # Number of samples per visual debug checkpoint
+  visual_debug_dir: "visual_debug"   # Output directory for visual debugging images
 
 checkpoint:
   save_every: 5000                   # Save checkpoint every N steps

@@ -7,9 +7,12 @@ Usage:
 """
 
 import argparse
-import signal
 import sys
 from pathlib import Path
+from datetime import datetime
+import shutil
+import json
+import subprocess
 
 import torch
 
@@ -17,18 +20,6 @@ from .config_loader import load_config
 from .model import NanoDiT
 from .data import get_production_dataloader
 from .train import ProductionTrainer
-
-
-class GracefulInterrupt:
-    """Handle Ctrl+C gracefully."""
-    
-    def __init__(self):
-        self.interrupted = False
-        signal.signal(signal.SIGINT, self.handle_interrupt)
-    
-    def handle_interrupt(self, signum, frame):
-        print("\n\nInterrupt received, saving checkpoint...")
-        self.interrupted = True
 
 
 def parse_args():
@@ -106,14 +97,81 @@ def print_config_summary(config):
     print("="*60 + "\n")
 
 
+def create_experiment_dir(config_path):
+    """Create timestamped experiment directory and save metadata.
+    
+    Creates: experiments/YYYY-MM-DD_HHMM/
+    Saves: config.yaml, metadata.json (git commit, timestamp, command)
+    
+    Args:
+        config_path: Path to config file
+    
+    Returns:
+        experiment_dir: Path to created directory
+    """
+    # Create timestamp: 2026-02-15_1130
+    timestamp = datetime.now().strftime('%Y-%m-%d_%H%M')
+    
+    # Create experiment directory
+    exp_dir = Path('experiments') / timestamp
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Copy config file
+    config_dest = exp_dir / 'config.yaml'
+    shutil.copy2(config_path, config_dest)
+    print(f"Saved config to: {config_dest}")
+    
+    # Save metadata
+    metadata = {
+        'timestamp': datetime.now().isoformat(),
+        'config_path': str(config_path),
+        'command': ' '.join(sys.argv),
+    }
+    
+    # Try to get git commit hash
+    try:
+        git_hash = subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'],
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+        metadata['git_commit'] = git_hash
+        
+        # Check for uncommitted changes
+        git_status = subprocess.check_output(
+            ['git', 'status', '--porcelain'],
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+        metadata['git_dirty'] = bool(git_status)
+        if git_status:
+            metadata['warning'] = 'Uncommitted changes present'
+    except:
+        metadata['git_commit'] = 'unknown'
+        metadata['git_dirty'] = False
+    
+    # Save metadata
+    metadata_path = exp_dir / 'metadata.json'
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    print(f"Saved metadata to: {metadata_path}")
+    
+    return exp_dir
+
+
 def main():
     """Main training function."""
     args = parse_args()
-    interrupt_handler = GracefulInterrupt()
     
     # Load config
     print(f"Loading config from: {args.config}")
     config = load_config(args.config)
+    
+    # Create experiment directory and save config
+    print("\n" + "="*60)
+    print("EXPERIMENT TRACKING")
+    print("="*60)
+    experiment_dir = create_experiment_dir(args.config)
+    print(f"Experiment directory: {experiment_dir}")
+    print("="*60 + "\n")
     
     # Setup device
     if args.device == 'cuda':
@@ -163,10 +221,28 @@ def main():
     if config.validation.enabled:
         from .validate import create_validation_fn
         print("Creating validation function...")
-        validate_fn = create_validation_fn(
+        # Note: TensorBoard writer will be passed from trainer after it's created
+        validate_fn_factory = lambda tb_writer: create_validation_fn(
             shard_dir=config.data.shard_base_dir,
             output_dir=config.validation.output_dir,
-            vae_path=config.paths.vae_path,
+            tensorboard_writer=tb_writer,
+        )
+    
+    # Create visual debugging function (if enabled)
+    visual_debug_fn = None
+    if config.validation.visual_debug_interval > 0:
+        print("Creating visual debug function...")
+        from .visual_debug import create_visual_debug_fn
+        # Note: TensorBoard writer will be passed from trainer after it's created
+        visual_debug_fn_factory = lambda tb_writer: create_visual_debug_fn(
+            shard_dir=config.data.shard_base_dir,
+            output_dir=config.validation.visual_debug_dir,
+            num_samples=config.validation.visual_debug_num_samples,
+            text_scale=config.sampling.text_scale,
+            dino_scale=config.sampling.dino_scale,
+            num_steps=config.sampling.num_steps,
+            device=device,
+            tensorboard_writer=tb_writer,
         )
     
     # Create trainer
@@ -176,7 +252,14 @@ def main():
         dataloader=dataloader,
         config=config,
         device=device,
+        experiment_name=experiment_dir.name,  # Pass experiment name for TensorBoard
     )
+    
+    # Now create actual validation and visual debug functions with TensorBoard writer
+    if config.validation.enabled:
+        validate_fn = validate_fn_factory(trainer.writer)
+    if config.validation.visual_debug_interval > 0:
+        visual_debug_fn = visual_debug_fn_factory(trainer.writer)
     
     print_gpu_memory(device)
     
@@ -190,21 +273,26 @@ def main():
     try:
         trainer.train(
             validate_fn=validate_fn,
-            interrupt_handler=interrupt_handler,
+            visual_debug_fn=visual_debug_fn,
         )
     except KeyboardInterrupt:
-        print("\nTraining interrupted by user")
+        print("\n\n⚠️  Training interrupted by user (Ctrl+C)")
+        print("Saving checkpoint...")
+        trainer.save_checkpoint(
+            Path(config.checkpoint.output_dir) / 'checkpoint_interrupt.pt'
+        )
+        print(f"Checkpoint saved to: {config.checkpoint.output_dir}/checkpoint_interrupt.pt")
+        print("You can resume with: --resume checkpoints/checkpoint_interrupt.pt")
     except Exception as e:
         print(f"\nTraining failed with error: {e}")
         raise
+    else:
+        # Training completed normally
+        trainer.save_checkpoint(
+            Path(config.checkpoint.output_dir) / 'checkpoint_final.pt'
+        )
+        print("Training complete!")
     finally:
-        # Final checkpoint
-        if not interrupt_handler.interrupted:
-            trainer.save_checkpoint(
-                Path(config.checkpoint.output_dir) / 'checkpoint_final.pt'
-            )
-            print("Training complete!")
-        
         print_gpu_memory(device)
 
 
