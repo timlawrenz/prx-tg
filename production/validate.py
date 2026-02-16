@@ -153,10 +153,10 @@ class ValidationRunner:
             for i in range(batch_size):
                 if sample_count <= max_idx:
                     samples.append({
-                        'vae_latent': batch['vae_latent'][i],
-                        'dino_embedding': batch['dino_embedding'][i],
-                        't5_hidden': batch['t5_hidden'][i],
-                        't5_mask': batch['t5_mask'][i],
+                        'vae_latent': batch['vae_latent'][i].cpu(),
+                        'dino_embedding': batch['dino_embedding'][i].cpu(),
+                        't5_hidden': batch['t5_hidden'][i].cpu(),
+                        't5_mask': batch['t5_mask'][i].cpu(),
                         'caption': batch['captions'][i],
                         'image_id': batch['image_ids'][i],
                     })
@@ -177,6 +177,9 @@ class ValidationRunner:
             dict with lpips_scores and mean_lpips
         """
         print(f"Running reconstruction test (step {step})...")
+        
+        # Move LPIPS to GPU for this test
+        self.lpips_fn.to(self.device)
         
         samples = self.load_validation_samples()
         output_dir = self.output_dir / f'step{step:07d}' / 'reconstruction'
@@ -226,6 +229,10 @@ class ValidationRunner:
             torch.cuda.empty_cache()
         
         mean_lpips = sum(lpips_scores) / len(lpips_scores)
+        
+        # Move LPIPS back to CPU to save GPU memory
+        self.lpips_fn.to('cpu')
+        torch.cuda.empty_cache()
         
         return {
             'lpips_scores': lpips_scores,
@@ -380,6 +387,9 @@ class ValidationRunner:
         """
         print(f"Running text manipulation test (step {step})...")
         
+        # Move LPIPS to GPU for this test
+        self.lpips_fn.to(self.device)
+        
         samples = self.load_validation_samples()
         output_dir = self.output_dir / f'step{step:07d}' / 'text_manip'
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -478,6 +488,10 @@ class ValidationRunner:
             torch.cuda.empty_cache()
             print("T5 encoder unloaded from GPU")
         
+        # Move LPIPS back to CPU
+        self.lpips_fn.to('cpu')
+        torch.cuda.empty_cache()
+        
         # Compute mean LPIPS difference
         if results:
             mean_lpips_diff = sum(r['lpips_difference'] for r in results) / len(results)
@@ -534,6 +548,11 @@ class ValidationRunner:
             'dino_swap': self.run_dino_swap_test(step, sampler),
             'text_manip': self.run_text_manip_test(step, sampler),
         }
+        
+        # Clean up eval_model and sampler to prevent memory leak
+        del sampler
+        del eval_model
+        torch.cuda.empty_cache()
         
         # Save results
         results_file = self.output_dir / f'step{step:07d}' / 'results.json'
