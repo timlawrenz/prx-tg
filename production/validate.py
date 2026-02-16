@@ -466,6 +466,16 @@ class ValidationRunner:
             del gen_orig, gen_mod
             torch.cuda.empty_cache()
         
+        # Unload T5 encoder to free GPU memory
+        if self.t5_encoder is not None:
+            self.t5_encoder.to('cpu')  # Move to CPU before deletion
+            del self.t5_encoder
+            del self.t5_tokenizer
+            self.t5_encoder = None
+            self.t5_tokenizer = None
+            torch.cuda.empty_cache()
+            print("T5 encoder unloaded from GPU")
+        
         # Compute mean LPIPS difference
         if results:
             mean_lpips_diff = sum(r['lpips_difference'] for r in results) / len(results)
