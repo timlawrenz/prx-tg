@@ -228,11 +228,12 @@ def compute_t5_attention_mask(tokenizer, caption: str) -> list[int]:
     """
     Tokenize caption with T5 and return attention mask.
     
-    Returns a list of 77 integers (1 for valid tokens, 0 for padding).
+    Returns a list of up to 512 integers (1 for valid tokens, 0 for padding).
+    T5 can handle sequences up to 512 tokens, unlike CLIP's 77-token limit.
     """
     tokens = tokenizer(
         caption,
-        max_length=77,
+        max_length=512,
         padding="max_length",
         truncation=True,
         return_tensors="pt"
@@ -240,7 +241,7 @@ def compute_t5_attention_mask(tokenizer, caption: str) -> list[int]:
     mask = tokens["attention_mask"][0].tolist()
     
     # Verify correctness
-    assert len(mask) == 77, f"Expected mask length 77, got {len(mask)}"
+    assert len(mask) == 512, f"Expected mask length 512, got {len(mask)}"
     assert all(v in (0, 1) for v in mask), "Mask must contain only 0s and 1s"
     
     return mask
@@ -372,10 +373,10 @@ def compute_t5_hidden_states(caption: str, tokenizer, encoder) -> np.ndarray | N
         import torch
         import numpy as np
         
-        # Tokenize with fixed length (77 tokens, CLIP/SD convention)
+        # Tokenize with T5's max length (512 tokens, not CLIP's 77)
         inputs = tokenizer(
             caption,
-            max_length=77,
+            max_length=512,
             padding="max_length",
             truncation=True,
             return_tensors="pt"
@@ -444,6 +445,18 @@ def needs_field(record: dict, field_name: str) -> bool:
     value = record[field_name]
     if value is None:
         return True
+    
+    # Special handling for t5_attention_mask: detect truncated 77-token masks
+    if field_name == "t5_attention_mask":
+        if not isinstance(value, list) or len(value) == 0:
+            return True
+        # If mask is 77 tokens and all 1s, it's truncated and needs regeneration
+        if len(value) == 77 and all(v == 1 for v in value):
+            return True
+        # If mask is not 512 tokens, regenerate with correct length
+        if len(value) != 512:
+            return True
+    
     # For lists/arrays, check if empty
     if isinstance(value, (list, tuple)) and len(value) == 0:
         return True
@@ -948,8 +961,8 @@ def main(argv):
         for item in batch_buffer:
             rec = item["record"]
             
-            # Compute T5 mask if needed
-            if item["needs_caption"] and "caption" in rec and t5_tokenizer:
+            # Compute T5 mask if caption exists and mask is missing/invalid
+            if "caption" in rec and t5_tokenizer and needs_field(rec, "t5_attention_mask"):
                 rec["t5_attention_mask"] = compute_t5_attention_mask(t5_tokenizer, rec["caption"])
             
             # Extract DINOv3 to .npy if present inline
@@ -1113,6 +1126,10 @@ def main(argv):
                 
                 if "width" in record and "height" in record:
                     record["aspect_bucket"] = assign_aspect_bucket(record["width"], record["height"])
+                
+                # Regenerate t5_attention_mask if needed (truncated 77-token masks)
+                if "caption" in record and t5_tokenizer and needs_field(record, "t5_attention_mask"):
+                    record["t5_attention_mask"] = compute_t5_attention_mask(t5_tokenizer, record["caption"])
                 
                 record["format_version"] = 2
                 
