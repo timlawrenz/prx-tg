@@ -262,12 +262,14 @@ def get_image_dimensions(image_path: Path) -> tuple[int, int] | None:
         return None
 
 
-def load_flux_vae(device, compile_encoder: bool = True):
+def load_flux_vae(device, compile_encoder: bool = False):
     """Load Flux VAE encoder component only.
     
     Args:
         device: torch device to load model on
         compile_encoder: If True, compile encoder with torch.compile for 20-30% speedup
+                        WARNING: torch.compile causes memory corruption after ~100-200 images
+                        ("Expected curr_block->next == nullptr" error). Disabled by default.
     
     Returns:
         VAE model with optimized encoder (if compile_encoder=True)
@@ -287,8 +289,10 @@ def load_flux_vae(device, compile_encoder: bool = True):
         vae.eval()
         vae = vae.to(device)
         
-        # Compile encoder for 20-30% speedup (PyTorch 2.0+)
+        # DISABLED BY DEFAULT: torch.compile causes memory allocator corruption
+        # after processing many images in a single run
         if compile_encoder and hasattr(torch, 'compile'):
+            eprint("  WARNING: torch.compile is unstable for long-running VAE encoding")
             eprint("  compiling VAE encoder with torch.compile (first run will be slow)...")
             vae.encoder = torch.compile(vae.encoder, mode="reduce-overhead")
             eprint("  ✓ VAE encoder compiled")
@@ -337,8 +341,9 @@ def encode_vae_latent(image_path: Path, vae_encoder) -> np.ndarray | None:
             latent_dist = vae_encoder.encode(tensor)
             latent = latent_dist.latent_dist.sample()
         
-        # Convert to numpy float16 for storage (half precision saves disk space)
-        result = latent.squeeze(0).cpu().numpy().astype(np.float16)
+        # Convert to float16 before numpy conversion (bfloat16 -> numpy can fail)
+        latent_fp16 = latent.squeeze(0).to(torch.float16).cpu()
+        result = latent_fp16.numpy().astype(np.float16)
         
         # Verify shape (16, H//8, W//8)
         expected_shape = (16, h // 8, w // 8)
@@ -348,7 +353,10 @@ def encode_vae_latent(image_path: Path, vae_encoder) -> np.ndarray | None:
         return result
         
     except Exception as e:
-        eprint(f"warning: VAE encoding failed for {image_path}: {e}")
+        import traceback
+        eprint(f"warning: VAE encoding failed for {image_path}:")
+        eprint(f"  Error: {type(e).__name__}: {e}")
+        eprint(f"  Traceback: {traceback.format_exc()}")
         return None
 
 
@@ -906,7 +914,7 @@ def main(argv):
     if run_vae:
         if args.verbose:
             eprint("verbose: loading Flux VAE...")
-        vae_encoder = load_flux_vae(device, compile_encoder=True)
+        vae_encoder = load_flux_vae(device, compile_encoder=False)  # Disabled: causes memory corruption
 
     if run_t5:
         if args.verbose:
