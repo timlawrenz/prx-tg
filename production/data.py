@@ -10,6 +10,153 @@ import numpy as np
 import webdataset as wds
 
 
+# Flux VAE latent normalization (computed from dataset statistics)
+# These are automatically computed at training startup if not already cached
+# Computed from 1000 samples (500M values) from data/shards/4000
+FLUX_LATENT_MEAN = -0.010669  # Global mean across all channels and spatial dims
+FLUX_LATENT_STD = 3.083478     # Global std across all channels and spatial dims
+USE_LATENT_NORMALIZATION = True # Enable after verifying compatibility
+
+# Cache file for computed statistics
+LATENT_STATS_CACHE = "data/.latent_stats.json"
+
+
+def compute_latent_stats(shard_dir, num_samples=1000):
+    """Compute global mean and std for VAE latents from dataset.
+    
+    Args:
+        shard_dir: Path to directory containing bucket_*/shard-*.tar files
+        num_samples: Number of samples to process
+    
+    Returns:
+        dict with 'mean' and 'std' keys
+    """
+    import json
+    from pathlib import Path
+    from tqdm import tqdm
+    
+    print(f"\n{'='*60}")
+    print("COMPUTING VAE LATENT STATISTICS")
+    print(f"{'='*60}")
+    
+    path = Path(shard_dir)
+    shards = list(path.glob('bucket_*/shard-*.tar'))
+    if not shards:
+        raise ValueError(f"No shards found in {shard_dir}")
+    
+    print(f"Found {len(shards)} shards")
+    print(f"Computing stats from first {num_samples} samples...")
+    
+    # Create dataset
+    dataset = (
+        wds.WebDataset([str(s) for s in shards], shardshuffle=False)
+        .decode()
+        .to_tuple("vae.npy")
+    )
+    
+    # Accumulate pixel values
+    pixels = []
+    count = 0
+    
+    for (vae,) in tqdm(dataset, desc="Loading samples", total=num_samples):
+        pixels.append(vae.flatten())
+        count += 1
+        if count >= num_samples:
+            break
+    
+    if not pixels:
+        raise ValueError("No samples found in dataset")
+    
+    print("Concatenating data...")
+    all_pixels = np.concatenate(pixels)
+    
+    print("Computing statistics...")
+    # Convert to float64 to avoid overflow in variance computation
+    all_pixels_f64 = all_pixels.astype(np.float64)
+    mean = float(np.mean(all_pixels_f64))
+    std = float(np.std(all_pixels_f64))
+    
+    print(f"\nResults:")
+    print(f"  Samples: {count}")
+    print(f"  Values: {len(all_pixels):,}")
+    print(f"  Mean: {mean:.6f}")
+    print(f"  Std: {std:.6f}")
+    print(f"{'='*60}\n")
+    
+    return {'mean': mean, 'std': std, 'num_samples': count}
+
+
+def load_or_compute_latent_stats(shard_dir, num_samples=1000, force_recompute=False):
+    """Load cached latent stats or compute them if not available.
+    
+    Args:
+        shard_dir: Path to shard directory
+        num_samples: Number of samples to use for computation
+        force_recompute: If True, recompute even if cache exists
+    
+    Returns:
+        dict with 'mean' and 'std' keys
+    """
+    import json
+    from pathlib import Path
+    
+    cache_path = Path(LATENT_STATS_CACHE)
+    
+    # Try to load from cache
+    if not force_recompute and cache_path.exists():
+        try:
+            with open(cache_path, 'r') as f:
+                stats = json.load(f)
+            print(f"Loaded latent stats from cache: {cache_path}")
+            print(f"  Mean: {stats['mean']:.6f}, Std: {stats['std']:.6f}")
+            return stats
+        except Exception as e:
+            print(f"Warning: Failed to load stats cache: {e}")
+            print("Will recompute statistics...")
+    
+    # Compute statistics
+    stats = compute_latent_stats(shard_dir, num_samples)
+    
+    # Save to cache
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, 'w') as f:
+            json.dump(stats, f, indent=2)
+        print(f"Saved latent stats to cache: {cache_path}")
+    except Exception as e:
+        print(f"Warning: Failed to save stats cache: {e}")
+    
+    return stats
+
+
+def normalize_vae_latent(latent):
+    """Normalize VAE latent to zero mean, unit variance.
+    
+    Args:
+        latent: torch.Tensor, VAE latent
+    
+    Returns:
+        normalized: torch.Tensor, normalized latent
+    """
+    if not USE_LATENT_NORMALIZATION:
+        return latent
+    return (latent - FLUX_LATENT_MEAN) / FLUX_LATENT_STD
+
+
+def denormalize_vae_latent(latent):
+    """Denormalize VAE latent back to original scale.
+    
+    Args:
+        latent: torch.Tensor, normalized latent
+    
+    Returns:
+        denormalized: torch.Tensor, original scale latent
+    """
+    if not USE_LATENT_NORMALIZATION:
+        return latent
+    return latent * FLUX_LATENT_STD + FLUX_LATENT_MEAN
+
+
 def swap_left_right(caption):
     """Swap 'left' and 'right' in caption for horizontal flip augmentation."""
     # Temporary placeholder to avoid double-swapping
@@ -111,6 +258,9 @@ class ValidationDataset:
         
         # Resize VAE latent to target size
         vae_latent = resize_vae_latent(vae_latent, self.target_latent_size)
+        
+        # Normalize VAE latent (if enabled)
+        vae_latent = normalize_vae_latent(vae_latent)
         
         # Convert to tensors
         return {
