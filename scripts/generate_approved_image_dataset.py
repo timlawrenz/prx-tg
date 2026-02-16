@@ -9,9 +9,10 @@ import sys
 import time
 from pathlib import Path
 
+
 # Set environment variables BEFORE any imports that might use them
-os.environ['UNSLOTH_SKIP_TORCHVISION_CHECK'] = '1'
-os.environ['HF_HOME'] = os.environ.get('HF_HOME', os.path.expanduser('~/.cache/huggingface'))
+# os.environ['UNSLOTH_SKIP_TORCHVISION_CHECK'] = '1'
+# os.environ['HF_HOME'] = os.environ.get('HF_HOME', os.path.expanduser('~/.cache/huggingface'))
 
 # Import unsloth FIRST for optimizations (must be before transformers)
 try:
@@ -285,7 +286,9 @@ def load_flux_vae(device, compile_encoder: bool = True):
     try:
         from diffusers import AutoencoderKL
         import torch
-        
+        import logging
+        logger = logging.getLogger(__name__)
+                
         eprint(f"loading Flux VAE from {FLUX_VAE_MODEL_ID}...")
         # Load VAE component only (subfolder="vae")
         # Use bfloat16 for faster computation on modern GPUs (RTX 3090+)
