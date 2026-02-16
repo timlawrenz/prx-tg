@@ -15,7 +15,7 @@ import webdataset as wds
 # Computed from 1000 samples (500M values) from data/shards/4000
 FLUX_LATENT_MEAN = -0.010669  # Global mean across all channels and spatial dims
 FLUX_LATENT_STD = 3.083478     # Global std across all channels and spatial dims
-USE_LATENT_NORMALIZATION = False  # Enable after verifying compatibility
+USE_LATENT_NORMALIZATION = True # Enable after verifying compatibility
 
 # Cache file for computed statistics
 LATENT_STATS_CACHE = "data/.latent_stats.json"
