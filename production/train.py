@@ -44,8 +44,8 @@ def flow_matching_loss(model, x0, dino_emb, text_emb, text_mask, cfg_probs):
         model: NanoDiT model
         x0: (B, C, H, W) clean latents (data at t=0)
         dino_emb: (B, 1024) DINOv3 embeddings
-        text_emb: (B, 77, 1024) T5 hidden states
-        text_mask: (B, 77) T5 attention mask
+        text_emb: (B, seq_len, 1024) T5 hidden states (seq_len=512 for full captions)
+        text_mask: (B, seq_len) T5 attention mask
         cfg_probs: dict with p_drop_both, p_drop_text, p_drop_dino
     
     Returns:

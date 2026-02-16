@@ -342,13 +342,15 @@ class ValidationRunner:
         
         Returns:
             tuple: (hidden_states, attention_mask) as torch tensors in float32
+                   hidden_states shape: (1, 512, 1024)
+                   attention_mask shape: (1, 512)
         """
         encoder, tokenizer = self.load_t5_encoder()
         
-        # Tokenize
+        # Tokenize with T5's max length (512 tokens, not CLIP's 77)
         inputs = tokenizer(
             caption,
-            max_length=77,
+            max_length=512,
             padding="max_length",
             truncation=True,
             return_tensors="pt"
@@ -360,7 +362,7 @@ class ValidationRunner:
         # Encode
         with torch.no_grad():
             outputs = encoder(input_ids=input_ids, attention_mask=attention_mask)
-            hidden_states = outputs.last_hidden_state.float()  # (1, 77, 1024) in float32
+            hidden_states = outputs.last_hidden_state.float()  # (1, 512, 1024) in float32
         
         return hidden_states, attention_mask
     

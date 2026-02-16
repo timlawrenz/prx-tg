@@ -1,7 +1,7 @@
 """Nano DiT model for validation testing.
 
 Architecture: 12 layers, 384 hidden dim, 6 attention heads (~30-50M params)
-Dual conditioning: DINOv3 (1024) → adaLN-Zero, T5 (77×1024) → Cross-Attention
+Dual conditioning: DINOv3 (1024) → adaLN-Zero, T5 (seq_len×1024) → Cross-Attention
 """
 
 import math
@@ -330,8 +330,8 @@ class NanoDiT(nn.Module):
             x: (B, C, H, W) noisy latents
             t: (B,) timesteps
             dino_emb: (B, 1024) DINOv3 embeddings
-            text_emb: (B, 77, 1024) T5 hidden states
-            text_mask: (B, 77) T5 attention mask (1=valid, 0=padding)
+            text_emb: (B, seq_len, 1024) T5 hidden states (seq_len=512 for full captions)
+            text_mask: (B, seq_len) T5 attention mask (1=valid, 0=padding)
             cfg_drop_both: (B,) bool mask for unconditional
             cfg_drop_dino: (B,) bool mask for text-only
             cfg_drop_text: (B,) bool mask for dino-only
@@ -377,7 +377,7 @@ class NanoDiT(nn.Module):
         # This ensures timestep information reaches all blocks, even when DINO is dropped
         # (null_dino still gets projected and adds t_emb)
         dino_cond = self.dino_proj(dino_emb) + t_emb  # (B, hidden_size)
-        text_cond = self.text_proj(text_emb)  # (B, 77, hidden_size)
+        text_cond = self.text_proj(text_emb)  # (B, seq_len, hidden_size)
         
         # Transformer blocks
         for block in self.blocks:
@@ -414,8 +414,8 @@ if __name__ == "__main__":
     x = torch.randn(B, 16, 64, 64)
     t = torch.rand(B)
     dino = torch.randn(B, 1024)
-    text = torch.randn(B, 77, 1024)
-    mask = torch.ones(B, 77)
+    text = torch.randn(B, 512, 1024)  # Updated to 512 tokens
+    mask = torch.ones(B, 512)
     
     with torch.no_grad():
         v = model(x, t, dino, text, mask)
