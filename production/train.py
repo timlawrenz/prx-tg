@@ -199,6 +199,7 @@ class Trainer:
         grad_clip=1.0,
         ema_decay=0.9999,
         cfg_probs=None,
+        grad_accumulation_steps=1,
         checkpoint_every=1000,
         log_every=50,
         checkpoint_dir='checkpoints',
@@ -216,6 +217,7 @@ class Trainer:
             grad_clip: gradient clipping norm
             ema_decay: target EMA decay
             cfg_probs: dict with CFG dropout probabilities
+            grad_accumulation_steps: number of gradient accumulation steps
             checkpoint_every: checkpoint save frequency
             log_every: logging frequency
             checkpoint_dir: directory for saving checkpoints
@@ -228,6 +230,7 @@ class Trainer:
         self.peak_lr = peak_lr
         self.min_lr = min_lr
         self.grad_clip = grad_clip
+        self.grad_accumulation_steps = grad_accumulation_steps
         self.checkpoint_every = checkpoint_every
         self.log_every = log_every
         self.checkpoint_dir = Path(checkpoint_dir)
@@ -281,31 +284,51 @@ class Trainer:
             self.model, x0, dino_emb, text_emb, text_mask, self.cfg_probs
         )
         
-        # Backward
-        self.optimizer.zero_grad()
+        # Scale loss by accumulation steps
+        loss = loss / self.grad_accumulation_steps
+        
+        # Backward (accumulate gradients)
         loss.backward()
         
-        # Gradient clipping
-        grad_norm = clip_grad_norm_(self.model.parameters(), self.grad_clip)
+        # Only step optimizer every accumulation_steps
+        is_accumulation_step = (self.step + 1) % self.grad_accumulation_steps == 0
         
-        # Optimizer step with current LR
+        # Always compute LR for reporting (even if not stepping)
         lr = get_lr_schedule(
             self.step, self.warmup_steps, self.total_steps,
             self.peak_lr, self.min_lr
         )
-        for param_group in self.optimizer.param_groups:
-            param_group['lr'] = lr
         
-        self.optimizer.step()
+        # Compute grad norm for reporting
+        grad_norm = sum(p.grad.norm().item() ** 2 for p in self.model.parameters() if p.grad is not None) ** 0.5
         
-        # EMA update
-        self.ema.update()
+        if is_accumulation_step:
+            # Gradient clipping
+            grad_norm = clip_grad_norm_(self.model.parameters(), self.grad_clip)
+            
+            # Apply LR to optimizer
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = lr
+            
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+            
+            # EMA update (only when optimizer steps)
+            self.ema.update()
         
-        return {
-            'loss': loss.item(),
-            'grad_norm': grad_norm.item(),
+        # Collect VRAM metrics
+        metrics = {
+            'loss': loss.item() * self.grad_accumulation_steps,  # Report unscaled loss
+            'grad_norm': grad_norm,
             'lr': lr,
         }
+        
+        # Add GPU memory metrics if using CUDA
+        if self.device.type == 'cuda':
+            metrics['vram_allocated_gb'] = torch.cuda.memory_allocated(self.device) / 1024**3
+            metrics['vram_reserved_gb'] = torch.cuda.memory_reserved(self.device) / 1024**3
+        
+        return metrics
     
     def save_checkpoint(self, path=None):
         """Save training checkpoint."""
@@ -443,6 +466,7 @@ class ProductionTrainer(Trainer):
             grad_clip=training.grad_clip,
             ema_decay=training.ema_decay,
             cfg_probs=training.cfg_dropout.to_dict(),
+            grad_accumulation_steps=training.grad_accumulation_steps,
             checkpoint_every=checkpoint_cfg.save_every,
             log_every=logging_cfg.log_every,
             checkpoint_dir=checkpoint_cfg.output_dir,
@@ -451,7 +475,6 @@ class ProductionTrainer(Trainer):
         # Store additional config for production features
         self.config = config
         self.experiment_name = experiment_name or "default"
-        self.grad_accumulation_steps = training.grad_accumulation_steps
         self.ema_warmup_steps = training.ema_warmup_steps
         self.timestep_sampling = training.timestep_sampling
         self.logit_normal_loc = training.logit_normal_loc
@@ -506,6 +529,12 @@ class ProductionTrainer(Trainer):
                 self.writer.add_scalar('train/grad_norm', metrics['grad_norm'], step)
             if 'lr' in metrics:
                 self.writer.add_scalar('train/learning_rate', metrics['lr'], step)
+            
+            # GPU memory metrics
+            if 'vram_allocated_gb' in metrics:
+                self.writer.add_scalar('memory/vram_allocated_gb', metrics['vram_allocated_gb'], step)
+            if 'vram_reserved_gb' in metrics:
+                self.writer.add_scalar('memory/vram_reserved_gb', metrics['vram_reserved_gb'], step)
             
             # Additional monitoring
             if 'velocity_norm' in metrics:
