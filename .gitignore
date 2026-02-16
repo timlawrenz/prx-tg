@@ -54,3 +54,4 @@ Thumbs.db
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
+.latent_stats.json
