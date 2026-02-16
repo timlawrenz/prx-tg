@@ -1012,6 +1012,7 @@ def main(argv):
             needs_vae_gen = run_vae and needs_vae_latent(record, vae_dir)
             needs_t5_gen = run_t5 and needs_t5_hidden(record, t5_dir)
             needs_format_migration = run_migrate and needs_migration(record)
+            needs_t5_mask = needs_field(record, "t5_attention_mask")  # Check for missing/truncated masks
 
             # Check if Stage 1 record (needs full processing)
             is_stage1 = "dinov3_embedding" in record and record.get("format_version") != 2
@@ -1023,6 +1024,7 @@ def main(argv):
                 and not needs_vae_gen
                 and not needs_t5_gen
                 and not needs_format_migration
+                and not needs_t5_mask  # Also check t5_attention_mask is valid
             )
 
             if is_complete:
@@ -1138,6 +1140,17 @@ def main(argv):
                 temp_file.flush()
                 records_written_this_session += 1
                 migrated += 1
+            
+            # Handle standalone t5_attention_mask regeneration
+            # (for records that are otherwise complete but have truncated masks)
+            elif needs_t5_mask and "caption" in record and t5_tokenizer:
+                if args.verbose:
+                    eprint(f"verbose: regenerating t5_attention_mask for {rel}")
+                record["t5_attention_mask"] = compute_t5_attention_mask(t5_tokenizer, record["caption"])
+                temp_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+                temp_file.flush()
+                records_written_this_session += 1
+                enriched += 1
 
             # Progress reporting
             if args.progress_every and total_processed % args.progress_every == 0:
