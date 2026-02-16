@@ -6,7 +6,7 @@ transformers
 pillow
 accelerate
 safetensors
-diffusers
+diffusers==0.30.3  # CRITICAL: 0.36.0+ has logger bug in torchao_quantizer.py when importing AutoencoderKL
 
 # Unsloth for optimized Gemma3 vision inference
 unsloth
