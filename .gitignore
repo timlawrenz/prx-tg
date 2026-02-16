@@ -34,6 +34,10 @@ validation/*.jpg
 validation_outputs/step*/
 validation_outputs/*.png
 validation_outputs/*.jpg
+visual_debug/  # Generated images from training
+experiments/*/  # Experiment tracking directories (config snapshots)
+!experiments/README.md  # But keep the README
+*.csv  # Tuning results
 
 
 # OS files
