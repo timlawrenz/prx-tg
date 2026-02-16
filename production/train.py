@@ -343,11 +343,12 @@ class Trainer:
         with open(self.log_file, 'a') as f:
             f.write(json.dumps(metrics) + '\n')
     
-    def train(self, validate_fn=None):
+    def train(self, validate_fn=None, visual_debug_fn=None):
         """Run full training loop.
         
         Args:
             validate_fn: optional function(model, ema, step, device) for validation
+            visual_debug_fn: optional function(model, step) for visual debugging
         """
         print(f"Starting training for {self.total_steps} steps")
         print(f"Warmup: {self.warmup_steps} steps")
@@ -380,6 +381,13 @@ class Trainer:
                     'lr': f"{metrics['lr']:.2e}",
                 })
             
+            # Visual debugging (more frequent than full validation)
+            if visual_debug_fn is not None:
+                # Check if visual_debug_interval is configured (ProductionTrainer only)
+                interval = getattr(self, 'visual_debug_interval', 0)
+                if interval > 0 and self.step % interval == 0:
+                    visual_debug_fn(self.ema.model if self.ema else self.model, self.step)
+            
             # Checkpointing
             if self.step % self.checkpoint_every == 0:
                 self.save_checkpoint()
@@ -405,7 +413,7 @@ class ProductionTrainer(Trainer):
     separation of concerns.
     """
     
-    def __init__(self, model, dataloader, config, device='cuda'):
+    def __init__(self, model, dataloader, config, device='cuda', experiment_name=None):
         """Initialize from config object.
         
         Args:
@@ -413,6 +421,7 @@ class ProductionTrainer(Trainer):
             dataloader: iterable dataloader
             config: Config object from config_loader
             device: torch device
+            experiment_name: Optional experiment name for TensorBoard run name
         """
         from .config_loader import Config
         
@@ -441,6 +450,7 @@ class ProductionTrainer(Trainer):
         
         # Store additional config for production features
         self.config = config
+        self.experiment_name = experiment_name or "default"
         self.grad_accumulation_steps = training.grad_accumulation_steps
         self.ema_warmup_steps = training.ema_warmup_steps
         self.timestep_sampling = training.timestep_sampling
@@ -453,15 +463,60 @@ class ProductionTrainer(Trainer):
         self.velocity_warning = logging_cfg.velocity_norm_warning
         self.grad_warning = logging_cfg.grad_norm_warning
         
+        # Visual debugging interval
+        self.visual_debug_interval = config.validation.visual_debug_interval
+        
         # Gradient accumulation state
         self.accum_steps = 0
         self.accum_loss = 0.0
+        
+        # TensorBoard logging
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+            # Use experiment name as subdirectory for better organization
+            tensorboard_dir = Path(checkpoint_cfg.output_dir) / 'tensorboard' / self.experiment_name
+            self.writer = SummaryWriter(log_dir=tensorboard_dir)
+            print(f"  TensorBoard logging: {tensorboard_dir}")
+        except ImportError:
+            print("  TensorBoard not available (install: pip install tensorboard)")
+            self.writer = None
         
         print(f"ProductionTrainer initialized:")
         print(f"  Gradient accumulation: {self.grad_accumulation_steps} steps")
         print(f"  Effective batch size: {training.batch_size * self.grad_accumulation_steps}")
         print(f"  Timestep sampling: {self.timestep_sampling}")
         print(f"  EMA warmup: {self.ema_warmup_steps} steps")
+    
+    def log(self, metrics):
+        """Log metrics to file, console, and TensorBoard.
+        
+        Overrides parent log() to add TensorBoard support.
+        """
+        # Call parent logging (JSONL file)
+        super().log(metrics)
+        
+        # Log to TensorBoard
+        if self.writer is not None:
+            step = metrics.get('step', self.step)
+            
+            # Training metrics
+            if 'loss' in metrics:
+                self.writer.add_scalar('train/loss', metrics['loss'], step)
+            if 'grad_norm' in metrics:
+                self.writer.add_scalar('train/grad_norm', metrics['grad_norm'], step)
+            if 'lr' in metrics:
+                self.writer.add_scalar('train/learning_rate', metrics['lr'], step)
+            
+            # Additional monitoring
+            if 'velocity_norm' in metrics:
+                self.writer.add_scalar('monitor/velocity_norm', metrics['velocity_norm'], step)
+            if 'ema_decay' in metrics:
+                self.writer.add_scalar('train/ema_decay', metrics['ema_decay'], step)
+    
+    def __del__(self):
+        """Cleanup: close TensorBoard writer."""
+        if hasattr(self, 'writer') and self.writer is not None:
+            self.writer.close()
 
 
 if __name__ == "__main__":
