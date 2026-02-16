@@ -60,8 +60,11 @@ def calculate_stats(shard_dir, num_samples=1000):
     all_pixels = np.concatenate(pixels)
     
     print("Computing statistics...")
-    mean = np.mean(all_pixels)
-    std = np.std(all_pixels)
+    # Convert to float64 to avoid overflow in variance computation
+    # (sum of squares can overflow with 500M+ values in float32/float16)
+    all_pixels_f64 = all_pixels.astype(np.float64)
+    mean = np.mean(all_pixels_f64)
+    std = np.std(all_pixels_f64)
     
     print("\n" + "="*60)
     print("FLUX VAE LATENT STATISTICS")
