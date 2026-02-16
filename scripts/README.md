@@ -636,3 +636,70 @@ Summary:
 **Issue: JSONL corruption after pruning**
 - Solution: Script uses atomic updates - if interrupted, `.jsonl.prune-tmp` file may remain
 - Recovery: Restore from backup or rerun prune (will clean up temp file)
+
+---
+
+## calculate_latent_stats.py
+
+Calculate mean and standard deviation for Flux VAE latents in your dataset. These statistics are used to normalize latents during training, which can improve training stability and convergence.
+
+### Why Normalize?
+
+Normalizing VAE latents to zero mean and unit variance helps:
+- **Stabilize training**: Keeps activations in a reasonable range
+- **Improve convergence**: Better gradient flow and optimization
+- **Match pretraining assumptions**: Many architectures assume normalized inputs
+
+### Usage
+
+```bash
+# Calculate stats from training data (4000 samples)
+python scripts/calculate_latent_stats.py data/shards/4000 --n 1000
+
+# Or from a specific dataset split
+python scripts/calculate_latent_stats.py data/shards/validation --n 500
+```
+
+### Output
+
+The script will output statistics like:
+
+```
+FLUX VAE LATENT STATISTICS
+==============================================================
+Samples processed: 1000
+Total values: 16,777,216
+Min value: -8.234567
+Max value: 7.123456
+--------------------------------------------------------------
+FLUX_LATENT_MEAN = 0.123456
+FLUX_LATENT_STD = 1.234567
+--------------------------------------------------------------
+```
+
+### Integration
+
+After computing statistics:
+
+1. **Update `production/data.py`** with the computed values:
+
+```python
+# Flux VAE latent normalization (computed from dataset statistics)
+FLUX_LATENT_MEAN = 0.123456  # Your computed value
+FLUX_LATENT_STD = 1.234567   # Your computed value
+USE_LATENT_NORMALIZATION = True  # Enable normalization
+```
+
+2. **Training**: Latents are automatically normalized in the dataloader
+3. **Sampling**: Latents are automatically denormalized before VAE decoding
+
+### Notes
+
+- **Compute once**: Statistics should be computed once from your training data
+- **Sample size**: 1000+ samples recommended for stable estimates
+- **Global statistics**: Uses single scalar mean/std to preserve channel relationships
+- **Backward compatible**: Normalization is disabled by default (`USE_LATENT_NORMALIZATION = False`)
+
+### Technical Details
+
+The script computes **global** statistics (single scalar) rather than per-channel statistics. This preserves the relationships between VAE latent channels, which is important for maintaining the learned latent space structure. This approach is standard in latent diffusion models like Stable Diffusion.
