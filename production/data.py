@@ -13,9 +13,10 @@ import webdataset as wds
 # Flux VAE latent normalization (computed from dataset statistics)
 # Run scripts/calculate_latent_stats.py to compute these values
 # Usage: normalize before training, denormalize before VAE decoding
-FLUX_LATENT_MEAN = None  # Set after running calculate_latent_stats.py
-FLUX_LATENT_STD = None   # Set after running calculate_latent_stats.py
-USE_LATENT_NORMALIZATION = False  # Enable after computing stats
+# Computed from 1000 samples (500M values) from data/shards/4000
+FLUX_LATENT_MEAN = -0.010669  # Global mean across all channels and spatial dims
+FLUX_LATENT_STD = 3.083478     # Global std across all channels and spatial dims
+USE_LATENT_NORMALIZATION = False  # Enable after verifying compatibility
 
 
 def normalize_vae_latent(latent):
@@ -27,7 +28,7 @@ def normalize_vae_latent(latent):
     Returns:
         normalized: torch.Tensor, normalized latent
     """
-    if not USE_LATENT_NORMALIZATION or FLUX_LATENT_MEAN is None:
+    if not USE_LATENT_NORMALIZATION:
         return latent
     return (latent - FLUX_LATENT_MEAN) / FLUX_LATENT_STD
 
@@ -41,7 +42,7 @@ def denormalize_vae_latent(latent):
     Returns:
         denormalized: torch.Tensor, original scale latent
     """
-    if not USE_LATENT_NORMALIZATION or FLUX_LATENT_MEAN is None:
+    if not USE_LATENT_NORMALIZATION:
         return latent
     return latent * FLUX_LATENT_STD + FLUX_LATENT_MEAN
 
