@@ -618,22 +618,30 @@ def _clean_caption_output(generated_text: str, prompt: str) -> str:
     Returns:
         Cleaned caption text
     """
-    # Strip the input prompt if it was echoed in the output
-    # Gemma3 with chat template typically includes the full conversation
-    if prompt in generated_text:
-        # Find where the assistant response starts
-        # Format is typically: <start_of_turn>user\n...<start_of_turn>model\n[response]
-        parts = generated_text.split("<start_of_turn>model\n")
+    text = generated_text
+    
+    # Handle various chat template formats
+    # Format 1: "user [prompt] model [response]" (simple role markers)
+    if " model " in text:
+        parts = text.split(" model ", 1)
+        if len(parts) > 1:
+            text = parts[1].strip()
+    
+    # Format 2: "<start_of_turn>user\n...<start_of_turn>model\n[response]" (Gemma format)
+    elif "<start_of_turn>model" in text:
+        parts = text.split("<start_of_turn>model")
         if len(parts) > 1:
             text = parts[-1].strip()
-        else:
-            # Fallback: just remove the prompt string
-            text = generated_text.replace(prompt, "").strip()
-    else:
-        text = generated_text
+    
+    # Format 3: Just remove the prompt if it's at the start
+    elif text.startswith("user ") and prompt in text:
+        text = text.replace("user " + prompt, "").strip()
+        if text.startswith("model "):
+            text = text[6:].strip()
     
     # Clean up any remaining chat markers
     text = text.replace("<start_of_turn>", "").replace("<end_of_turn>", "").strip()
+    text = text.replace("user ", "", 1).replace("model ", "", 1).strip()
     
     # Remove common preambles if present
     for preamble in ["The image shows", "This image shows", "The image depicts", "This image depicts"]:
