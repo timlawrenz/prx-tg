@@ -118,7 +118,7 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
 class Attention(nn.Module):
     """Multi-head attention (self or cross)."""
     
-    def __init__(self, dim, num_heads=6, qkv_bias=True, is_cross_attn=False):
+    def __init__(self, dim, num_heads=6, qkv_bias=False, is_cross_attn=False):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
@@ -131,7 +131,7 @@ class Attention(nn.Module):
         else:
             self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         
-        self.proj = nn.Linear(dim, dim)
+        self.proj = nn.Linear(dim, dim, bias=qkv_bias)
 
     def forward(self, x, context=None, mask=None):
         """
@@ -175,9 +175,9 @@ class FeedForward(nn.Module):
     def __init__(self, hidden_dim, mlp_dim=None):
         super().__init__()
         mlp_dim = mlp_dim or hidden_dim * 4
-        self.fc1 = nn.Linear(hidden_dim, mlp_dim)
+        self.fc1 = nn.Linear(hidden_dim, mlp_dim, bias=False)
         self.act = nn.GELU(approximate='tanh')
-        self.fc2 = nn.Linear(mlp_dim, hidden_dim)
+        self.fc2 = nn.Linear(mlp_dim, hidden_dim, bias=False)
 
     def forward(self, x):
         x = self.fc1(x)
@@ -189,12 +189,13 @@ class FeedForward(nn.Module):
 class DiTBlock(nn.Module):
     """Transformer block with adaLN-Zero (DINO) and cross-attention (T5)."""
     
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, use_checkpoint=False):
         super().__init__()
+        self.use_checkpoint = use_checkpoint
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.attn = Attention(hidden_size, num_heads=num_heads, is_cross_attn=False)
+        self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=False, is_cross_attn=False)
         self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.cross_attn = Attention(hidden_size, num_heads=num_heads, is_cross_attn=True)
+        self.cross_attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=False, is_cross_attn=True)
         self.norm3 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.mlp = FeedForward(hidden_size, int(hidden_size * mlp_ratio))
         
@@ -207,14 +208,8 @@ class DiTBlock(nn.Module):
         nn.init.zeros_(self.adaLN_modulation[1].weight)
         nn.init.zeros_(self.adaLN_modulation[1].bias)
 
-    def forward(self, x, c_dino, c_text, text_mask=None):
-        """
-        Args:
-            x: (B, N, C) latent tokens
-            c_dino: (B, C) DINOv3 conditioning
-            c_text: (B, M, C) T5 conditioning
-            text_mask: (B, M) attention mask for T5
-        """
+    def _forward_impl(self, x, c_dino, c_text, text_mask):
+        """Internal forward implementation for checkpointing."""
         # Get adaLN modulation parameters from DINOv3
         shift_msa, scale_msa, shift_ca, scale_ca, shift_mlp, scale_mlp = \
             self.adaLN_modulation(c_dino).chunk(6, dim=1)
@@ -234,13 +229,28 @@ class DiTBlock(nn.Module):
         
         return x
 
+    def forward(self, x, c_dino, c_text, text_mask=None):
+        """
+        Args:
+            x: (B, N, C) latent tokens
+            c_dino: (B, C) DINOv3 conditioning
+            c_text: (B, M, C) T5 conditioning
+            text_mask: (B, M) attention mask for T5
+        """
+        if self.use_checkpoint and self.training:
+            return torch.utils.checkpoint.checkpoint(
+                self._forward_impl, x, c_dino, c_text, text_mask, use_reentrant=False
+            )
+        else:
+            return self._forward_impl(x, c_dino, c_text, text_mask)
+
 
 class NanoDiT(nn.Module):
     """Nano DiT: 12L, 384H, 6A for validation testing."""
     
     def __init__(
         self,
-        input_size=64,  # Latent spatial size (64x64 for 512x512 images)
+        input_size=64,  # Latent spatial size (64x64 for 512x512 images) - IGNORED for dynamic pos embed
         patch_size=2,
         in_channels=16,  # Flux VAE latent channels
         hidden_size=384,
@@ -249,36 +259,36 @@ class NanoDiT(nn.Module):
         mlp_ratio=4.0,
         dino_dim=1024,
         text_dim=1024,
+        use_gradient_checkpointing=False,
     ):
         super().__init__()
-        self.input_size = input_size
+        self.input_size = input_size  # For backward compatibility, but not used
         self.patch_size = patch_size
         self.in_channels = in_channels
         self.num_heads = num_heads
+        self.hidden_size = hidden_size
+        self.use_gradient_checkpointing = use_gradient_checkpointing
         
         # Patch embedding
         self.x_embedder = PatchEmbed(patch_size, in_channels, hidden_size)
-        num_patches = (input_size // patch_size) ** 2
         
-        # Positional embedding (fixed 2D sincos)
-        self.register_buffer("pos_embed", torch.zeros(1, num_patches, hidden_size))
-        pos_embed = get_2d_sincos_pos_embed(hidden_size, input_size // patch_size)
-        self.pos_embed.data.copy_(pos_embed.float().unsqueeze(0))
+        # NOTE: Positional embedding is now generated dynamically in forward()
+        # to support variable aspect ratios from bucketed training
         
         # Timestep embedding
         self.t_embedder = TimestepEmbedder(hidden_size)
         
-        # Conditioning projections
-        self.dino_proj = nn.Linear(dino_dim, hidden_size)
-        self.text_proj = nn.Linear(text_dim, hidden_size)
+        # Conditioning projections (keep bias for these)
+        self.dino_proj = nn.Linear(dino_dim, hidden_size, bias=True)
+        self.text_proj = nn.Linear(text_dim, hidden_size, bias=True)
         
         # Transformer blocks
         self.blocks = nn.ModuleList([
-            DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio)
+            DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, use_checkpoint=use_gradient_checkpointing)
             for _ in range(depth)
         ])
         
-        # Output layers
+        # Output layers (keep bias for final projection)
         self.final_norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.final_proj = nn.Linear(hidden_size, patch_size * patch_size * in_channels, bias=True)
         
@@ -288,6 +298,21 @@ class NanoDiT(nn.Module):
         # Learnable null embeddings for CFG
         self.null_dino = nn.Parameter(torch.zeros(1, dino_dim))
         self.null_text = nn.Parameter(torch.zeros(1, 1, text_dim))
+    
+    def get_pos_embed(self, h, w, device):
+        """Generate 2D sinusoidal positional embeddings for given spatial size.
+        
+        Args:
+            h: height in patches
+            w: width in patches
+            device: torch device
+        
+        Returns:
+            pos_embed: (1, h*w, hidden_size)
+        """
+        pos_embed = get_2d_sincos_pos_embed(self.hidden_size, (h, w))
+        pos_embed = pos_embed.to(device).float().unsqueeze(0)
+        return pos_embed
 
     def initialize_weights(self):
         # Standard initialization
@@ -307,27 +332,28 @@ class NanoDiT(nn.Module):
         nn.init.zeros_(self.final_proj.weight)
         nn.init.zeros_(self.final_proj.bias)
 
-    def unpatchify(self, x):
+    def unpatchify(self, x, h, w):
         """Convert patch tokens back to spatial latents.
         
         Args:
-            x: (B, N, patch_size^2 * C)
+            x: (B, N, patch_size^2 * C) where N = h * w
+            h: height in patches
+            w: width in patches
         
         Returns:
-            latents: (B, C, H, W)
+            latents: (B, C, H, W) where H = h * patch_size, W = w * patch_size
         """
         B = x.shape[0]
-        H = W = self.input_size // self.patch_size
-        x = x.reshape(B, H, W, self.patch_size, self.patch_size, self.in_channels)
+        x = x.reshape(B, h, w, self.patch_size, self.patch_size, self.in_channels)
         x = x.permute(0, 5, 1, 3, 2, 4).contiguous()
-        latents = x.reshape(B, self.in_channels, H * self.patch_size, W * self.patch_size)
+        latents = x.reshape(B, self.in_channels, h * self.patch_size, w * self.patch_size)
         return latents
 
     def forward(self, x, t, dino_emb, text_emb, text_mask=None, 
                 cfg_drop_both=None, cfg_drop_dino=None, cfg_drop_text=None):
         """
         Args:
-            x: (B, C, H, W) noisy latents
+            x: (B, C, H, W) noisy latents (H and W can vary for different aspect ratios)
             t: (B,) timesteps
             dino_emb: (B, 1024) DINOv3 embeddings
             text_emb: (B, seq_len, 1024) T5 hidden states (seq_len=512 for full captions)
@@ -339,7 +365,7 @@ class NanoDiT(nn.Module):
         Returns:
             v: (B, C, H, W) predicted velocity
         """
-        B = x.shape[0]
+        B, C, H, W = x.shape
         
         # Apply CFG dropout
         if cfg_drop_both is not None:
@@ -368,8 +394,15 @@ class NanoDiT(nn.Module):
                 text_emb
             )
         
-        # Embed inputs
-        x = self.x_embedder(x) + self.pos_embed  # (B, N, hidden_size)
+        # Embed inputs with dynamic positional encoding
+        x = self.x_embedder(x)  # (B, N, hidden_size) where N = (H//patch_size) * (W//patch_size)
+        
+        # Generate positional embeddings based on actual spatial dimensions
+        h_patches = H // self.patch_size
+        w_patches = W // self.patch_size
+        pos_embed = self.get_pos_embed(h_patches, w_patches, x.device)
+        x = x + pos_embed
+        
         t_emb = self.t_embedder(t)  # (B, hidden_size)
         
         # Conditioning vectors
@@ -386,7 +419,7 @@ class NanoDiT(nn.Module):
         # Output projection
         x = self.final_norm(x)
         x = self.final_proj(x)
-        x = self.unpatchify(x)  # (B, C, H, W)
+        x = self.unpatchify(x, h_patches, w_patches)  # (B, C, H, W)
         
         return x
 
