@@ -126,13 +126,18 @@ def decode_latents(vae, latents):
     
     Args:
         vae: VAE decoder model
-        latents: (B, 16, H, W) latent tensors
+        latents: (B, 16, H, W) latent tensors (normalized)
     
     Returns:
         images: (B, 3, H*8, W*8) RGB images in [-1, 1]
     """
+    from .data import denormalize_vae_latent
+    
     # Flux VAE uses 8x spatial compression
     # latents: (B, 16, 64, 64) -> images: (B, 3, 512, 512)
+    
+    # Denormalize latents before decoding (if normalization is enabled)
+    latents = denormalize_vae_latent(latents)
     
     # Convert to half precision for faster decoding
     latents = latents.half()
