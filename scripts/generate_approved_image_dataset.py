@@ -340,8 +340,9 @@ def encode_vae_latent(image_path: Path, vae_encoder) -> np.ndarray | None:
             latent_dist = vae_encoder.encode(tensor)
             latent = latent_dist.latent_dist.sample()
         
-        # Convert to numpy float16 for storage (half precision saves disk space)
-        result = latent.squeeze(0).cpu().numpy().astype(np.float16)
+        # Convert to float16 before numpy conversion (bfloat16 -> numpy can fail)
+        latent_fp16 = latent.squeeze(0).to(torch.float16).cpu()
+        result = latent_fp16.numpy().astype(np.float16)
         
         # Verify shape (16, H//8, W//8)
         expected_shape = (16, h // 8, w // 8)
@@ -351,7 +352,10 @@ def encode_vae_latent(image_path: Path, vae_encoder) -> np.ndarray | None:
         return result
         
     except Exception as e:
-        eprint(f"warning: VAE encoding failed for {image_path}: {e}")
+        import traceback
+        eprint(f"warning: VAE encoding failed for {image_path}:")
+        eprint(f"  Error: {type(e).__name__}: {e}")
+        eprint(f"  Traceback: {traceback.format_exc()}")
         return None
 
 
