@@ -375,7 +375,7 @@ def compute_t5_hidden_states(caption: str, tokenizer, encoder) -> np.ndarray | N
     """
     Encode caption to T5 hidden states.
     
-    Returns (77, 1024) float16 array or None on error.
+    Returns (512, 1024) float16 array or None on error.
     """
     try:
         import torch
@@ -401,9 +401,9 @@ def compute_t5_hidden_states(caption: str, tokenizer, encoder) -> np.ndarray | N
         # Convert to numpy float16, squeeze batch dimension
         result = hidden_states.squeeze(0).cpu().numpy().astype(np.float16)
         
-        # Validate shape
-        if result.shape != (77, 1024):
-            eprint(f"warning: T5 hidden state shape mismatch: got {result.shape}, expected (77, 1024)")
+        # Validate shape (512 tokens, 1024 hidden dims)
+        if result.shape != (512, 1024):
+            eprint(f"warning: T5 hidden state shape mismatch: got {result.shape}, expected (512, 1024)")
             return None
         
         return result
@@ -669,7 +669,7 @@ def verify_stage2_data(output_path: Path, base_dir: Path) -> dict:
         else:
             try:
                 arr = np.load(t5_path)
-                if arr.shape == (77, 1024) and arr.dtype == np.float16:
+                if arr.shape == (512, 1024) and arr.dtype == np.float16:
                     results["t5"]["valid"] += 1
                 else:
                     results["t5"]["invalid"] += 1
