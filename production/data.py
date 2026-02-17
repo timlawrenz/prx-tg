@@ -391,14 +391,31 @@ class BucketAwareDataLoader:
 
     def __iter__(self):
         iters = {name: iter(ds) for name, ds in self.bucket_datasets.items()}
-        while True:
-            bucket = random.choices(self.bucket_names, weights=self.bucket_weights, k=1)[0]
-            batch = next(iters[bucket])
+        bucket_names = list(self.bucket_names)
+        bucket_weights = list(self.bucket_weights)
+        while bucket_names:
+            bucket = random.choices(bucket_names, weights=bucket_weights, k=1)[0]
+            try:
+                batch = next(iters[bucket])
+            except StopIteration:
+                iters[bucket] = iter(self.bucket_datasets[bucket])
+                try:
+                    batch = next(iters[bucket])
+                except StopIteration:
+                    # Bucket has too few samples for a full batch (partial=False); remove it.
+                    idx = bucket_names.index(bucket)
+                    bucket_names.pop(idx)
+                    bucket_weights.pop(idx)
+                    iters.pop(bucket, None)
+                    print(f"  warning: removing bucket with insufficient samples: {bucket}")
+                    continue
             if bucket not in self._logged:
                 self._logged.add(bucket)
                 print(f"  Bucket {bucket}: batch vae_latent {tuple(batch['vae_latent'].shape)}")
             batch['bucket'] = bucket
             yield batch
+
+        raise RuntimeError("No buckets available for sampling (all exhausted or empty)")
 
 
 def _normalize_bucket_name(name: str) -> str:
