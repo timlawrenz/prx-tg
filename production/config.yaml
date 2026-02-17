@@ -11,10 +11,10 @@ model:
   input_size: 64               # Latent spatial size (512px / 8 = 64)
 
 training:
-  total_steps: 50000           # Total training steps
+  total_steps: 100000           # Total training steps
   warmup_steps: 7500           # Linear LR warmup (10% of total)
-  batch_size: 8               # Per-GPU batch size
-  grad_accumulation_steps: 32  # Effective batch
+  batch_size: 4               # Per-GPU batch size
+  grad_accumulation_steps: 64 # Effective batch
   
   optimizer:
     type: "AdamW"
