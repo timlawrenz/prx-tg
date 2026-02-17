@@ -292,6 +292,9 @@ class NanoDiT(nn.Module):
         self.final_norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.final_proj = nn.Linear(hidden_size, patch_size * patch_size * in_channels, bias=True)
         
+        # Local refinement convolution to smooth patch boundaries
+        self.output_conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=True)
+        
         # Initialize weights
         self.initialize_weights()
         
@@ -331,6 +334,10 @@ class NanoDiT(nn.Module):
         # Zero-out final projection (adaLN-Zero pattern for output)
         nn.init.zeros_(self.final_proj.weight)
         nn.init.zeros_(self.final_proj.bias)
+        
+        # Zero-init output conv for training stability (starts as pass-through)
+        nn.init.zeros_(self.output_conv.weight)
+        nn.init.zeros_(self.output_conv.bias)
 
     def unpatchify(self, x, h, w):
         """Convert patch tokens back to spatial latents.
@@ -420,6 +427,9 @@ class NanoDiT(nn.Module):
         x = self.final_norm(x)
         x = self.final_proj(x)
         x = self.unpatchify(x, h_patches, w_patches)  # (B, C, H, W)
+        
+        # Smooth patch boundaries with residual connection
+        x = x + self.output_conv(x)
         
         return x
 
