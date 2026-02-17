@@ -248,6 +248,9 @@ def main():
             shard_dir=config.data.shard_base_dir,
             output_dir=config.validation.output_dir,
             tensorboard_writer=tb_writer,
+            text_scale=config.sampling.text_scale,
+            dino_scale=config.sampling.dino_scale,
+            num_steps=config.sampling.num_steps,
         )
     
     # Create visual debugging function (if enabled)

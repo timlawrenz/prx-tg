@@ -95,6 +95,9 @@ class ValidationRunner:
         output_dir='validation',
         lpips_net='alex',
         tensorboard_writer=None,
+        text_scale=3.0,
+        dino_scale=2.0,
+        num_steps=50,
     ):
         """
         Args:
@@ -112,6 +115,11 @@ class ValidationRunner:
         self.device = device
         self.output_dir = Path(output_dir)
         self.tb_writer = tensorboard_writer
+
+        # Sampling CFG scales for validation
+        self.text_scale = text_scale
+        self.dino_scale = dino_scale
+        self.num_steps = num_steps
         
         # Load VAE decoder
         print("Loading VAE decoder...")
@@ -536,9 +544,9 @@ class ValidationRunner:
             eval_model,
             self.vae,
             device=self.device,
-            num_steps=50,
-            text_scale=3.0,
-            dino_scale=2.0,
+            num_steps=self.num_steps,
+            text_scale=self.text_scale,
+            dino_scale=self.dino_scale,
         )
         
         # Run tests
@@ -573,7 +581,7 @@ class ValidationRunner:
         return results
 
 
-def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=None):
+def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=None, text_scale=3.0, dino_scale=2.0, num_steps=50):
     """Create validation function for training loop.
     
     IMPORTANT: This creates its own deterministic dataloader internally,
@@ -611,7 +619,11 @@ def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=
             runner = ValidationRunner(
                 model, ema, val_dataloader, device, output_dir,
                 tensorboard_writer=tensorboard_writer,
+                text_scale=text_scale,
+                dino_scale=dino_scale,
+                num_steps=num_steps,
             )
+
         
         runner.run_validation(step)
     
