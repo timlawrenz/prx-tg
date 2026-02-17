@@ -60,6 +60,9 @@ data:
     - "bucket_768x1280"
     - "bucket_832x1216"
   
+  # Bucket sampling strategy (for bucket-aware batching)
+  bucket_sampling: "proportional"    # "proportional" or "uniform"
+
   # Augmentation (smart augmentation from the-plan.md)
   horizontal_flip_prob: 0.5          # Flip probability
   swap_caption_lr: true              # Swap left↔right in caption when flipped

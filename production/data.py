@@ -169,29 +169,27 @@ def swap_left_right(caption):
 
 def resize_vae_latent(latent, target_size=64):
     """Resize VAE latent to target spatial size using bilinear interpolation.
-    
-    NOTE: This dataset stores VAE latents at their original resolution
-    (variable sizes matching the input images). Bilinear interpolation is
-    used to resize them to a uniform target_size for batching.
-    
-    While resizing VAE latents is "nonphysical" relative to the VAE manifold,
-    it's a practical necessity for handling variable-resolution datasets.
-    
+
     Args:
         latent: (C, H, W) numpy array
-        target_size: int, target spatial size (default 64 for 512x512 images)
-    
+        target_size: int or (H, W) tuple in latent-space
+
     Returns:
-        resized: (C, target_size, target_size) torch tensor
+        resized: (C, H, W) torch tensor
     """
     # Convert to torch and add batch dimension
     latent_t = torch.from_numpy(latent).unsqueeze(0)  # (1, C, H, W)
     
+    if isinstance(target_size, tuple):
+        target_h, target_w = target_size
+    else:
+        target_h, target_w = target_size, target_size
+
     # Resize using bilinear interpolation if needed
-    if latent_t.shape[2] != target_size or latent_t.shape[3] != target_size:
+    if latent_t.shape[2] != target_h or latent_t.shape[3] != target_w:
         latent_t = F.interpolate(
             latent_t,
-            size=(target_size, target_size),
+            size=(target_h, target_w),
             mode='bilinear',
             align_corners=False
         )
@@ -200,7 +198,7 @@ def resize_vae_latent(latent, target_size=64):
 
 
 class ValidationDataset:
-    """Dataset loader for WebDataset validation shards."""
+    """Dataset loader for WebDataset shards."""
     
     def __init__(
         self,
@@ -209,6 +207,7 @@ class ValidationDataset:
         shuffle=True,
         flip_prob=0.5,
         target_latent_size=64,
+        shard_files=None,
     ):
         """
         Args:
@@ -224,8 +223,12 @@ class ValidationDataset:
         self.flip_prob = flip_prob
         self.target_latent_size = target_latent_size
         
-        # Find all shard files across buckets
-        self.shard_files = sorted(self.shard_dir.glob('bucket_*/shard-*.tar'))
+        # Find shard files
+        if shard_files is None:
+            self.shard_files = sorted(self.shard_dir.glob('bucket_*/shard-*.tar'))
+        else:
+            self.shard_files = [Path(f) for f in shard_files]
+            self.shard_files = sorted(self.shard_files)
         if not self.shard_files:
             raise ValueError(f"No shard files found in {shard_dir}")
         
@@ -256,15 +259,18 @@ class ValidationDataset:
             vae_latent = np.flip(vae_latent, axis=2).copy()  # Flip width dimension
             caption = swap_left_right(caption)
         
-        # Resize VAE latent to target size
-        vae_latent = resize_vae_latent(vae_latent, self.target_latent_size)
+        # Resize VAE latent to target size (training may keep native bucket resolution)
+        if self.target_latent_size is None:
+            vae_latent = torch.from_numpy(vae_latent)
+        else:
+            vae_latent = resize_vae_latent(vae_latent, self.target_latent_size)
         
         # Normalize VAE latent (if enabled)
         vae_latent = normalize_vae_latent(vae_latent)
         
         # Convert to tensors
         return {
-            'vae_latent': vae_latent.float(),  # (16, 64, 64)
+            'vae_latent': vae_latent.float(),  # (16, H, W)
             'dino_embedding': torch.from_numpy(dino_emb).float(),  # (1024,)
             't5_hidden': torch.from_numpy(t5_hidden).float(),  # (77, 1024)
             't5_mask': torch.from_numpy(t5_mask).long(),  # (77,)
@@ -297,7 +303,7 @@ class ValidationDataset:
             wds.WebDataset(shard_urls, shardshuffle=1000 if self.shuffle else False)
             .decode()
             .map(self.process_sample)
-            .batched(self.batch_size, collation_fn=self.collate_fn)
+            .batched(self.batch_size, collation_fn=self.collate_fn, partial=False)
         )
         
         # Make infinite by repeating (only for training)
@@ -374,41 +380,78 @@ def get_deterministic_validation_dataloader(
     return dataset
 
 
+class BucketAwareDataLoader:
+    """Sample whole batches from a single aspect-ratio bucket."""
+
+    def __init__(self, bucket_datasets, bucket_weights):
+        self.bucket_datasets = bucket_datasets  # dict[name -> ValidationDataset]
+        self.bucket_names = list(bucket_datasets.keys())
+        self.bucket_weights = bucket_weights
+        self._logged = set()
+
+    def __iter__(self):
+        iters = {name: iter(ds) for name, ds in self.bucket_datasets.items()}
+        while True:
+            bucket = random.choices(self.bucket_names, weights=self.bucket_weights, k=1)[0]
+            batch = next(iters[bucket])
+            if bucket not in self._logged:
+                self._logged.add(bucket)
+                print(f"  Bucket {bucket}: batch vae_latent {tuple(batch['vae_latent'].shape)}")
+            batch['bucket'] = bucket
+            yield batch
+
+
+def _normalize_bucket_name(name: str) -> str:
+    return name if name.startswith('bucket_') else f"bucket_{name}"
+
+
+def _bucket_target_latent_size(bucket_name: str) -> tuple[int, int]:
+    m = re.search(r"(\d+)x(\d+)$", bucket_name)
+    if not m:
+        raise ValueError(f"Invalid bucket name (expected ..._<W>x<H>): {bucket_name}")
+    w_px, h_px = int(m.group(1)), int(m.group(2))
+    return (h_px // 8, w_px // 8)
+
+
 def get_production_dataloader(config, device='cuda'):
-    """Create production dataloader from config.
-    
-    Args:
-        config: Config object from config_loader
-        device: torch device (for logging purposes)
-        
-    Returns:
-        iterable dataloader yielding batches
-    """
+    """Create production dataloader from config (bucket-aware, per-bucket target sizes)."""
     from .config_loader import Config
-    
-    # For now, use all buckets found in shard_base_dir
-    # TODO Stage 3: implement bucket-weighted sampling and smart batching
+
     data_cfg = config.data
     training_cfg = config.training
-    
-    # Pass base directory - ValidationDataset will glob for bucket_*/shard-*.tar
-    shard_dir = data_cfg.shard_base_dir
-    
+
+    shard_dir = Path(data_cfg.shard_base_dir)
+
     print(f"  Shard base dir: {shard_dir}")
-    print(f"  Will search for: {shard_dir}/bucket_*/shard-*.tar")
+    print(f"  Buckets (configured): {len(data_cfg.buckets)}")
     print(f"  Batch size: {training_cfg.batch_size}")
     print(f"  Flip prob: {data_cfg.horizontal_flip_prob}")
-    print(f"  TODO Stage 3: Bucket-aware batching (uniform resolution per batch)")
-    
-    dataset = ValidationDataset(
-        shard_dir=shard_dir,
-        batch_size=training_cfg.batch_size,
-        shuffle=True,
-        flip_prob=data_cfg.horizontal_flip_prob,
-        target_latent_size=config.model.input_size,
-    )
-    
-    return dataset
+    print(f"  Bucket-aware batching: ENABLED")
+    print(f"  Bucket sampling: {data_cfg.bucket_sampling}")
+
+    bucket_datasets = {}
+    bucket_weights = []
+
+    for bucket in data_cfg.buckets:
+        bucket_name = _normalize_bucket_name(bucket)
+        shard_files = sorted((shard_dir / bucket_name).glob('shard-*.tar'))
+        if not shard_files:
+            raise ValueError(f"No shard files found for bucket {bucket_name} in {shard_dir}")
+
+        bucket_datasets[bucket_name] = ValidationDataset(
+            shard_dir=str(shard_dir / bucket_name),
+            shard_files=shard_files,
+            batch_size=training_cfg.batch_size,
+            shuffle=True,
+            flip_prob=data_cfg.horizontal_flip_prob,
+            target_latent_size=_bucket_target_latent_size(bucket_name),
+        )
+        bucket_weights.append(len(shard_files))
+
+    if data_cfg.bucket_sampling == 'uniform':
+        bucket_weights = [1.0 for _ in bucket_weights]
+
+    return BucketAwareDataLoader(bucket_datasets, bucket_weights)
 
 
 if __name__ == "__main__":
