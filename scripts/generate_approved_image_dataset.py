@@ -39,6 +39,58 @@ ASPECT_BUCKETS = [
 ]
 
 
+def parse_bucket_dims(aspect_bucket: str) -> tuple[int, int] | None:
+    """Parse "832x1216" or "bucket_832x1216" into (w, h)."""
+    if not aspect_bucket or not isinstance(aspect_bucket, str):
+        return None
+    s = aspect_bucket
+    if s.startswith("bucket_"):
+        s = s[len("bucket_"):]
+    if "x" not in s:
+        return None
+    try:
+        w_str, h_str = s.split("x", 1)
+        return int(w_str), int(h_str)
+    except Exception:
+        return None
+
+
+def parse_buckets_arg(buckets: str) -> list[tuple[int, int]]:
+    """Parse comma-separated bucket list into [(w,h), ...]."""
+    if not buckets:
+        return []
+    out: list[tuple[int, int]] = []
+    for part in buckets.split(","):
+        dims = parse_bucket_dims(part.strip())
+        if dims:
+            out.append(dims)
+    return out
+
+
+def load_bucketed_image(image_path: Path, bucket_w: int, bucket_h: int):
+    """Resize-to-cover + center-crop to bucket_w x bucket_h."""
+    import math
+    from PIL import Image
+
+    with Image.open(image_path) as im:
+        img = im.convert("RGB")
+    w, h = img.size
+
+    if w <= 0 or h <= 0:
+        return img
+
+    scale = max(bucket_w / w, bucket_h / h)
+    new_w = int(math.ceil(w * scale))
+    new_h = int(math.ceil(h * scale))
+
+    if (new_w, new_h) != (w, h):
+        img = img.resize((new_w, new_h), resample=Image.BICUBIC)
+
+    left = max(0, (new_w - bucket_w) // 2)
+    top = max(0, (new_h - bucket_h) // 2)
+    return img.crop((left, top, left + bucket_w, top + bucket_h))
+
+
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
@@ -262,6 +314,27 @@ def get_image_dimensions(image_path: Path) -> tuple[int, int] | None:
         return None
 
 
+def ensure_bucket_info(record: dict, image_path: Path) -> bool:
+    """Ensure record has width/height (original) and aspect_bucket; returns True if modified."""
+    changed = False
+
+    w = record.get("width")
+    h = record.get("height")
+    if not isinstance(w, int) or not isinstance(h, int) or w <= 0 or h <= 0:
+        dims = get_image_dimensions(image_path)
+        if dims:
+            record["width"], record["height"] = dims
+            changed = True
+
+    if isinstance(record.get("width"), int) and isinstance(record.get("height"), int):
+        ab = record.get("aspect_bucket")
+        if not isinstance(ab, str) or not parse_bucket_dims(ab):
+            record["aspect_bucket"] = assign_aspect_bucket(record["width"], record["height"])
+            changed = True
+
+    return changed
+
+
 def load_flux_vae(device, compile_encoder: bool = False):
     """Load Flux VAE encoder component only.
     
@@ -303,55 +376,60 @@ def load_flux_vae(device, compile_encoder: bool = False):
         raise
 
 
-def preprocess_vae_input(image_path: Path):
-    """Prepare image for VAE encoding."""
-    from PIL import Image
+def preprocess_vae_input(image):
+    """Prepare PIL image for VAE encoding."""
     import torch
     from torchvision import transforms
-    
-    img = Image.open(image_path).convert("RGB")
-    
+
     # VAE expects [-1, 1] range
     tfm = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5])  # Rescale [0,1] to [-1,1]
     ])
-    
-    tensor = tfm(img).unsqueeze(0)  # Add batch dimension
-    return tensor, img.size  # Returns (tensor, (width, height))
+
+    return tfm(image).unsqueeze(0)  # (1, 3, H, W)
 
 
-def encode_vae_latent(image_path: Path, vae_encoder) -> np.ndarray | None:
-    """
-    Encode image to VAE latent space.
-    
-    Returns (16, H//8, W//8) float16 array or None on error.
-    """
+def encode_vae_latent(image_path: Path, vae_encoder, aspect_bucket: str | None = None) -> np.ndarray | None:
+    """Encode bucketed crop to VAE latent space; returns (16, H//8, W//8) float16."""
     try:
         import torch
         import numpy as np
-        
-        tensor, (w, h) = preprocess_vae_input(image_path)
-        
+        from PIL import Image
+
+        expected_shape = None
+        dims = parse_bucket_dims(aspect_bucket) if aspect_bucket else None
+        if dims:
+            bucket_w, bucket_h = dims
+            img = load_bucketed_image(image_path, bucket_w, bucket_h)
+            expected_shape = (16, bucket_h // 8, bucket_w // 8)
+        else:
+            with Image.open(image_path) as im:
+                img = im.convert("RGB")
+            w, h = img.size
+            expected_shape = (16, h // 8, w // 8)
+
+        tensor = preprocess_vae_input(img)
+
         device = next(vae_encoder.parameters()).device
         dtype = next(vae_encoder.parameters()).dtype  # Match model dtype (bfloat16)
         tensor = tensor.to(device, dtype=dtype)
-        
+
         with torch.no_grad():
             latent_dist = vae_encoder.encode(tensor)
             latent = latent_dist.latent_dist.sample()
-        
-        # Convert to float16 before numpy conversion (bfloat16 -> numpy can fail)
+
         latent_fp16 = latent.squeeze(0).to(torch.float16).cpu()
         result = latent_fp16.numpy().astype(np.float16)
-        
-        # Verify shape (16, H//8, W//8)
-        expected_shape = (16, h // 8, w // 8)
-        if result.shape != expected_shape:
-            eprint(f"warning: VAE latent shape mismatch for {image_path}: got {result.shape}, expected {expected_shape}")
-        
+
+        if expected_shape and result.shape != expected_shape:
+            eprint(
+                f"warning: VAE latent shape mismatch for {image_path}: got {result.shape}, expected {expected_shape}"
+            )
+            return None
+
         return result
-        
+
     except Exception as e:
         import traceback
         eprint(f"warning: VAE encoding failed for {image_path}:")
@@ -560,11 +638,33 @@ def needs_dinov3_extraction(record: dict, dinov3_dir: Path) -> bool:
 
 
 def needs_vae_latent(record: dict, vae_dir: Path) -> bool:
-    """Check if VAE latent .npy file is missing."""
+    """Check if VAE latent is missing OR stale for the record's aspect_bucket."""
+    import numpy as np
+
     image_path = Path(record["image_path"])
     image_id = compute_image_id(image_path)
     npy_path = vae_dir / f"{image_id}.npy"
-    return not npy_path.exists()
+
+    if not npy_path.exists():
+        return True
+
+    dims = parse_bucket_dims(record.get("aspect_bucket"))
+    # If we can't validate bucket consistency, force regeneration (true-native contract)
+    if not dims:
+        return True
+
+    bw, bh = dims
+    expected = (16, bh // 8, bw // 8)
+
+    try:
+        arr = np.load(npy_path, mmap_mode="r")
+        if arr.shape != expected:
+            return True
+        if arr.dtype != np.float16:
+            return True
+        return False
+    except Exception:
+        return True
 
 
 def needs_t5_hidden(record: dict, t5_dir: Path) -> bool:
@@ -657,11 +757,29 @@ def verify_stage2_data(output_path: Path, base_dir: Path) -> dict:
         else:
             try:
                 arr = np.load(vae_path)
-                if arr.ndim == 3 and arr.shape[0] == 16 and arr.dtype == np.float16:
+                expected = None
+                dims = parse_bucket_dims(record.get("aspect_bucket"))
+                if dims:
+                    bw, bh = dims
+                    expected = (16, bh // 8, bw // 8)
+
+                is_valid = (
+                    arr.ndim == 3
+                    and arr.shape[0] == 16
+                    and arr.dtype == np.float16
+                    and (expected is None or arr.shape == expected)
+                )
+
+                if is_valid:
                     results["vae"]["valid"] += 1
                 else:
                     results["vae"]["invalid"] += 1
-                    eprint(f"  invalid VAE for {image_id}: shape={arr.shape}, dtype={arr.dtype}")
+                    if expected is not None:
+                        eprint(
+                            f"  invalid VAE for {image_id}: shape={arr.shape}, dtype={arr.dtype}, expected_shape={expected}"
+                        )
+                    else:
+                        eprint(f"  invalid VAE for {image_id}: shape={arr.shape}, dtype={arr.dtype}")
             except Exception as e:
                 results["vae"]["invalid"] += 1
                 eprint(f"  corrupt VAE for {image_id}: {e}")
@@ -683,6 +801,95 @@ def verify_stage2_data(output_path: Path, base_dir: Path) -> dict:
                 eprint(f"  corrupt T5 for {image_id}: {e}")
     
     return results
+
+
+def analyze_aspect_buckets(input_dir: Path, output_path: Path, num_buckets: int, bucket_area: int, bucket_quantum: int):
+    """Analyze dataset aspect ratios and propose a quantized bucket list."""
+    import math
+    import numpy as np
+
+    existing = load_existing_records(output_path) if output_path.exists() else {}
+
+    log_ratios = []
+    for img_path in iter_images(input_dir):
+        rel = img_path.as_posix()
+        rec = existing.get(rel, {})
+        w = rec.get("width")
+        h = rec.get("height")
+
+        if not isinstance(w, int) or not isinstance(h, int) or w <= 0 or h <= 0:
+            dims = get_image_dimensions(img_path)
+            if not dims:
+                continue
+            w, h = dims
+
+        log_ratios.append(math.log(w / h))
+
+    if not log_ratios:
+        eprint("error: no valid width/height found to analyze")
+        return 1
+
+    x = np.asarray(log_ratios, dtype=np.float64)
+
+    k = max(1, int(num_buckets))
+    qs = np.linspace(0.0, 1.0, k)
+    centers = np.quantile(x, qs)
+
+    for _ in range(30):
+        d = np.abs(x[:, None] - centers[None, :])
+        assign = np.argmin(d, axis=1)
+        new_centers = centers.copy()
+        for i in range(k):
+            mask = assign == i
+            if np.any(mask):
+                new_centers[i] = float(np.mean(x[mask]))
+        if float(np.max(np.abs(new_centers - centers))) < 1e-6:
+            break
+        centers = new_centers
+
+    centers = np.sort(centers)
+    bucket_ratios = np.exp(centers)
+
+    buckets: list[tuple[int, int]] = []
+    for r in bucket_ratios:
+        w = math.sqrt(bucket_area * r)
+        h = math.sqrt(bucket_area / r)
+        bw = max(bucket_quantum, int(round(w / bucket_quantum)) * bucket_quantum)
+        bh = max(bucket_quantum, int(round(h / bucket_quantum)) * bucket_quantum)
+        buckets.append((bw, bh))
+
+    # Deduplicate after quantization
+    uniq: list[tuple[int, int]] = []
+    for b in buckets:
+        if b not in uniq:
+            uniq.append(b)
+    buckets = uniq
+
+    br = np.asarray([math.log(bw / bh) for bw, bh in buckets], dtype=np.float64)
+    d2 = np.abs(x[:, None] - br[None, :])
+    assign2 = np.argmin(d2, axis=1)
+    counts = np.bincount(assign2, minlength=len(buckets))
+    mean_abs_log_err = float(np.mean(np.abs(x - br[assign2])))
+    median_abs_log_err = float(np.median(np.abs(x - br[assign2])))
+
+    eprint("=== Proposed aspect buckets ===")
+    eprint(f"images analyzed: {len(x)}")
+    eprint(f"num buckets (requested): {k}, after dedupe: {len(buckets)}")
+    eprint(f"mean |log(aspect error)|: {mean_abs_log_err:.4f}")
+    eprint(f"median |log(aspect error)|: {median_abs_log_err:.4f}")
+    eprint("")
+
+    eprint("ASPECT_BUCKETS = [")
+    for (bw, bh), c in sorted(zip(buckets, counts), key=lambda t: (t[0][0] / t[0][1])):
+        eprint(f"    ({bw}, {bh}),  # count={int(c)} ratio={bw / bh:.3f}")
+    eprint("]")
+    eprint("")
+
+    eprint("production/config.yaml data.buckets:")
+    for bw, bh in sorted(buckets, key=lambda t: (t[0] / t[1])):
+        eprint(f"  - \"bucket_{bw}x{bh}\"")
+
+    return 0
 
 
 def parse_args(argv):
@@ -740,6 +947,34 @@ def parse_args(argv):
         help="Verify Stage 2 data integrity: check for missing/corrupt .npy files and report",
     )
     p.add_argument(
+        "--analyze-buckets",
+        action="store_true",
+        help="Analyze aspect ratios and propose a bucket list (prints output and exits)",
+    )
+    p.add_argument(
+        "--num-buckets",
+        type=int,
+        default=len(ASPECT_BUCKETS),
+        help="Number of aspect buckets to propose in --analyze-buckets mode",
+    )
+    p.add_argument(
+        "--bucket-area",
+        type=int,
+        default=1024 * 1024,
+        help="Target pixel area for derived buckets (default: 1024*1024)",
+    )
+    p.add_argument(
+        "--bucket-quantum",
+        type=int,
+        default=64,
+        help="Quantize derived bucket dims to multiples of this (default: 64)",
+    )
+    p.add_argument(
+        "--buckets",
+        default="",
+        help="Override buckets as comma-separated list (e.g., 1024x1024,832x1216,...)",
+    )
+    p.add_argument(
         "--caption-max-new-tokens",
         type=int,
         default=500,
@@ -766,6 +1001,18 @@ def main(argv):
     output_path = Path(args.output)
     temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
     base_dir = Path(args.output_base_dir)
+
+    # Optional bucket override
+    if args.buckets:
+        parsed = parse_buckets_arg(args.buckets)
+        if parsed:
+            global ASPECT_BUCKETS
+            ASPECT_BUCKETS = parsed
+            eprint(f"using overridden ASPECT_BUCKETS: {ASPECT_BUCKETS}")
+
+    # Analysis-only mode
+    if args.analyze_buckets:
+        return analyze_aspect_buckets(input_dir, output_path, args.num_buckets, args.bucket_area, args.bucket_quantum)
 
     # Create output directories
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1058,18 +1305,21 @@ def main(argv):
                 needs_dimensions = needs_field(record, "height") or needs_field(record, "width")
 
                 if needs_dino or needs_caption or needs_dimensions:
-                    # Load image
-                    try:
-                        img = Image.open(img_path).convert("RGB")
-                    except Exception as e:
-                        eprint(f"warning: cannot open {img_path}: {e}")
-                        continue
+                    # Ensure width/height + aspect_bucket exist before any image-based pass
+                    ensure_bucket_info(record, img_path)
 
-                    # Get dimensions if needed
-                    if needs_dimensions:
-                        dims = get_image_dimensions(img_path)
-                        if dims:
-                            record["width"], record["height"] = dims
+                    img = None
+                    if needs_dino or needs_caption:
+                        try:
+                            dims = parse_bucket_dims(record.get("aspect_bucket"))
+                            if dims:
+                                img = load_bucketed_image(img_path, dims[0], dims[1])
+                            else:
+                                with Image.open(img_path) as im:
+                                    img = im.convert("RGB")
+                        except Exception as e:
+                            eprint(f"warning: cannot open {img_path}: {e}")
+                            continue
 
                     # Add to batch for processing
                     batch_buffer.append({
@@ -1102,14 +1352,21 @@ def main(argv):
             if run_vae and needs_vae_gen:
                 if args.verbose:
                     eprint(f"verbose: encoding VAE latent for {image_id}...")
-                
-                latent = encode_vae_latent(img_path, vae_encoder)
+
+                meta_changed = ensure_bucket_info(record, img_path)
+                latent = encode_vae_latent(img_path, vae_encoder, record.get("aspect_bucket"))
                 if latent is not None:
                     save_vae_latent(latent, image_id, vae_dir)
                     enriched += 1
                 else:
                     eprint(f"warning: VAE encoding failed for {image_id}")
-                
+
+                # Persist metadata updates (for --pass vae runs)
+                if meta_changed and not run_dinov3 and not run_migrate:
+                    temp_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    temp_file.flush()
+                    records_written_this_session += 1
+
                 # Clear CUDA cache to prevent memory accumulation
                 import torch
                 if torch.cuda.is_available():
