@@ -48,7 +48,7 @@ training:
   precision: "bfloat16"              # "bfloat16" or "float32"
 
 data:
-  shard_base_dir: "data/shards/4000"      # Base directory for WebDataset shards
+  shard_base_dir: "data/shards/7500"      # Base directory for WebDataset shards
   
   # Aspect ratio buckets to read (each bucket is a subdirectory with tar files)
   buckets:
