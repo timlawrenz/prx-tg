@@ -436,7 +436,8 @@ def get_production_dataloader(config, device='cuda'):
         bucket_name = _normalize_bucket_name(bucket)
         shard_files = sorted((shard_dir / bucket_name).glob('shard-*.tar'))
         if not shard_files:
-            raise ValueError(f"No shard files found for bucket {bucket_name} in {shard_dir}")
+            print(f"  warning: skipping bucket with no shards: {bucket_name}")
+            continue
 
         bucket_datasets[bucket_name] = ValidationDataset(
             shard_dir=str(shard_dir / bucket_name),
@@ -447,6 +448,9 @@ def get_production_dataloader(config, device='cuda'):
             target_latent_size=_bucket_target_latent_size(bucket_name),
         )
         bucket_weights.append(len(shard_files))
+
+    if not bucket_datasets:
+        raise ValueError(f"No shard files found for any configured bucket in {shard_dir}")
 
     if data_cfg.bucket_sampling == 'uniform':
         bucket_weights = [1.0 for _ in bucket_weights]
