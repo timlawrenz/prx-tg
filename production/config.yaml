@@ -31,9 +31,9 @@ training:
   # CFG dropout (mutually exclusive categorical as per fixed validation code)
   cfg_dropout:
     p_uncond: 0.1              # Drop both DINO and text (unconditional)
-    p_text_only: 0.1           # Drop DINO (text-only conditioning)
-    p_dino_only: 0.1           # Drop text (DINO-only conditioning)
-    # Remaining 70% keeps both signals
+    p_text_only: 0.3           # Drop DINO more often (reduce DINO reliance)
+    p_dino_only: 0.05          # Drop text less often (reduce DINO-only cases)
+    # Remaining 55% keeps both signals
 
   # Timestep sampling strategy
   timestep_sampling: "logit_normal"  # "uniform" or "logit_normal"
@@ -71,8 +71,8 @@ data:
 
 sampling:
   num_steps: 50                      # Euler integration steps
-  text_scale: 3.0                    # CFG scale for text conditioning
-  dino_scale: 2.0                    # CFG scale for DINO conditioning
+  text_scale: 3.0                    # CFG scale for text conditioning (keep strong)
+  dino_scale: 0.5                    # CFG scale for DINO conditioning (dialed down)
 
 validation:
   enabled: true                      # Enable validation runs
