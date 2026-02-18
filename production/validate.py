@@ -195,8 +195,8 @@ class ValidationRunner:
         
         lpips_scores = []
         
-        # Generate in batches for efficiency (smaller batch for validation to avoid OOM)
-        batch_size = 2
+        # Generate in batches for efficiency (reduced batch_size for 1024x1024 to avoid OOM)
+        batch_size = 1
         
         for i in tqdm(range(0, len(RECONSTRUCTION_TEST_INDICES), batch_size), desc='Reconstruction'):
             batch_indices = RECONSTRUCTION_TEST_INDICES[i:i+batch_size]
@@ -526,6 +526,9 @@ class ValidationRunner:
         print(f"VALIDATION AT STEP {step}")
         print(f"{'='*60}\n")
         
+        # Free up memory before validation
+        torch.cuda.empty_cache()
+        
         # Copy EMA weights to a temporary model for evaluation
         eval_model = type(self.model)(
             input_size=self.model.input_size,
@@ -613,6 +616,7 @@ def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=
             val_dataloader = get_deterministic_validation_dataloader(
                 shard_dir=shard_dir,
                 batch_size=1,  # Process one at a time for validation
+                target_latent_size=getattr(model, 'input_size', 64),
             )
         
         if runner is None:
