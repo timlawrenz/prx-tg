@@ -241,6 +241,8 @@ class ValidationSampler:
         text_mask,
         latent_size=None,
         batch_size=None,
+        text_scale=None,
+        dino_scale=None,
     ):
         """Generate images from conditioning.
         
@@ -250,6 +252,8 @@ class ValidationSampler:
             text_mask: (B, 512) T5 attention mask
             latent_size: spatial size of latents (64 = 512x512 images)
             batch_size: override batch size (default: from embeddings)
+            text_scale: override text CFG scale (default: use sampler's text_scale)
+            dino_scale: override dino CFG scale (default: use sampler's dino_scale)
         
         Returns:
             images: (B, 3, 512, 512) RGB images
@@ -267,6 +271,10 @@ class ValidationSampler:
         if latent_size is None:
             latent_size = getattr(self.model, 'input_size', 64)
 
+        # Use custom scales if provided, otherwise use defaults
+        cfg_text_scale = text_scale if text_scale is not None else self.text_scale
+        cfg_dino_scale = dino_scale if dino_scale is not None else self.dino_scale
+
         # Sample latents
         shape = (batch_size, 16, latent_size, latent_size)
         latents = self.sampler.sample(
@@ -276,8 +284,8 @@ class ValidationSampler:
             text_emb,
             text_mask,
             device=self.device,
-            text_scale=self.text_scale,
-            dino_scale=self.dino_scale,
+            text_scale=cfg_text_scale,
+            dino_scale=cfg_dino_scale,
         )
         
         # Decode to images

@@ -67,7 +67,7 @@ def create_visual_debug_fn(
             caption = sample['caption']
             
             # Sample latents
-            latent_shape = (1, 16, 64, 64)  # Fixed for now (Stage 1)
+            latent_shape = (1, 16, 128, 128)  # 1024x1024 target resolution
             latents = sampler.sample(
                 model=model,
                 shape=latent_shape,
@@ -79,9 +79,9 @@ def create_visual_debug_fn(
                 dino_scale=dino_scale,
             )
             
-            # Decode to image (64x64 latent -> 512x512 image via 8x VAE upsampling)
+            # Decode to image (128x128 latent -> 1024x1024 image via 8x VAE upsampling)
             images = decode_latents(vae, latents)
-            img_tensor = images[0]  # (3, 512, 512) in [-1, 1]
+            img_tensor = images[0]  # (3, 1024, 1024) in [-1, 1]
             
             # Save individual image to disk
             pil_img = tensor_to_pil(img_tensor)
@@ -190,7 +190,7 @@ def _load_debug_samples(shard_dir, num_samples, device):
     dataset = ValidationDataset(
         shard_dir=shard_dir,
         flip_prob=0.0,  # No flip for debug samples
-        target_latent_size=64,  # Fixed for now (Stage 1)
+        target_latent_size=128,  # 1024x1024 target resolution
         batch_size=1,
     )
     

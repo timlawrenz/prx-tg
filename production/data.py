@@ -12,9 +12,8 @@ import webdataset as wds
 
 # Flux VAE latent normalization (computed from dataset statistics)
 # These are automatically computed at training startup if not already cached
-# Computed from 1000 samples (500M values) from data/shards/2000
-FLUX_LATENT_MEAN = -0.046073
-FLUX_LATENT_STD = 2.952103
+FLUX_LATENT_MEAN = -0.033565
+FLUX_LATENT_STD = 2.963212
 USE_LATENT_NORMALIZATION = True # Enable after verifying compatibility
 
 # Cache file for computed statistics
@@ -255,9 +254,10 @@ class ValidationDataset:
         t5_mask = sample['t5m.npy']  # (512,)
         
         # Apply horizontal flip augmentation
+        # NOTE: We do NOT swap "left"/"right" in captions because T5 embeddings
+        # are pre-computed and cannot be modified at training time.
         if random.random() < self.flip_prob:
             vae_latent = np.flip(vae_latent, axis=2).copy()  # Flip width dimension
-            caption = swap_left_right(caption)
         
         # Resize VAE latent to target size (training may keep native bucket resolution)
         if self.target_latent_size is None:

@@ -63,9 +63,10 @@ data:
   # Bucket sampling strategy (for bucket-aware batching)
   bucket_sampling: "proportional"    # "proportional" or "uniform"
 
-  # Augmentation (smart augmentation from the-plan.md)
+  # Augmentation
   horizontal_flip_prob: 0.5          # Flip probability
-  swap_caption_lr: true              # Swap left↔right in caption when flipped
+  # NOTE: Caption swapping (left↔right) is NOT supported because T5 embeddings
+  # are pre-computed. Caption text is unused during training (only T5 embeddings matter).
   
   # DataLoader settings
   num_workers: 4                     # Parallel workers

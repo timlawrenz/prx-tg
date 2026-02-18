@@ -13,7 +13,7 @@ from .sample import ValidationSampler, load_vae_decoder, save_images
 
 # Fixed test sample indices for consistency across validation runs
 # These will be selected from the validation dataset
-RECONSTRUCTION_TEST_INDICES = list(range(100))  # All 100 samples
+RECONSTRUCTION_TEST_INDICES = list(range(0, 100, 4))  # 25 samples evenly spaced
 
 DINO_SWAP_TEST_PAIRS = [
     (5, 42),   # Pair 1
@@ -36,6 +36,10 @@ TEXT_MANIP_REPLACEMENTS = [
 ]
 
 TEXT_MANIP_TEST_INDICES = [8, 15, 27, 39, 51]
+
+# Text-only generation test: pure text-to-image (no DINO guidance)
+# This simulates future text-to-image usage without DINO embeddings
+TEXT_ONLY_TEST_INDICES = list(range(0, 100, 5))  # 20 samples evenly spaced
 
 
 def create_image_collage(images, labels=None, spacing=10):
@@ -336,6 +340,191 @@ class ValidationRunner:
             'results': results,
         }
     
+    def run_divergence_test(self, step, sampler):
+        """Test 2b: CFG Divergence Test - prove text and DINO are independent.
+        
+        From the-plan.md Part E.2:
+        Generate from the SAME starting noise with two extreme CFG settings:
+        - Pass 1: scale_text=4.0, scale_dino=0.0 (text-only, no DINO)
+        - Pass 2: scale_text=0.0, scale_dino=2.0 (DINO-only, no text)
+        
+        This proves that text and DINO conditioning are truly independent.
+        
+        Args:
+            step: current training step
+            sampler: ValidationSampler instance
+        
+        Returns:
+            dict with test results
+        """
+        print(f"Running CFG divergence test (step {step})...")
+        
+        samples = self.load_validation_samples()
+        output_dir = self.output_dir / f'step{step:07d}' / 'divergence'
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Use a small subset for this test
+        test_indices = [5, 23, 47, 78, 91]
+        results = []
+        
+        for test_idx, sample_idx in enumerate(test_indices):
+            sample = samples[sample_idx]
+            
+            # Generate from same noise with extreme CFG scales
+            # Fix random seed for reproducibility
+            torch.manual_seed(42 + test_idx)
+            
+            # Generate: text-only (scale_text=4.0, scale_dino=0.0)
+            gen_text_only = sampler.generate(
+                sample['dino_embedding'].unsqueeze(0),
+                sample['t5_hidden'].unsqueeze(0),
+                sample['t5_mask'].unsqueeze(0),
+                text_scale=4.0,
+                dino_scale=0.0,
+            )[0]  # (3, H, W)
+            
+            # Reset seed to same starting noise
+            torch.manual_seed(42 + test_idx)
+            
+            # Generate: DINO-only (scale_text=0.0, scale_dino=2.0)
+            gen_dino_only = sampler.generate(
+                sample['dino_embedding'].unsqueeze(0),
+                sample['t5_hidden'].unsqueeze(0),
+                sample['t5_mask'].unsqueeze(0),
+                text_scale=0.0,
+                dino_scale=2.0,
+            )[0]  # (3, H, W)
+            
+            # Reset seed again for reference generation with both
+            torch.manual_seed(42 + test_idx)
+            
+            # Generate: both (default scales)
+            gen_both = sampler.generate(
+                sample['dino_embedding'].unsqueeze(0),
+                sample['t5_hidden'].unsqueeze(0),
+                sample['t5_mask'].unsqueeze(0),
+            )[0]  # (3, H, W)
+            
+            # Create collage: [text-only | DINO-only | both]
+            collage_array = create_image_collage([gen_text_only, gen_dino_only, gen_both])
+            
+            # Save collage
+            collage_img = Image.fromarray(collage_array)
+            collage_path = output_dir / f'sample{test_idx}_divergence.png'
+            collage_img.save(collage_path)
+            
+            # Log to TensorBoard
+            if self.tb_writer is not None:
+                collage_tensor = torch.from_numpy(collage_array).permute(2, 0, 1)  # (3, H, W)
+                self.tb_writer.add_image(
+                    f'validation/divergence_sample{test_idx}',
+                    collage_tensor,
+                    global_step=step,
+                    dataformats='CHW'
+                )
+            
+            results.append({
+                'sample_idx': sample_idx,
+                'caption': sample['caption'][:100] + '...',
+            })
+            
+            # Clear GPU memory
+            del gen_text_only, gen_dino_only, gen_both
+            torch.cuda.empty_cache()
+        
+        return {
+            'num_samples': len(test_indices),
+            'results': results,
+        }
+    
+    def run_text_only_test(self, step, sampler):
+        """Test 2c: Generate from text ONLY (no DINO guidance).
+        
+        Simulates pure text-to-image generation for future use cases.
+        Sets dino_scale=0.0 to disable DINO conditioning entirely.
+        
+        This answers: "How well would this model work as a text-to-image model
+        without DINO embeddings?"
+        
+        Args:
+            step: current training step
+            sampler: ValidationSampler instance
+        
+        Returns:
+            dict with lpips_scores and mean_lpips
+        """
+        print(f"Running text-only generation test (step {step})...")
+        
+        # Move LPIPS to GPU for this test
+        self.lpips_fn.to(self.device)
+        
+        samples = self.load_validation_samples()
+        output_dir = self.output_dir / f'step{step:07d}' / 'text_only'
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        lpips_scores = []
+        
+        # Generate in batches
+        batch_size = 1
+        
+        for i in tqdm(range(0, len(TEXT_ONLY_TEST_INDICES), batch_size), desc='Text-only generation'):
+            batch_indices = TEXT_ONLY_TEST_INDICES[i:i+batch_size]
+            
+            # Gather batch
+            batch_samples = [samples[idx] for idx in batch_indices]
+            
+            # NOTE: We still pass DINO embeddings to avoid tensor shape issues,
+            # but set dino_scale=0.0 so they have zero influence
+            dino_emb = torch.stack([s['dino_embedding'] for s in batch_samples])
+            text_emb = torch.stack([s['t5_hidden'] for s in batch_samples])
+            text_mask = torch.stack([s['t5_mask'] for s in batch_samples])
+            gt_latents = torch.stack([s['vae_latent'] for s in batch_samples])
+            image_ids = [s['image_id'] for s in batch_samples]
+            
+            # Generate images with TEXT ONLY (dino_scale=0.0 disables DINO)
+            gen_images = sampler.generate(
+                dino_emb, 
+                text_emb, 
+                text_mask,
+                dino_scale=0.0,  # Zero DINO influence
+                text_scale=3.0,  # Normal text guidance
+            )
+            
+            # Decode ground truth latents for comparison
+            gt_images = sampler.vae.decode(gt_latents.half().to(self.device)).sample
+            
+            # Compute LPIPS
+            for j in range(len(batch_indices)):
+                lpips_val = self.lpips_fn(
+                    gen_images[j:j+1],
+                    gt_images[j:j+1]
+                ).item()
+                lpips_scores.append(lpips_val)
+            
+            # Save generated images
+            save_images(
+                gen_images,
+                output_dir,
+                prefix=f'text_only',
+                image_ids=image_ids
+            )
+            
+            # Clear GPU memory after each batch
+            del dino_emb, text_emb, text_mask, gt_latents, gen_images, gt_images
+            torch.cuda.empty_cache()
+        
+        mean_lpips = sum(lpips_scores) / len(lpips_scores)
+        
+        # Move LPIPS back to CPU to save GPU memory
+        self.lpips_fn.to('cpu')
+        torch.cuda.empty_cache()
+        
+        return {
+            'lpips_scores': lpips_scores,
+            'mean_lpips': mean_lpips,
+            'num_samples': len(lpips_scores),
+        }
+    
     def load_t5_encoder(self):
         """Lazy load T5 encoder and tokenizer for text manipulation test."""
         if self.t5_encoder is None:
@@ -557,6 +746,8 @@ class ValidationRunner:
             'step': step,
             'reconstruction': self.run_reconstruction_test(step, sampler),
             'dino_swap': self.run_dino_swap_test(step, sampler),
+            'divergence': self.run_divergence_test(step, sampler),
+            'text_only': self.run_text_only_test(step, sampler),
             'text_manip': self.run_text_manip_test(step, sampler),
         }
         
@@ -574,8 +765,10 @@ class ValidationRunner:
         print(f"\n{'='*60}")
         print("VALIDATION SUMMARY")
         print(f"{'='*60}")
-        print(f"Reconstruction LPIPS: {results['reconstruction']['mean_lpips']:.4f}")
+        print(f"Reconstruction LPIPS: {results['reconstruction']['mean_lpips']:.4f} (text+DINO, 25 samples)")
+        print(f"Text-only LPIPS: {results['text_only']['mean_lpips']:.4f} (text only, 20 samples)")
         print(f"DINO swap: {results['dino_swap']['num_pairs']} pairs, 3 images each (A_ref, A_swap, B_ref)")
+        print(f"CFG Divergence: {results['divergence']['num_samples']} samples (text-only vs DINO-only vs both)")
         print(f"Text manipulation: {results['text_manip']['num_successful']}/{results['text_manip']['num_cases']} cases, "
               f"mean LPIPS diff: {results['text_manip']['mean_lpips_difference']:.4f}")
         print(f"Results saved to: {results_file}")

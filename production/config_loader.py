@@ -83,7 +83,7 @@ class DataConfig:
     bucket_sampling: Literal["proportional", "uniform"] = "proportional"
     
     horizontal_flip_prob: float = 0.5
-    swap_caption_lr: bool = True
+    # swap_caption_lr removed - caption text is unused during training
     
     num_workers: int = 4
     prefetch_factor: int = 2
