@@ -613,6 +613,7 @@ def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=
             val_dataloader = get_deterministic_validation_dataloader(
                 shard_dir=shard_dir,
                 batch_size=1,  # Process one at a time for validation
+                target_latent_size=getattr(model, 'input_size', 64),
             )
         
         if runner is None:

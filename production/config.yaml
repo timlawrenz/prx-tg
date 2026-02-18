@@ -8,13 +8,13 @@ model:
   patch_size: 2                # Spatial downsampling (2 for high detail as per plan)
   mlp_ratio: 4.0               # MLP expansion factor
   in_channels: 16              # VAE latent channels
-  input_size: 64               # Latent spatial size (512px / 8 = 64)
+  input_size: 128              # Validation/sampling latent size (1024px / 8 = 128)
 
 training:
   total_steps: 100000           # Total training steps
   warmup_steps: 7500           # Linear LR warmup (10% of total)
-  batch_size: 4               # Per-GPU batch size
-  grad_accumulation_steps: 64 # Effective batch
+  batch_size: 1               # Per-GPU batch size
+  grad_accumulation_steps: 256 # Effective batch
   
   optimizer:
     type: "AdamW"
@@ -48,7 +48,7 @@ training:
   precision: "bfloat16"              # "bfloat16" or "float32"
 
 data:
-  shard_base_dir: "data/shards/7500"      # Base directory for WebDataset shards
+  shard_base_dir: "data/shards/2000"      # Base directory for WebDataset shards
   
   # Aspect ratio buckets to read (each bucket is a subdirectory with tar files)
   buckets:
