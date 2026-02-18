@@ -13,8 +13,8 @@ import webdataset as wds
 # Flux VAE latent normalization (computed from dataset statistics)
 # These are automatically computed at training startup if not already cached
 # Computed from 1000 samples (500M values) from data/shards/2000
-FLUX_LATENT_MEAN = -0.046101
-FLUX_LATENT_STD = 2.935469
+FLUX_LATENT_MEAN = -0.046073
+FLUX_LATENT_STD = 2.952103
 USE_LATENT_NORMALIZATION = True # Enable after verifying compatibility
 
 # Cache file for computed statistics
@@ -251,8 +251,8 @@ class ValidationDataset:
         # Load embeddings (webdataset already decoded .npy files to numpy arrays)
         dino_emb = sample['dinov3.npy']  # (1024,)
         vae_latent = sample['vae.npy']  # (16, H, W)
-        t5_hidden = sample['t5h.npy']  # (77, 1024)
-        t5_mask = sample['t5m.npy']  # (77,)
+        t5_hidden = sample['t5h.npy']  # (512, 1024) - T5-XXL supports 512 tokens
+        t5_mask = sample['t5m.npy']  # (512,)
         
         # Apply horizontal flip augmentation
         if random.random() < self.flip_prob:
@@ -272,8 +272,8 @@ class ValidationDataset:
         return {
             'vae_latent': vae_latent.float(),  # (16, H, W)
             'dino_embedding': torch.from_numpy(dino_emb).float(),  # (1024,)
-            't5_hidden': torch.from_numpy(t5_hidden).float(),  # (77, 1024)
-            't5_mask': torch.from_numpy(t5_mask).long(),  # (77,)
+            't5_hidden': torch.from_numpy(t5_hidden).float(),  # (512, 1024)
+            't5_mask': torch.from_numpy(t5_mask).long(),  # (512,)
             'caption': caption,
             'image_id': image_id,
         }

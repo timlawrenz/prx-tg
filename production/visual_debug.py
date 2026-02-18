@@ -62,8 +62,8 @@ def create_visual_debug_fn(
         for idx, sample in enumerate(debug_samples):
             # Extract conditioning
             dino_emb = sample['dino'].unsqueeze(0)  # (1, 1024)
-            text_emb = sample['text_emb'].unsqueeze(0)  # (1, 77, 1024)
-            text_mask = sample['text_mask'].unsqueeze(0)  # (1, 77)
+            text_emb = sample['text_emb'].unsqueeze(0)  # (1, 512, 1024)
+            text_mask = sample['text_mask'].unsqueeze(0)  # (1, 512)
             caption = sample['caption']
             
             # Sample latents
@@ -204,8 +204,8 @@ def _load_debug_samples(shard_dir, num_samples, device):
         # collate_fn returns: dino_embedding, t5_hidden, t5_mask, captions (list), image_ids (list)
         sample = {
             'dino': batch['dino_embedding'][0].to(device),  # (1024,)
-            'text_emb': batch['t5_hidden'][0].to(device),  # (77, 1024)
-            'text_mask': batch['t5_mask'][0].to(device),  # (77,)
+            'text_emb': batch['t5_hidden'][0].to(device),  # (512, 1024)
+            'text_mask': batch['t5_mask'][0].to(device),  # (512,)
             'caption': batch['captions'][0],
         }
         samples.append(sample)
