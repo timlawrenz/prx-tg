@@ -43,8 +43,8 @@ class EulerSampler:
             model: NanoDiT model
             shape: (B, C, H, W) output shape
             dino_emb: (B, 1024) DINOv3 embeddings
-            text_emb: (B, 77, 1024) T5 hidden states
-            text_mask: (B, 77) T5 attention mask
+            text_emb: (B, 512, 1024) T5 hidden states
+            text_mask: (B, 512) T5 attention mask
             device: torch device
             text_scale: CFG scale for text conditioning
             dino_scale: CFG scale for DINO conditioning
@@ -246,8 +246,8 @@ class ValidationSampler:
         
         Args:
             dino_emb: (B, 1024) DINOv3 embeddings
-            text_emb: (B, 77, 1024) T5 hidden states
-            text_mask: (B, 77) T5 attention mask
+            text_emb: (B, 512, 1024) T5 hidden states
+            text_mask: (B, 512) T5 attention mask
             latent_size: spatial size of latents (64 = 512x512 images)
             batch_size: override batch size (default: from embeddings)
         

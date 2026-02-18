@@ -11,7 +11,7 @@ model:
   input_size: 128              # Validation/sampling latent size (1024px / 8 = 128)
 
 training:
-  total_steps: 100000           # Total training steps
+  total_steps: 250000           # Total training steps
   warmup_steps: 7500           # Linear LR warmup (10% of total)
   batch_size: 1               # Per-GPU batch size
   grad_accumulation_steps: 256 # Effective batch
@@ -48,7 +48,7 @@ training:
   precision: "bfloat16"              # "bfloat16" or "float32"
 
 data:
-  shard_base_dir: "data/shards/2000"      # Base directory for WebDataset shards
+  shard_base_dir: "data/shards/5000"      # Base directory for WebDataset shards
   
   # Aspect ratio buckets to read (each bucket is a subdirectory with tar files)
   buckets:
@@ -73,14 +73,14 @@ data:
   pin_memory: true                   # Pin memory for faster GPU transfer
 
 sampling:
-  num_steps: 50                      # Euler integration steps
-  text_scale: 3.0                    # CFG scale for text conditioning (keep strong)
-  dino_scale: 0.5                    # CFG scale for DINO conditioning (dialed down)
+  num_steps: 25                      # Euler integration steps
+  text_scale: 3.0                    # CFG scale for text conditioning
+  dino_scale: 2.5                    # CFG scale for DINO conditioning
 
 validation:
   enabled: true                      # Enable validation runs
   interval_steps: 5000               # Run validation every N steps (full suite)
-  num_samples: 100                   # Number of samples to validate
+  num_samples: 25                    # Number of samples to validate
   output_dir: "validation_outputs"   # Validation output directory
   
   # Validation tests to run
