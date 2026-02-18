@@ -62,12 +62,12 @@ def create_visual_debug_fn(
         for idx, sample in enumerate(debug_samples):
             # Extract conditioning
             dino_emb = sample['dino'].unsqueeze(0)  # (1, 1024)
-            text_emb = sample['text_emb'].unsqueeze(0)  # (1, 77, 1024)
-            text_mask = sample['text_mask'].unsqueeze(0)  # (1, 77)
+            text_emb = sample['text_emb'].unsqueeze(0)  # (1, 512, 1024)
+            text_mask = sample['text_mask'].unsqueeze(0)  # (1, 512)
             caption = sample['caption']
             
             # Sample latents
-            latent_shape = (1, 16, 64, 64)  # Fixed for now (Stage 1)
+            latent_shape = (1, 16, 128, 128)  # 1024x1024 target resolution
             latents = sampler.sample(
                 model=model,
                 shape=latent_shape,
@@ -79,9 +79,9 @@ def create_visual_debug_fn(
                 dino_scale=dino_scale,
             )
             
-            # Decode to image (64x64 latent -> 512x512 image via 8x VAE upsampling)
+            # Decode to image (128x128 latent -> 1024x1024 image via 8x VAE upsampling)
             images = decode_latents(vae, latents)
-            img_tensor = images[0]  # (3, 512, 512) in [-1, 1]
+            img_tensor = images[0]  # (3, 1024, 1024) in [-1, 1]
             
             # Save individual image to disk
             pil_img = tensor_to_pil(img_tensor)
@@ -190,7 +190,7 @@ def _load_debug_samples(shard_dir, num_samples, device):
     dataset = ValidationDataset(
         shard_dir=shard_dir,
         flip_prob=0.0,  # No flip for debug samples
-        target_latent_size=64,  # Fixed for now (Stage 1)
+        target_latent_size=128,  # 1024x1024 target resolution
         batch_size=1,
     )
     
@@ -204,8 +204,8 @@ def _load_debug_samples(shard_dir, num_samples, device):
         # collate_fn returns: dino_embedding, t5_hidden, t5_mask, captions (list), image_ids (list)
         sample = {
             'dino': batch['dino_embedding'][0].to(device),  # (1024,)
-            'text_emb': batch['t5_hidden'][0].to(device),  # (77, 1024)
-            'text_mask': batch['t5_mask'][0].to(device),  # (77,)
+            'text_emb': batch['t5_hidden'][0].to(device),  # (512, 1024)
+            'text_mask': batch['t5_mask'][0].to(device),  # (512,)
             'caption': batch['captions'][0],
         }
         samples.append(sample)
