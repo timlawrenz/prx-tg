@@ -417,7 +417,13 @@ class Trainer:
                 
                 # Run validation if provided
                 if validate_fn is not None:
+                    # Free training memory before validation
+                    torch.cuda.empty_cache()
                     validate_fn(self.model, self.ema, self.step, self.device)
+                    # Clean up after validation
+                    torch.cuda.empty_cache()
+                    # Put model back in train mode
+                    self.model.train()
             
             pbar.update(1)
         
