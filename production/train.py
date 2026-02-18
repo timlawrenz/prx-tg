@@ -31,7 +31,7 @@ def logit_normal_sample(size, mean=0.0, std=1.0, device='cpu'):
     return t
 
 
-def flow_matching_loss(model, x0, dino_emb, text_emb, text_mask, cfg_probs):
+def flow_matching_loss(model, x0, dino_emb, text_emb, text_mask, cfg_probs, return_v_pred=False):
     """Compute flow matching loss with mutually exclusive CFG dropout.
     
     CFG dropout uses categorical sampling to ensure exactly one of:
@@ -47,9 +47,10 @@ def flow_matching_loss(model, x0, dino_emb, text_emb, text_mask, cfg_probs):
         text_emb: (B, seq_len, 1024) T5 hidden states (seq_len=512 for full captions)
         text_mask: (B, seq_len) T5 attention mask
         cfg_probs: dict with p_drop_both, p_drop_text, p_drop_dino
+        return_v_pred: bool, if True return (loss, v_pred) for monitoring
     
     Returns:
-        loss: scalar tensor
+        loss: scalar tensor, or (loss, v_pred) if return_v_pred=True
     """
     B = x0.shape[0]
     device = x0.device
@@ -95,6 +96,9 @@ def flow_matching_loss(model, x0, dino_emb, text_emb, text_mask, cfg_probs):
     
     # MSE loss
     loss = F.mse_loss(v_pred, v_target)
+    
+    if return_v_pred:
+        return loss, v_pred
     return loss
 
 
@@ -279,9 +283,9 @@ class Trainer:
         text_emb = batch['t5_hidden'].to(self.device)
         text_mask = batch['t5_mask'].to(self.device)
         
-        # Compute loss
-        loss = flow_matching_loss(
-            self.model, x0, dino_emb, text_emb, text_mask, self.cfg_probs
+        # Compute loss (with velocity prediction for monitoring)
+        loss, v_pred = flow_matching_loss(
+            self.model, x0, dino_emb, text_emb, text_mask, self.cfg_probs, return_v_pred=True
         )
         
         # Scale loss by accumulation steps
@@ -322,6 +326,17 @@ class Trainer:
             'grad_norm': grad_norm,
             'lr': lr,
         }
+        
+        # Add velocity norm monitoring (collapse detection)
+        if self.monitor_velocity:
+            # Compute average magnitude: |v_pred| should stabilize near 1.0
+            # Collapse indicators: v_norm → 0 or v_norm >> 100
+            v_norm = v_pred.detach().norm().item() / v_pred.numel()
+            metrics['velocity_norm'] = v_norm
+            
+            # Warning for potential collapse
+            if v_norm > self.velocity_warning or v_norm < 0.01:
+                print(f"⚠️  WARNING: velocity_norm = {v_norm:.4f} (expected ~1.0, collapse if <0.01 or >{self.velocity_warning})")
         
         # Add GPU memory metrics if using CUDA
         if self.device.type == 'cuda':
