@@ -329,9 +329,9 @@ class Trainer:
         
         # Add velocity norm monitoring (collapse detection)
         if self.monitor_velocity:
-            # Compute average magnitude: |v_pred| should stabilize near 1.0
+            # Compute RMS (root mean square) magnitude: should stabilize near 1.0
             # Collapse indicators: v_norm → 0 or v_norm >> 100
-            v_norm = v_pred.detach().norm().item() / v_pred.numel()
+            v_norm = v_pred.detach().pow(2).mean().sqrt().item()
             metrics['velocity_norm'] = v_norm
             
             # Warning for potential collapse
