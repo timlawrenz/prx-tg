@@ -239,7 +239,7 @@ class ValidationSampler:
         dino_emb,
         text_emb,
         text_mask,
-        latent_size=64,
+        latent_size=None,
         batch_size=None,
     ):
         """Generate images from conditioning.
@@ -264,6 +264,9 @@ class ValidationSampler:
         text_emb = text_emb.to(self.device)
         text_mask = text_mask.to(self.device)
         
+        if latent_size is None:
+            latent_size = getattr(self.model, 'input_size', 64)
+
         # Sample latents
         shape = (batch_size, 16, latent_size, latent_size)
         latents = self.sampler.sample(
