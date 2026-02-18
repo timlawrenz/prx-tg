@@ -761,6 +761,14 @@ class ValidationRunner:
         with open(results_file, 'w') as f:
             json.dump(results, f, indent=2)
         
+        # Log to TensorBoard
+        if self.tb_writer is not None:
+            self.tb_writer.add_scalar('validation/reconstruction_lpips', results['reconstruction']['mean_lpips'], step)
+            self.tb_writer.add_scalar('validation/text_only_lpips', results['text_only']['mean_lpips'], step)
+            self.tb_writer.add_scalar('validation/text_manip_lpips_diff', results['text_manip']['mean_lpips_difference'], step)
+            self.tb_writer.add_scalar('validation/text_manip_success_rate', 
+                                     results['text_manip']['num_successful'] / max(results['text_manip']['num_cases'], 1), step)
+        
         # Print summary
         print(f"\n{'='*60}")
         print("VALIDATION SUMMARY")
