@@ -565,7 +565,7 @@ def load_caption_pipeline(device, model_id: str):
         dict with ollama_url and model_name
     """
     return {
-        "ollama_url": "http://localhost:11434/api/generate",
+        "ollama_url": "http://192.168.86.162:11434/api/generate",
         "model_name": "gemma3:27b"
     }
 
