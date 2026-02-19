@@ -184,22 +184,16 @@ def _load_debug_samples(shard_dir, num_samples, device):
     Returns:
         samples: List of dicts with keys: dino, text_emb, text_mask, caption
     """
-    import random
-    import numpy as np
     from .data import ValidationDataset
     
-    # Set seeds for reproducible sample selection
-    torch.manual_seed(42)
-    random.seed(42)
-    np.random.seed(42)
-    
-    # Create dataset (same as training)
+    # Create dataset with deterministic sampling
     dataset = ValidationDataset(
         shard_dir=shard_dir,
         flip_prob=0.0,  # No flip for debug samples
         target_latent_size=128,  # 1024x1024 target resolution
         batch_size=1,
         shuffle=False,  # No shuffle for deterministic order
+        deterministic=True,  # Set seeds for reproducible sampling
     )
     
     # Load first N samples directly from iterator (yields batched dicts)
