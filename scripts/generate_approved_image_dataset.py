@@ -176,6 +176,41 @@ def extract_dinov3_to_npy(record: dict, output_dir: Path) -> bool:
         return False
 
 
+def extract_dinov3_patches_to_npy(record: dict, output_dir: Path) -> bool:
+    """
+    Extract inline DINOv3 patch embeddings from record and save to .npy file.
+    
+    Returns True if successful, False otherwise.
+    """
+    import numpy as np
+    
+    patches = record.get("dinov3_patches")
+    if patches is None:
+        return False
+    
+    image_path = Path(record["image_path"])
+    image_id = compute_image_id(image_path)
+    npy_path = output_dir / f"{image_id}.npy"
+    
+    try:
+        # patches should already be a numpy array from compute_dinov3_patches
+        if not isinstance(patches, np.ndarray):
+            array = np.array(patches, dtype=np.float32)
+        else:
+            array = patches.astype(np.float32)
+        
+        # Expected shape: (196, 1024) for DINOv3-L with 14x14 spatial patch grid
+        if array.shape != (196, 1024):
+            eprint(f"warning: unexpected DINOv3 patches shape {array.shape} for {image_id}, expected (196, 1024)")
+            return False
+        
+        save_npy(array, npy_path, np.float32)
+        return True
+    except Exception as e:
+        eprint(f"warning: failed to extract DINOv3 patches for {image_id}: {e}")
+        return False
+
+
 def save_vae_latent(latent: np.ndarray, image_id: str, output_dir: Path):
     """Save VAE latent to .npy file."""
     npy_path = output_dir / f"{image_id}.npy"
@@ -268,6 +303,42 @@ def compute_dinov3_embedding(dino, device, image):
         emb = outputs.last_hidden_state[0, 0]
 
     return emb.detach().cpu().float().tolist()
+
+
+def compute_dinov3_patches(dino, device, image):
+    """Extract DINOv3 patch embeddings (spatial features).
+    
+    Returns:
+        numpy array of shape (196, 1024) - 14x14 spatial patch grid
+        or None for pipeline (not supported)
+        
+    Note: DINOv3 outputs 201 tokens total:
+        - 1 CLS token (index 0)
+        - 196 spatial patches (indices 1-196, 14x14 grid)
+        - 4 register tokens (indices 197-200, used during training)
+    We extract only the 196 spatial patches for downstream use.
+    """
+    import torch
+    import numpy as np
+
+    if dino["kind"] == "pipeline":
+        # Pipeline doesn't provide easy access to patch embeddings
+        return None
+
+    processor = dino["processor"]
+    model = dino["model"]
+
+    inputs = processor(images=image, return_tensors="pt")
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    # Extract spatial patch tokens only (skip CLS at 0, exclude register tokens at 197-200)
+    # last_hidden_state shape: (batch=1, num_tokens=201, hidden=1024)
+    # tokens: [CLS, patch_1, ..., patch_196, register_1, ..., register_4]
+    patches = outputs.last_hidden_state[0, 1:197, :]  # (196, 1024)
+    
+    return patches.detach().cpu().float().numpy()
 
 
 def load_t5_tokenizer(model_id: str):
@@ -1017,10 +1088,12 @@ def main(argv):
     # Create output directories
     output_path.parent.mkdir(parents=True, exist_ok=True)
     dinov3_dir = base_dir / "dinov3"
+    dinov3_patches_dir = base_dir / "dinov3_patches"
     vae_dir = base_dir / "vae_latents"
     t5_dir = base_dir / "t5_hidden"
     
     dinov3_dir.mkdir(parents=True, exist_ok=True)
+    dinov3_patches_dir.mkdir(parents=True, exist_ok=True)
     vae_dir.mkdir(parents=True, exist_ok=True)
     t5_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1205,6 +1278,13 @@ def main(argv):
                 if args.verbose:
                     eprint(f"verbose: computing DINOv3 embedding for {item['record']['image_path']}...")
                 records[i]["dinov3_embedding"] = compute_dinov3_embedding(dino, device, images[i])
+                
+                # Also compute patch embeddings for future use
+                if args.verbose:
+                    eprint(f"verbose: computing DINOv3 patches for {item['record']['image_path']}...")
+                patches = compute_dinov3_patches(dino, device, images[i])
+                if patches is not None:
+                    records[i]["dinov3_patches"] = patches
 
         # Generate captions for records that need them (batched)
         needs_caption_indices = [i for i, item in enumerate(batch_buffer) if item["needs_caption"]]
@@ -1227,6 +1307,9 @@ def main(argv):
             # Extract DINOv3 to .npy if present inline
             if "dinov3_embedding" in rec:
                 extract_dinov3_to_npy(rec, dinov3_dir)
+            # Extract patches if present
+            if "dinov3_patches" in rec:
+                extract_dinov3_patches_to_npy(rec, dinov3_patches_dir)
             
             # Migrate to Stage 2 format
             image_path = Path(rec["image_path"])
@@ -1341,6 +1424,9 @@ def main(argv):
                 elif needs_dino_extract:
                     # Just extract existing inline embedding
                     extract_dinov3_to_npy(record, dinov3_dir)
+                    # Also extract patches if available
+                    if "dinov3_patches" in record:
+                        extract_dinov3_patches_to_npy(record, dinov3_patches_dir)
                     extracted += 1
 
             # Flush any pending batch before VAE/T5 passes
@@ -1394,6 +1480,9 @@ def main(argv):
                 if "dinov3_embedding" in record:
                     extract_dinov3_to_npy(record, dinov3_dir)
                     del record["dinov3_embedding"]
+                if "dinov3_patches" in record:
+                    extract_dinov3_patches_to_npy(record, dinov3_patches_dir)
+                    del record["dinov3_patches"]
                 
                 if "width" in record and "height" in record:
                     record["aspect_bucket"] = assign_aspect_bucket(record["width"], record["height"])
