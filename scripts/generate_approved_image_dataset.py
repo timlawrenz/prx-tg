@@ -341,6 +341,53 @@ def compute_dinov3_patches(dino, device, image):
     return patches.detach().cpu().float().numpy()
 
 
+def compute_dinov3_both(dino, device, image):
+    """Extract both CLS token and patch embeddings in a single forward pass.
+    
+    Returns:
+        tuple: (cls_embedding, patches) where:
+            - cls_embedding: list of 1024 floats (CLS token)
+            - patches: numpy array (196, 1024) or None if pipeline
+    
+    This is more efficient than calling compute_dinov3_embedding() and 
+    compute_dinov3_patches() separately since it only runs the model once.
+    """
+    import torch
+    import numpy as np
+
+    if dino["kind"] == "pipeline":
+        # Pipeline: only CLS available
+        feats = dino["feature_extractor"](image)
+        x = feats[0]
+        while isinstance(x, list) and x and isinstance(x[0], list):
+            seq = x
+            hidden = len(seq[0])
+            x = [sum(tok[i] for tok in seq) / len(seq) for i in range(hidden)]
+        return x, None
+
+    processor = dino["processor"]
+    model = dino["model"]
+
+    inputs = processor(images=image, return_tensors="pt")
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    # Extract CLS token
+    if hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
+        cls_emb = outputs.pooler_output[0]
+    else:
+        cls_emb = outputs.last_hidden_state[0, 0]
+    
+    cls_list = cls_emb.detach().cpu().float().tolist()
+
+    # Extract patches (skip CLS at 0, exclude register tokens at 197-200)
+    patches = outputs.last_hidden_state[0, 1:197, :]  # (196, 1024)
+    patches_np = patches.detach().cpu().float().numpy()
+    
+    return cls_list, patches_np
+
+
 def load_t5_tokenizer(model_id: str):
     """Load T5 tokenizer for computing attention masks."""
     from transformers import AutoTokenizer
@@ -706,6 +753,22 @@ def needs_dinov3_extraction(record: dict, dinov3_dir: Path) -> bool:
         npy_path = dinov3_dir / f"{image_id}.npy"
         return not npy_path.exists()
     return False
+
+
+def needs_dinov3_patches_on_disk(record: dict, dinov3_patches_dir: Path) -> bool:
+    """Check if DINOv3 patches are missing from disk."""
+    image_path = Path(record["image_path"])
+    image_id = compute_image_id(image_path)
+    npy_path = dinov3_patches_dir / f"{image_id}.npy"
+    return not npy_path.exists()
+
+
+def needs_dinov3_cls_on_disk(record: dict, dinov3_dir: Path) -> bool:
+    """Check if DINOv3 CLS token is missing from disk."""
+    image_path = Path(record["image_path"])
+    image_id = compute_image_id(image_path)
+    npy_path = dinov3_dir / f"{image_id}.npy"
+    return not npy_path.exists()
 
 
 def needs_vae_latent(record: dict, vae_dir: Path) -> bool:
@@ -1275,16 +1338,31 @@ def main(argv):
         # Compute DINO embeddings for records that need them
         for i, item in enumerate(batch_buffer):
             if item["needs_dino"]:
-                if args.verbose:
-                    eprint(f"verbose: computing DINOv3 embedding for {item['record']['image_path']}...")
-                records[i]["dinov3_embedding"] = compute_dinov3_embedding(dino, device, images[i])
+                needs_cls = item.get("needs_dino_cls", True)
+                needs_patches = item.get("needs_dino_patches", True)
                 
-                # Also compute patch embeddings for future use
-                if args.verbose:
-                    eprint(f"verbose: computing DINOv3 patches for {item['record']['image_path']}...")
-                patches = compute_dinov3_patches(dino, device, images[i])
-                if patches is not None:
-                    records[i]["dinov3_patches"] = patches
+                if needs_cls and needs_patches:
+                    # Need both - use optimized single forward pass
+                    if args.verbose:
+                        eprint(f"verbose: computing DINOv3 CLS + patches for {item['record']['image_path']}...")
+                    cls_emb, patches = compute_dinov3_both(dino, device, images[i])
+                    records[i]["dinov3_embedding"] = cls_emb
+                    if patches is not None:
+                        records[i]["dinov3_patches"] = patches
+                        
+                elif needs_cls:
+                    # Only need CLS
+                    if args.verbose:
+                        eprint(f"verbose: computing DINOv3 CLS for {item['record']['image_path']}...")
+                    records[i]["dinov3_embedding"] = compute_dinov3_embedding(dino, device, images[i])
+                    
+                elif needs_patches:
+                    # Only need patches
+                    if args.verbose:
+                        eprint(f"verbose: computing DINOv3 patches for {item['record']['image_path']}...")
+                    patches = compute_dinov3_patches(dino, device, images[i])
+                    if patches is not None:
+                        records[i]["dinov3_patches"] = patches
 
         # Generate captions for records that need them (batched)
         needs_caption_indices = [i for i, item in enumerate(batch_buffer) if item["needs_caption"]]
@@ -1387,12 +1465,18 @@ def main(argv):
                 needs_caption = needs_field(record, "caption")
                 needs_dimensions = needs_field(record, "height") or needs_field(record, "width")
 
-                if needs_dino or needs_caption or needs_dimensions:
+                # Also check if either CLS or patches are missing on disk
+                # (even if inline embedding exists, we might need to compute patches)
+                needs_dino_cls_disk = needs_dinov3_cls_on_disk(record, dinov3_dir)
+                needs_dino_patches_disk = needs_dinov3_patches_on_disk(record, dinov3_patches_dir)
+                needs_any_dino = needs_dino or needs_dino_cls_disk or needs_dino_patches_disk
+
+                if needs_any_dino or needs_caption or needs_dimensions:
                     # Ensure width/height + aspect_bucket exist before any image-based pass
                     ensure_bucket_info(record, img_path)
 
                     img = None
-                    if needs_dino or needs_caption:
+                    if needs_any_dino or needs_caption:
                         try:
                             dims = parse_bucket_dims(record.get("aspect_bucket"))
                             if dims:
@@ -1409,7 +1493,9 @@ def main(argv):
                         "image_path": img_path,
                         "image": img,
                         "record": record,
-                        "needs_dino": needs_dino,
+                        "needs_dino": needs_any_dino,
+                        "needs_dino_cls": needs_dino or needs_dino_cls_disk,
+                        "needs_dino_patches": needs_dino_patches_disk,
                         "needs_caption": needs_caption,
                     })
 
