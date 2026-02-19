@@ -207,6 +207,7 @@ class ValidationDataset:
         flip_prob=0.5,
         target_latent_size=64,
         shard_files=None,
+        deterministic=False,
     ):
         """
         Args:
@@ -215,12 +216,21 @@ class ValidationDataset:
             shuffle: Whether to shuffle between epochs
             flip_prob: Probability of horizontal flip augmentation
             target_latent_size: Target spatial size for VAE latents (64 = 512x512 image)
+            deterministic: If True, set seeds for reproducible sample ordering
         """
         self.shard_dir = Path(shard_dir)
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.flip_prob = flip_prob
         self.target_latent_size = target_latent_size
+        
+        # Set seeds for deterministic behavior
+        if deterministic:
+            import random
+            import numpy as np
+            torch.manual_seed(42)
+            random.seed(42)
+            np.random.seed(42)
         
         # Find shard files
         if shard_files is None:
@@ -358,6 +368,7 @@ def get_deterministic_validation_dataloader(
     - Does NOT shuffle (stable sample ordering)
     - Does NOT flip (no augmentation)
     - Does NOT repeat (finite, single pass)
+    - Sets seeds for reproducible sample selection
     
     Use this for validation tests where you need consistent sample indices
     across different training steps (reconstruction LPIPS, DINO swap, etc.)
@@ -376,6 +387,7 @@ def get_deterministic_validation_dataloader(
         shuffle=False,  # CRITICAL: no shuffle for deterministic ordering
         flip_prob=0.0,   # CRITICAL: no augmentation for consistency
         target_latent_size=target_latent_size,
+        deterministic=True,  # CRITICAL: set seeds for reproducible sampling
     )
     return dataset
 
