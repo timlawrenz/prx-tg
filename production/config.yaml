@@ -2,9 +2,9 @@
 # Based on the-plan.md Part D specifications
 
 model:
-  depth: 12                    # Number of transformer layers (start small, scale to 24-28)
-  hidden_size: 384             # Hidden dimension (scale to 768-1024 for production)
-  num_heads: 6                 # Attention heads
+  hidden_size: 768             # Hidden dimension (scale to 768-1024 for production)
+  depth: 18                    # Number of transformer layers (start small, scale to 24-28)
+  num_heads: 12                 # Attention heads
   patch_size: 2                # Spatial downsampling (2 for high detail as per plan)
   mlp_ratio: 4.0               # MLP expansion factor
   in_channels: 16              # VAE latent channels
