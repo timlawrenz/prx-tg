@@ -1429,6 +1429,7 @@ def main(argv):
 
             # Check what's needed
             needs_dino_extract = run_dinov3 and needs_dinov3_extraction(record, dinov3_dir)
+            needs_dino_patches_disk = run_dinov3 and needs_dinov3_patches_on_disk(record, dinov3_patches_dir)
             needs_vae_gen = run_vae and needs_vae_latent(record, vae_dir)
             needs_t5_gen = run_t5 and needs_t5_hidden(record, t5_dir)
             needs_format_migration = run_migrate and needs_migration(record)
@@ -1441,6 +1442,7 @@ def main(argv):
             is_complete = (
                 record.get("format_version") == 2
                 and not needs_dino_extract
+                and not needs_dino_patches_disk  # Also check patches
                 and not needs_vae_gen
                 and not needs_t5_gen
                 and not needs_format_migration
