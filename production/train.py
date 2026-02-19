@@ -8,6 +8,8 @@ from torch.nn.utils import clip_grad_norm_
 from pathlib import Path
 from tqdm import tqdm
 import json
+import random
+import numpy as np
 
 
 def logit_normal_sample(size, mean=0.0, std=1.0, device='cpu'):
@@ -350,13 +352,24 @@ class Trainer:
         if path is None:
             path = self.checkpoint_dir / f'checkpoint_step{self.step:07d}.pt'
         
-        torch.save({
+        checkpoint = {
             'step': self.step,
             'epoch': self.epoch,
             'model': self.model.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             'ema': self.ema.state_dict(),
-        }, path)
+            'rng_state': {
+                'python': random.getstate(),
+                'numpy': np.random.get_state(),
+                'torch': torch.get_rng_state(),
+            }
+        }
+        
+        # Save CUDA RNG state if available
+        if torch.cuda.is_available():
+            checkpoint['rng_state']['cuda'] = torch.cuda.get_rng_state()
+        
+        torch.save(checkpoint, path)
         
         print(f"Saved checkpoint to {path}")
     
@@ -369,6 +382,16 @@ class Trainer:
         self.ema.load_state_dict(checkpoint['ema'])
         self.step = checkpoint['step']
         self.epoch = checkpoint['epoch']
+        
+        # Restore RNG states if available (older checkpoints may not have them)
+        if 'rng_state' in checkpoint:
+            rng_state = checkpoint['rng_state']
+            random.setstate(rng_state['python'])
+            np.random.set_state(rng_state['numpy'])
+            torch.set_rng_state(rng_state['torch'])
+            
+            if 'cuda' in rng_state and torch.cuda.is_available():
+                torch.cuda.set_rng_state(rng_state['cuda'])
         
         print(f"Loaded checkpoint from {path} (step {self.step})")
     
