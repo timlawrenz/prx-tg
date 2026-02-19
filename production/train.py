@@ -375,7 +375,7 @@ class Trainer:
     
     def load_checkpoint(self, path):
         """Load training checkpoint."""
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         
         self.model.load_state_dict(checkpoint['model'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
@@ -388,10 +388,22 @@ class Trainer:
             rng_state = checkpoint['rng_state']
             random.setstate(rng_state['python'])
             np.random.set_state(rng_state['numpy'])
-            torch.set_rng_state(rng_state['torch'])
+            
+            # Convert to CPU ByteTensor if needed (may be CUDA or numpy)
+            torch_state = rng_state['torch']
+            if isinstance(torch_state, torch.Tensor):
+                torch_state = torch_state.cpu().to(dtype=torch.uint8)
+            else:
+                torch_state = torch.ByteTensor(torch_state)
+            torch.set_rng_state(torch_state)
             
             if 'cuda' in rng_state and torch.cuda.is_available():
-                torch.cuda.set_rng_state(rng_state['cuda'])
+                cuda_state = rng_state['cuda']
+                if isinstance(cuda_state, torch.Tensor):
+                    cuda_state = cuda_state.cpu().to(dtype=torch.uint8)
+                else:
+                    cuda_state = torch.ByteTensor(cuda_state)
+                torch.cuda.set_rng_state(cuda_state)
         
         print(f"Loaded checkpoint from {path} (step {self.step})")
     
