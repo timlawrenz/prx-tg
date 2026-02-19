@@ -1399,9 +1399,11 @@ def main(argv):
             
             rec["format_version"] = 2
             
-            # Remove inline embedding
+            # Remove inline embeddings (already extracted to .npy files)
             if "dinov3_embedding" in rec:
                 del rec["dinov3_embedding"]
+            if "dinov3_patches" in rec:
+                del rec["dinov3_patches"]
             
             # Write to temp file
             temp_file.write(json.dumps(rec, ensure_ascii=False) + "\n")
