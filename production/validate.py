@@ -724,7 +724,7 @@ class ValidationRunner:
             patch_size=self.model.patch_size,
             in_channels=self.model.in_channels,
             hidden_size=self.model.hidden_size,
-            depth=self.model.depth,
+            depth=len(self.model.blocks),
             num_heads=self.model.num_heads,
         ).to(self.device)
         
