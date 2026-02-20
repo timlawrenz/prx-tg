@@ -57,9 +57,55 @@ Current architecture uses only DINO CLS token (1024-dim global vector) for visua
 
 ## Implementation Plan
 
-### Phase 1: Data Pipeline (1-2 hours)
+### Phase 1: Data Pipeline (2-3 hours)
 
 **Goal**: Load DINO patches during training without breaking existing flow.
+
+#### 1.0 Update Shard Creation Script
+**File**: `scripts/create_webdataset_shards.py`
+
+**Critical first step**: Existing shards don't include patches - need to regenerate them.
+
+- [ ] Add `dinov3_patches` directory to checked directories (line ~259)
+- [ ] Add patches path to `iter_ready_records()`:
+  ```python
+  dino_patches_dir = derived_dir / "dinov3_patches"
+  
+  # In completeness check (line ~149):
+  dino_patch_path = dino_patches_dir / f"{image_id}.npy"
+  if not (...and dino_patch_path.is_file()):
+      counters.skipped_incomplete += 1
+      continue
+  
+  # In yield dict (line ~160):
+  yield {
+      ...
+      "dino_path": dino_path,
+      "dino_patch_path": dino_patch_path,  # NEW
+      ...
+  }
+  ```
+
+- [ ] Add patches to tar writing (line ~228):
+  ```python
+  add_file(tf, f"{image_id}.dinov3.npy", s["dino_path"])
+  add_file(tf, f"{image_id}.dinov3_patches.npy", s["dino_patch_path"])  # NEW
+  add_file(tf, f"{image_id}.vae.npy", s["vae_path"])
+  ```
+
+- [ ] **Regenerate shards** with patches included:
+  ```bash
+  # Backup old shards
+  mv data/shards/10000 data/shards/10000_no_patches_backup
+  
+  # Create new shards with patches
+  python scripts/create_webdataset_shards.py \
+    --output-dir data/shards/10000 \
+    --shard-size 1000 \
+    --overwrite
+  ```
+
+**Time estimate**: ~30 min to modify script, ~1-2 hours to regenerate shards (depends on dataset size)
 
 #### 1.1 Update WebDataset Loading
 **File**: `production/data.py`
@@ -82,15 +128,20 @@ patches = torch.from_numpy(patches).to(dtype)  # (B, 196, 1024)
 **Script**: Quick verification
 
 - [ ] Count how many training samples have patches on disk
+  ```bash
+  find data/derived/dinov3_patches -name "*.npy" | wc -l
+  ```
+  Expected: Should match number of images in dataset.
+
 - [ ] Ensure patches exist for validation set
-- [ ] If missing: run `scripts/generate_approved_image_dataset.py` to compute patches
+- [ ] If patches are missing: run `scripts/generate_approved_image_dataset.py --pass-filter dinov3` to compute them
 
-**Command**:
-```bash
-find data/derived/dinov3_patches -name "*.npy" | wc -l
-```
-
-Expected: Should match number of images in dataset.
+- [ ] After regenerating shards, verify they include patches:
+  ```bash
+  # List contents of first shard
+  tar -tf data/shards/10000/bucket_1024x1024/shard-000000.tar | grep patches | head -5
+  ```
+  Should see: `{image_id}.dinov3_patches.npy` files
 
 ---
 
@@ -481,8 +532,8 @@ Watch for:
 
 ## Timeline Estimate
 
-**Development**: 6-10 hours (reduced from parallel approach)
-- Phase 1 (Data): 1-2h
+**Development**: 8-12 hours (updated to include shard regeneration)
+- Phase 1 (Data): 2-3h (includes shard regeneration time!)
 - Phase 2 (Model): 1-2h (simpler - no second cross-attn module!)
 - Phase 3 (Training): 1h
 - Phase 4 (Validation): 1-2h
@@ -491,7 +542,7 @@ Watch for:
 
 **Debugging buffer**: +3h (fewer edge cases than parallel)
 
-**Total before training**: ~9-13 hours
+**Total before training**: ~11-15 hours
 
 **Training**: 
 - 100 steps test: 5 min
