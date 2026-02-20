@@ -458,9 +458,15 @@ def compute_dinov3_both(dino, device, image, target_width: int = None, target_he
     # Calculate expected number of patches
     num_patches = (dino_h // 14) * (dino_w // 14)
     
+    # DEBUG: Check actual token count
+    total_tokens = outputs.last_hidden_state.shape[1]
+    print(f"DEBUG: total_tokens={total_tokens}, expected_patches={num_patches}, dino_h={dino_h}, dino_w={dino_w}", file=sys.stderr)
+    
     # Extract patches (skip CLS at 0, exclude register tokens at end)
     patches = outputs.last_hidden_state[0, 1:num_patches+1, :]  # (num_patches, 1024)
     patches_np = patches.detach().cpu().float().numpy()
+    
+    print(f"DEBUG: extracted patches shape={patches_np.shape}", file=sys.stderr)
     
     return cls_list, patches_np
 
