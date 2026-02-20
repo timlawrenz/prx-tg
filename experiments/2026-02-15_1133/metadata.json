@@ -1,8 +1,0 @@
-{
-  "timestamp": "2026-02-15T11:33:20.223085",
-  "config_path": "production/config.yaml",
-  "command": "/home/tim/source/activity/prx-tg/production/train_production.py",
-  "git_commit": "c4f86ce9f5f0720af5145d255cfaf4d5f00738a2",
-  "git_dirty": true,
-  "warning": "Uncommitted changes present"
-}

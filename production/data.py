@@ -12,8 +12,8 @@ import webdataset as wds
 
 # Flux VAE latent normalization (computed from dataset statistics)
 # These are automatically computed at training startup if not already cached
-FLUX_LATENT_MEAN = -0.033565
-FLUX_LATENT_STD = 2.963212
+FLUX_LATENT_MEAN = -0.046356
+FLUX_LATENT_STD = 2.925166
 USE_LATENT_NORMALIZATION = True # Enable after verifying compatibility
 
 # Cache file for computed statistics
@@ -247,10 +247,10 @@ class ValidationDataset:
         """Process a raw WebDataset sample into model inputs.
         
         Args:
-            sample: dict with keys: __key__, json, dinov3.npy, vae.npy, t5h.npy, t5m.npy
+            sample: dict with keys: __key__, json, dinov3.npy, dinov3_patches.npy, vae.npy, t5h.npy, t5m.npy
         
         Returns:
-            dict with keys: vae_latent, dino_embedding, t5_hidden, t5_mask, caption, image_id
+            dict with keys: vae_latent, dino_embedding, dino_patches, t5_hidden, t5_mask, caption, image_id
         """
         # Parse metadata (webdataset already decoded JSON)
         metadata = sample['json']
@@ -259,6 +259,7 @@ class ValidationDataset:
         
         # Load embeddings (webdataset already decoded .npy files to numpy arrays)
         dino_emb = sample['dinov3.npy']  # (1024,)
+        dino_patches = sample['dinov3_patches.npy']  # (num_patches, 1024) - variable length!
         vae_latent = sample['vae.npy']  # (16, H, W)
         t5_hidden = sample['t5h.npy']  # (512, 1024) - T5-XXL supports 512 tokens
         t5_mask = sample['t5m.npy']  # (512,)
@@ -266,8 +267,13 @@ class ValidationDataset:
         # Apply horizontal flip augmentation
         # NOTE: We do NOT swap "left"/"right" in captions because T5 embeddings
         # are pre-computed and cannot be modified at training time.
+        # TODO: Flip DINOv3 patches horizontally when flipping VAE latent
         if random.random() < self.flip_prob:
             vae_latent = np.flip(vae_latent, axis=2).copy()  # Flip width dimension
+            # Flip patches: reshape to 2D grid, flip, reshape back
+            # Patch grid dimensions: infer from bucket and patch size
+            # For now, skip flipping patches (requires bucket metadata)
+            # This will be fixed in a follow-up when we have bucket info
         
         # Resize VAE latent to target size (training may keep native bucket resolution)
         if self.target_latent_size is None:
@@ -282,6 +288,7 @@ class ValidationDataset:
         return {
             'vae_latent': vae_latent.float(),  # (16, H, W)
             'dino_embedding': torch.from_numpy(dino_emb).float(),  # (1024,)
+            'dino_patches': torch.from_numpy(dino_patches).float(),  # (num_patches, 1024) - VARIABLE!
             't5_hidden': torch.from_numpy(t5_hidden).float(),  # (512, 1024)
             't5_mask': torch.from_numpy(t5_mask).long(),  # (512,)
             'caption': caption,
@@ -289,10 +296,23 @@ class ValidationDataset:
         }
     
     def collate_fn(self, batch):
-        """Collate batch of samples into batched tensors."""
+        """Collate batch of samples into batched tensors.
+        
+        NOTE: For batch_size > 1, dino_patches will need padding since they're variable-length.
+        Current training uses batch_size=1, so no padding is needed.
+        """
+        if len(batch) > 1:
+            # Variable-length patches require padding for batching
+            # For now, assert batch_size=1 (current training config)
+            raise NotImplementedError(
+                "batch_size > 1 not yet supported with variable-length DINOv3 patches. "
+                "Current training uses batch_size=1."
+            )
+        
         return {
             'vae_latent': torch.stack([s['vae_latent'] for s in batch]),
             'dino_embedding': torch.stack([s['dino_embedding'] for s in batch]),
+            'dino_patches': torch.stack([s['dino_patches'] for s in batch]),  # (B, num_patches, 1024)
             't5_hidden': torch.stack([s['t5_hidden'] for s in batch]),
             't5_mask': torch.stack([s['t5_mask'] for s in batch]),
             'captions': [s['caption'] for s in batch],
