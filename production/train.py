@@ -33,7 +33,7 @@ def logit_normal_sample(size, mean=0.0, std=1.0, device='cpu'):
     return t
 
 
-def flow_matching_loss(model, x0, dino_emb, text_emb, text_mask, cfg_probs, return_v_pred=False):
+def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, return_v_pred=False):
     """Compute flow matching loss with mutually exclusive CFG dropout.
     
     CFG dropout uses categorical sampling to ensure exactly one of:
@@ -45,8 +45,9 @@ def flow_matching_loss(model, x0, dino_emb, text_emb, text_mask, cfg_probs, retu
     Args:
         model: NanoDiT model
         x0: (B, C, H, W) clean latents (data at t=0)
-        dino_emb: (B, 1024) DINOv3 embeddings
-        text_emb: (B, seq_len, 1024) T5 hidden states (seq_len=512 for full captions)
+        dino_emb: (B, 1024) DINOv3 CLS embeddings
+        dino_patches: (B, num_patches, 1024) DINOv3 spatial patches (variable length!)
+        text_emb: (B, seq_len, 1024) T5 hidden states (seq_len=500 for full captions)
         text_mask: (B, seq_len) T5 attention mask
         cfg_probs: dict with p_drop_both, p_drop_text, p_drop_dino
         return_v_pred: bool, if True return (loss, v_pred) for monitoring
@@ -88,9 +89,9 @@ def flow_matching_loss(model, x0, dino_emb, text_emb, text_mask, cfg_probs, retu
     drop_dino = (rand >= p_both + p_text) & (rand < p_both + p_text + p_dino)
     # Remainder (70% by default) has both conditionings present
     
-    # Predict velocity
+    # Predict velocity (with DINO patches)
     v_pred = model(
-        zt, t, dino_emb, text_emb, text_mask,
+        zt, t, dino_emb, text_emb, dino_patches, text_mask,
         cfg_drop_both=drop_both,
         cfg_drop_dino=drop_dino,
         cfg_drop_text=drop_text,
@@ -272,7 +273,7 @@ class Trainer:
         """Execute one training step.
         
         Args:
-            batch: dict with vae_latent, dino_embedding, t5_hidden, t5_mask
+            batch: dict with vae_latent, dino_embedding, dinov3_patches, t5_hidden, t5_mask
         
         Returns:
             dict with loss and grad_norm
@@ -282,12 +283,13 @@ class Trainer:
         # Move batch to device
         x0 = batch['vae_latent'].to(self.device)
         dino_emb = batch['dino_embedding'].to(self.device)
+        dino_patches = batch['dinov3_patches'].to(self.device)  # (B, num_patches, 1024) - variable length!
         text_emb = batch['t5_hidden'].to(self.device)
         text_mask = batch['t5_mask'].to(self.device)
         
         # Compute loss (with velocity prediction for monitoring)
         loss, v_pred = flow_matching_loss(
-            self.model, x0, dino_emb, text_emb, text_mask, self.cfg_probs, return_v_pred=True
+            self.model, x0, dino_emb, dino_patches, text_emb, text_mask, self.cfg_probs, return_v_pred=True
         )
         
         # Scale loss by accumulation steps

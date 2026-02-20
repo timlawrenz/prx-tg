@@ -1,7 +1,13 @@
 """Nano DiT model for validation testing.
 
-Architecture: 12 layers, 384 hidden dim, 6 attention heads (~30-50M params)
-Dual conditioning: DINOv3 (1024) → adaLN-Zero, T5 (seq_len×1024) → Cross-Attention
+Architecture: 12 layers, 384 hidden dim, 6 attention heads (~40M params)
+Conditioning:
+  - DINOv3 CLS (1024) → adaLN-Zero (global style/timing)
+  - T5 text (500×1024) → Cross-Attention (semantic concepts)
+  - DINOv3 patches (~3880×1024) → Cross-Attention (spatial layout)
+  
+Cross-attention receives concatenated sequence: [T5, DINO_CLS, DINO_patches]
+where DINO_CLS serves as a global fallback token and patches provide spatial alignment.
 """
 
 import math
@@ -208,7 +214,7 @@ class DiTBlock(nn.Module):
         nn.init.zeros_(self.adaLN_modulation[1].weight)
         nn.init.zeros_(self.adaLN_modulation[1].bias)
 
-    def _forward_impl(self, x, c_dino, c_text, text_mask):
+    def _forward_impl(self, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches):
         """Internal forward implementation for checkpointing."""
         # Get adaLN modulation parameters from DINOv3
         shift_msa, scale_msa, shift_ca, scale_ca, shift_mlp, scale_mlp = \
@@ -217,11 +223,27 @@ class DiTBlock(nn.Module):
         # Self-attention with adaLN
         x = x + self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
         
-        # Cross-attention with adaLN
+        # Concatenate cross-attention sequence: [T5 text, DINO CLS, DINO patches]
+        # c_text: (B, 500, hidden_size)
+        # c_dino_cls_token: (B, 1, hidden_size)
+        # c_patches: (B, num_patches, hidden_size) - VARIABLE LENGTH!
+        combined_context = torch.cat([c_text, c_dino_cls_token, c_patches], dim=1)
+        
+        # Concatenate masks: T5 mask + all-ones for DINO (CLS + patches)
+        B = x.shape[0]
+        num_dino_tokens = 1 + c_patches.shape[1]  # 1 CLS + num_patches
+        
+        if text_mask is not None:
+            dino_mask = torch.ones(B, num_dino_tokens, device=text_mask.device, dtype=text_mask.dtype)
+            combined_mask = torch.cat([text_mask, dino_mask], dim=1)  # (B, 500 + num_dino_tokens)
+        else:
+            combined_mask = None
+        
+        # Cross-attention to combined sequence with adaLN
         x = x + self.cross_attn(
             modulate(self.norm2(x), shift_ca, scale_ca),
-            context=c_text,
-            mask=text_mask
+            context=combined_context,
+            mask=combined_mask
         )
         
         # MLP with adaLN
@@ -229,20 +251,22 @@ class DiTBlock(nn.Module):
         
         return x
 
-    def forward(self, x, c_dino, c_text, text_mask=None):
+    def forward(self, x, c_dino, c_text, text_mask=None, c_dino_cls_token=None, c_patches=None):
         """
         Args:
             x: (B, N, C) latent tokens
-            c_dino: (B, C) DINOv3 conditioning
+            c_dino: (B, C) DINOv3 conditioning for adaLN
             c_text: (B, M, C) T5 conditioning
             text_mask: (B, M) attention mask for T5
+            c_dino_cls_token: (B, 1, C) DINO CLS token for cross-attention
+            c_patches: (B, num_patches, C) DINO patch tokens for cross-attention (variable length)
         """
         if self.use_checkpoint and self.training:
             return torch.utils.checkpoint.checkpoint(
-                self._forward_impl, x, c_dino, c_text, text_mask, use_reentrant=False
+                self._forward_impl, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, use_reentrant=False
             )
         else:
-            return self._forward_impl(x, c_dino, c_text, text_mask)
+            return self._forward_impl(x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches)
 
 
 class NanoDiT(nn.Module):
@@ -258,6 +282,7 @@ class NanoDiT(nn.Module):
         num_heads=6,
         mlp_ratio=4.0,
         dino_dim=1024,
+        dino_patch_dim=1024,
         text_dim=1024,
         use_gradient_checkpointing=False,
     ):
@@ -280,6 +305,7 @@ class NanoDiT(nn.Module):
         
         # Conditioning projections (keep bias for these)
         self.dino_proj = nn.Linear(dino_dim, hidden_size, bias=True)
+        self.dino_patch_proj = nn.Linear(dino_patch_dim, hidden_size, bias=True)
         self.text_proj = nn.Linear(text_dim, hidden_size, bias=True)
         
         # Transformer blocks
@@ -300,6 +326,7 @@ class NanoDiT(nn.Module):
         
         # Learnable null embeddings for CFG
         self.null_dino = nn.Parameter(torch.zeros(1, dino_dim))
+        self.null_dino_patch_token = nn.Parameter(torch.zeros(1, 1, dino_patch_dim))
         self.null_text = nn.Parameter(torch.zeros(1, 1, text_dim))
     
     def get_pos_embed(self, h, w, device):
@@ -356,14 +383,15 @@ class NanoDiT(nn.Module):
         latents = x.reshape(B, self.in_channels, h * self.patch_size, w * self.patch_size)
         return latents
 
-    def forward(self, x, t, dino_emb, text_emb, text_mask=None, 
+    def forward(self, x, t, dino_emb, text_emb, dino_patches=None, text_mask=None, 
                 cfg_drop_both=None, cfg_drop_dino=None, cfg_drop_text=None):
         """
         Args:
             x: (B, C, H, W) noisy latents (H and W can vary for different aspect ratios)
             t: (B,) timesteps
-            dino_emb: (B, 1024) DINOv3 embeddings
-            text_emb: (B, seq_len, 1024) T5 hidden states (seq_len=512 for full captions)
+            dino_emb: (B, 1024) DINOv3 CLS embeddings
+            text_emb: (B, seq_len, 1024) T5 hidden states (seq_len=500 for full captions)
+            dino_patches: (B, num_patches, 1024) DINOv3 spatial patches (VARIABLE LENGTH!)
             text_mask: (B, seq_len) T5 attention mask (1=valid, 0=padding)
             cfg_drop_both: (B,) bool mask for unconditional
             cfg_drop_dino: (B,) bool mask for text-only
@@ -374,12 +402,26 @@ class NanoDiT(nn.Module):
         """
         B, C, H, W = x.shape
         
-        # Apply CFG dropout
+        # Get number of patches (varies per bucket)
+        if dino_patches is not None:
+            num_patches = dino_patches.shape[1]
+        else:
+            # Default: use null patches for debugging/fallback
+            num_patches = 3880  # Approximate typical count
+            dino_patches = self.null_dino_patch_token.expand(B, num_patches, -1)
+        
+        # Apply CFG dropout (drop CLS and patches together for DINO)
         if cfg_drop_both is not None:
             dino_emb = torch.where(
                 cfg_drop_both.unsqueeze(1),
                 self.null_dino.expand(B, -1),
                 dino_emb
+            )
+            null_patches = self.null_dino_patch_token.expand(B, num_patches, -1)
+            dino_patches = torch.where(
+                cfg_drop_both.unsqueeze(1).unsqueeze(2),
+                null_patches,
+                dino_patches
             )
             text_emb = torch.where(
                 cfg_drop_both.unsqueeze(1).unsqueeze(2),
@@ -392,6 +434,12 @@ class NanoDiT(nn.Module):
                 cfg_drop_dino.unsqueeze(1),
                 self.null_dino.expand(B, -1),
                 dino_emb
+            )
+            null_patches = self.null_dino_patch_token.expand(B, num_patches, -1)
+            dino_patches = torch.where(
+                cfg_drop_dino.unsqueeze(1).unsqueeze(2),
+                null_patches,
+                dino_patches
             )
         
         if cfg_drop_text is not None:
@@ -412,16 +460,18 @@ class NanoDiT(nn.Module):
         
         t_emb = self.t_embedder(t)  # (B, hidden_size)
         
-        # Conditioning vectors
+        # Project conditioning (after CFG dropout)
         # Timestep is added to DINO conditioning (which goes through adaLN-Zero)
         # This ensures timestep information reaches all blocks, even when DINO is dropped
         # (null_dino still gets projected and adds t_emb)
-        dino_cond = self.dino_proj(dino_emb) + t_emb  # (B, hidden_size)
+        dino_cond = self.dino_proj(dino_emb) + t_emb  # (B, hidden_size) - for adaLN
+        dino_cls_token = dino_cond.unsqueeze(1)  # (B, 1, hidden_size) - for cross-attention
         text_cond = self.text_proj(text_emb)  # (B, seq_len, hidden_size)
+        patches_cond = self.dino_patch_proj(dino_patches)  # (B, num_patches, hidden_size)
         
-        # Transformer blocks
+        # Transformer blocks (with concatenated cross-attention)
         for block in self.blocks:
-            x = block(x, dino_cond, text_cond, text_mask)
+            x = block(x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond)
         
         # Output projection
         x = self.final_norm(x)

@@ -25,6 +25,7 @@ class EulerSampler:
         model,
         shape,
         dino_emb,
+        dino_patches,
         text_emb,
         text_mask,
         device='cuda',
@@ -42,9 +43,10 @@ class EulerSampler:
         Args:
             model: NanoDiT model
             shape: (B, C, H, W) output shape
-            dino_emb: (B, 1024) DINOv3 embeddings
-            text_emb: (B, 512, 1024) T5 hidden states
-            text_mask: (B, 512) T5 attention mask
+            dino_emb: (B, 1024) DINOv3 CLS embeddings
+            dino_patches: (B, num_patches, 1024) DINOv3 spatial patches (variable length!)
+            text_emb: (B, 500, 1024) T5 hidden states
+            text_mask: (B, 500) T5 attention mask
             device: torch device
             text_scale: CFG scale for text conditioning
             dino_scale: CFG scale for DINO conditioning
@@ -69,19 +71,19 @@ class EulerSampler:
             # Three forward passes for dual CFG
             # 1. Unconditional (both dropped)
             v_uncond = model(
-                zt, t_batch, dino_emb, text_emb, text_mask,
+                zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
                 cfg_drop_both=torch.ones(B, dtype=torch.bool, device=device),
             )
             
             # 2. Text-only (DINO dropped)
             v_text = model(
-                zt, t_batch, dino_emb, text_emb, text_mask,
+                zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
                 cfg_drop_dino=torch.ones(B, dtype=torch.bool, device=device),
             )
             
             # 3. DINO-only (text dropped)
             v_dino = model(
-                zt, t_batch, dino_emb, text_emb, text_mask,
+                zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
                 cfg_drop_text=torch.ones(B, dtype=torch.bool, device=device),
             )
             
@@ -237,6 +239,7 @@ class ValidationSampler:
     def generate(
         self,
         dino_emb,
+        dino_patches,
         text_emb,
         text_mask,
         latent_size=None,
@@ -247,9 +250,10 @@ class ValidationSampler:
         """Generate images from conditioning.
         
         Args:
-            dino_emb: (B, 1024) DINOv3 embeddings
-            text_emb: (B, 512, 1024) T5 hidden states
-            text_mask: (B, 512) T5 attention mask
+            dino_emb: (B, 1024) DINOv3 CLS embeddings
+            dino_patches: (B, num_patches, 1024) DINOv3 spatial patches (variable length!)
+            text_emb: (B, 500, 1024) T5 hidden states
+            text_mask: (B, 500) T5 attention mask
             latent_size: spatial size of latents (64 = 512x512 images)
             batch_size: override batch size (default: from embeddings)
             text_scale: override text CFG scale (default: use sampler's text_scale)
@@ -265,6 +269,7 @@ class ValidationSampler:
         
         # Ensure everything is on correct device
         dino_emb = dino_emb.to(self.device)
+        dino_patches = dino_patches.to(self.device)
         text_emb = text_emb.to(self.device)
         text_mask = text_mask.to(self.device)
         
@@ -281,6 +286,7 @@ class ValidationSampler:
             self.model,
             shape,
             dino_emb,
+            dino_patches,
             text_emb,
             text_mask,
             device=self.device,
