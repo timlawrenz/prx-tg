@@ -6,7 +6,7 @@ This project demonstrates that you don't need massive datasets (millions of imag
 
 ## Project Goals
 
-1. **Vertical Dataset Viability**: Train a text-to-image model on ~15k curated images (not millions)
+1. **Vertical Dataset Viability**: Train a text-to-image model on a small, curated dataset (thousands, not millions)
 2. **Consumer Hardware**: Run entirely on consumer-grade GPUs (RTX 4090, etc.)
 3. **Pre-computed Embeddings**: Avoid expensive forward passes during training by pre-computing all conditioning signals
 4. **Flow Matching**: Use modern rectified flow formulation for stable, efficient training
@@ -44,7 +44,7 @@ This project demonstrates that you don't need massive datasets (millions of imag
 ## Dataset
 
 ### Source
-~15,690 curated images from a vertical domain (specific subject matter, consistent quality).
+A curated collection of images from a vertical domain (specific subject matter, consistent quality).
 
 ### Processing Pipeline
 
@@ -131,10 +131,9 @@ Each shard contains:
 - DINOv3 patches: ~0.78 MB (optional)
 - **Total**: ~5-6 MB per image
 
-**Full dataset (15,690 images)**:
-- Embeddings: ~80 GB
-- Original images: ~40 GB
-- **Total**: ~120 GB
+**Full dataset**:
+- Embeddings + original images
+- Storage requirements scale linearly with dataset size
 
 ## Training Process
 
@@ -143,13 +142,13 @@ Each shard contains:
 **Baseline (384 hidden, 12 layers)**:
 - GPU: RTX 4090 (24 GB VRAM) or similar
 - RAM: 32 GB system memory
-- Storage: 120 GB SSD
+- Storage: Sufficient SSD for embeddings
 - Training speed: ~1.6 it/s with gradient accumulation
 
 **Production (768 hidden, 18 layers)**:
 - GPU: RTX 4090 or similar (24 GB VRAM)
 - RAM: 64 GB system memory recommended
-- Storage: 150 GB SSD
+- Storage: Sufficient SSD for embeddings
 - Training speed: ~1.0 it/s with gradient accumulation + gradient checkpointing
 
 ### Training Configuration
@@ -162,7 +161,7 @@ model:
   patch_size: 2
 
 training:
-  total_steps: 250,000
+  total_steps: 250000  # Subject to change
   batch_size: 1
   grad_accumulation_steps: 256  # Effective batch = 256
   learning_rate: 3e-4 → 1e-6 (cosine decay)
@@ -251,7 +250,7 @@ Quick 4-image generation every 1,000 steps:
 ## Current Status
 
 ### Baseline Training (384 hidden, 12 layers)
-- ✅ Completed: 250,000 steps on 5,141 images
+- ✅ Completed: Initial training run
 - Results: "Watercolor blobs" - correct colors, poor spatial coherence
 - Conclusion: Model capacity too small for this task
 
@@ -272,7 +271,7 @@ Quick 4-image generation every 1,000 steps:
    - Left/right mentions in captions don't swap with image
    - Would require NLP caption rewriting (future work)
 
-3. **Training Data Size**: 15k images is small by modern standards
+3. **Training Data Size**: Dataset is small by modern standards
    - Adequate for proof-of-concept and vertical domains
    - Larger datasets would improve generalization
 
@@ -343,7 +342,7 @@ python -m production.train_production \
 ```bash
 # Generate images (implementation in progress)
 python -m production.sample \
-  --checkpoint checkpoints/checkpoint_step250000.pt \
+  --checkpoint checkpoints/checkpoint_latest.pt \
   --prompt "Your text prompt here" \
   --reference-image path/to/style.jpg \
   --output output.png
@@ -367,7 +366,7 @@ See full environment in `.venv/` (not committed).
    - Add cross-attention to spatial features
    - Should dramatically improve layout accuracy
 
-2. **Larger Dataset**: Expand to 50k+ images
+2. **Larger Dataset**: Expand dataset size
    - Better generalization
    - More diverse compositions
 
