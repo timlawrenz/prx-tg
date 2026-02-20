@@ -199,17 +199,18 @@ def extract_dinov3_patches_to_npy(record: dict, output_dir: Path) -> bool:
         else:
             array = patches.astype(np.float32)
         
-        # Expected shape: (num_patches, 1024) where num_patches varies by bucket
-        # Example shapes: (5329, 1024) for 1024×1024, (5133, 1024) for 1216×832, etc.
+        # Expected shape: (num_patches, 1024)
+        # DINOv3 models use fixed internal grids: ~3800-4000 patches regardless of input size
+        # The model internally interpolates positional embeddings to handle different aspect ratios
         if array.ndim != 2 or array.shape[1] != 1024:
             eprint(f"warning: unexpected DINOv3 patches shape {array.shape} for {image_id}, expected (num_patches, 1024)")
             return False
         
-        # Reasonable patch count check (should be between ~4800 and ~5400 for our buckets)
+        # Sanity check: patch count should be in the typical DINOv3 range
         num_patches = array.shape[0]
-        if num_patches < 4500 or num_patches > 5500:
-            eprint(f"warning: unusual patch count {num_patches} for {image_id}, expected ~4800-5400 depending on bucket")
-            # Don't fail - just warn, as this might be valid for extreme aspect ratios
+        if num_patches < 3700 or num_patches > 4200:
+            eprint(f"warning: unusual patch count {num_patches} for {image_id}, expected ~3800-4000 for DINOv3")
+            # Don't fail - just warn, as this might indicate a different model or issue
         
         save_npy(array, npy_path, np.float32)
         return True
@@ -313,7 +314,7 @@ def compute_dinov3_embedding(dino, device, image):
 
 
 def compute_dinov3_patches(dino, device, image, target_width: int = None, target_height: int = None):
-    """Extract DINOv3 patch embeddings with dynamic resolution for spatial alignment.
+    """Extract DINOv3 patch embeddings with aspect-correct preprocessing for spatial alignment.
     
     Args:
         dino: DINOv3 model dict
@@ -323,17 +324,17 @@ def compute_dinov3_patches(dino, device, image, target_width: int = None, target
         target_height: Target height (bucket dimension). If None, uses default 224.
     
     Returns:
-        numpy array of shape (num_patches, 1024) where num_patches varies by resolution.
+        numpy array of shape (num_patches, 1024) where num_patches is ~3800-4000.
         Returns None for pipeline (not supported).
         
-    CRITICAL: Uses dynamic resolution (no center-crop) to preserve spatial alignment!
-    - Rounds target dims to nearest multiple of 14 (DINOv3 patch size)
-    - Feeds full aspect-correct image to DINO (no cropping!)
-    - Example: 1216×832 bucket → 1218×826 DINO → 87×59 = 5133 patches
+    IMPORTANT: DINOv3 models have fixed internal grids (~3800-4000 patches) regardless
+    of input size. The preprocessing still resizes to bucket dimensions (no center-crop!)
+    to preserve spatial correspondence - the model interpolates positional embeddings
+    internally to handle different aspect ratios.
     
-    Note: DINOv3 outputs variable tokens based on input size:
+    Note: DINOv3 token sequence:
         - 1 CLS token (index 0)
-        - num_patches = (dino_h // 14) * (dino_w // 14) spatial patches
+        - ~3800-4000 spatial patches (fixed internal grid)
         - 4 register tokens at end (exclude these)
     """
     import torch
@@ -362,19 +363,18 @@ def compute_dinov3_patches(dino, device, image, target_width: int = None, target
     else:
         # Fallback to default behavior (for backward compatibility)
         inputs = processor(images=image, return_tensors="pt")
-        dino_h, dino_w = 224, 224
     
     inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.no_grad():
         outputs = model(**inputs)
 
-    # Calculate expected number of patches
-    num_patches = (dino_h // 14) * (dino_w // 14)
+    # Extract patches: DINOv3 models have fixed internal grids
+    # Token sequence: [CLS, patch_1, ..., patch_N, register_1, ..., register_4]
+    # We extract all tokens except CLS (0) and registers (last 4)
+    total_tokens = outputs.last_hidden_state.shape[1]
+    num_patches = total_tokens - 5  # Exclude CLS + 4 register tokens
     
     # Extract spatial patch tokens only
-    # last_hidden_state shape: (batch=1, num_tokens, hidden=1024)
-    # tokens: [CLS, patch_1, ..., patch_N, register_1, ..., register_4]
-    # We want indices [1:num_patches+1] to get all spatial patches, excluding CLS and registers
     patches = outputs.last_hidden_state[0, 1:num_patches+1, :]  # (num_patches, 1024)
     
     return patches.detach().cpu().float().numpy()
@@ -398,11 +398,12 @@ def compute_dinov3_both(dino, device, image, target_width: int = None, target_he
     This is more efficient than calling compute_dinov3_embedding() and 
     compute_dinov3_patches() separately since it only runs the model once.
     
-    CRITICAL: Uses dynamic resolution (no center-crop) to preserve spatial alignment!
+    IMPORTANT: DINOv3 models have fixed internal grids (~3800-4000 patches) regardless
+    of input size. The model interpolates positional embeddings to handle different
+    aspect ratios while maintaining spatial correspondence.
     """
     import torch
     import numpy as np
-    import sys
 
     if dino["kind"] == "pipeline":
         # Pipeline: only CLS available
@@ -422,9 +423,6 @@ def compute_dinov3_both(dino, device, image, target_width: int = None, target_he
         dino_w = round(target_width / 14) * 14
         dino_h = round(target_height / 14) * 14
         
-        # DEBUG: Log what we're passing to processor
-        print(f"DEBUG: image.size={image.size}, target={target_width}x{target_height}, dino={dino_w}x{dino_h}", file=sys.stderr)
-        
         # Use processor with dynamic size, NO center-crop (preserves spatial alignment!)
         inputs = processor(
             images=image,
@@ -433,11 +431,6 @@ def compute_dinov3_both(dino, device, image, target_width: int = None, target_he
             do_resize=True,
             return_tensors="pt"
         )
-        
-        # DEBUG: Log what processor actually produced
-        actual_h = inputs['pixel_values'].shape[2]
-        actual_w = inputs['pixel_values'].shape[3]
-        print(f"DEBUG: processor output shape={inputs['pixel_values'].shape}, size={actual_w}x{actual_h}", file=sys.stderr)
     else:
         # Fallback to default behavior (for backward compatibility)
         inputs = processor(images=image, return_tensors="pt")
@@ -455,18 +448,15 @@ def compute_dinov3_both(dino, device, image, target_width: int = None, target_he
     
     cls_list = cls_emb.detach().cpu().float().tolist()
 
-    # Calculate expected number of patches
-    num_patches = (dino_h // 14) * (dino_w // 14)
-    
-    # DEBUG: Check actual token count
+    # Extract patches: DINOv3 models have fixed internal grids
+    # Token sequence: [CLS, patch_1, ..., patch_N, register_1, ..., register_4]
+    # We extract all tokens except CLS (0) and registers (last 4)
     total_tokens = outputs.last_hidden_state.shape[1]
-    print(f"DEBUG: total_tokens={total_tokens}, expected_patches={num_patches}, dino_h={dino_h}, dino_w={dino_w}", file=sys.stderr)
+    num_patches = total_tokens - 5  # Exclude CLS + 4 register tokens
     
     # Extract patches (skip CLS at 0, exclude register tokens at end)
     patches = outputs.last_hidden_state[0, 1:num_patches+1, :]  # (num_patches, 1024)
     patches_np = patches.detach().cpu().float().numpy()
-    
-    print(f"DEBUG: extracted patches shape={patches_np.shape}", file=sys.stderr)
     
     return cls_list, patches_np
 
