@@ -402,6 +402,7 @@ def compute_dinov3_both(dino, device, image, target_width: int = None, target_he
     """
     import torch
     import numpy as np
+    import sys
 
     if dino["kind"] == "pipeline":
         # Pipeline: only CLS available
@@ -421,6 +422,9 @@ def compute_dinov3_both(dino, device, image, target_width: int = None, target_he
         dino_w = round(target_width / 14) * 14
         dino_h = round(target_height / 14) * 14
         
+        # DEBUG: Log what we're passing to processor
+        print(f"DEBUG: image.size={image.size}, target={target_width}x{target_height}, dino={dino_w}x{dino_h}", file=sys.stderr)
+        
         # Use processor with dynamic size, NO center-crop (preserves spatial alignment!)
         inputs = processor(
             images=image,
@@ -429,6 +433,11 @@ def compute_dinov3_both(dino, device, image, target_width: int = None, target_he
             do_resize=True,
             return_tensors="pt"
         )
+        
+        # DEBUG: Log what processor actually produced
+        actual_h = inputs['pixel_values'].shape[2]
+        actual_w = inputs['pixel_values'].shape[3]
+        print(f"DEBUG: processor output shape={inputs['pixel_values'].shape}, size={actual_w}x{actual_h}", file=sys.stderr)
     else:
         # Fallback to default behavior (for backward compatibility)
         inputs = processor(images=image, return_tensors="pt")
