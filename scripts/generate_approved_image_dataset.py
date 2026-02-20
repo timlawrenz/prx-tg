@@ -207,9 +207,10 @@ def extract_dinov3_patches_to_npy(record: dict, output_dir: Path) -> bool:
             return False
         
         # Sanity check: patch count should be in the typical DINOv3 range
+        # Note: Extreme aspect ratios (704x1344) may produce ~3600 patches
         num_patches = array.shape[0]
-        if num_patches < 3700 or num_patches > 4200:
-            eprint(f"warning: unusual patch count {num_patches} for {image_id}, expected ~3800-4000 for DINOv3")
+        if num_patches < 3500 or num_patches > 4200:
+            eprint(f"warning: unusual patch count {num_patches} for {image_id}, expected ~3600-4000 for DINOv3")
             # Don't fail - just warn, as this might indicate a different model or issue
         
         save_npy(array, npy_path, np.float32)
