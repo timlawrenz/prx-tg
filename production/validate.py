@@ -167,6 +167,7 @@ class ValidationRunner:
                     samples.append({
                         'vae_latent': batch['vae_latent'][i].cpu(),
                         'dino_embedding': batch['dino_embedding'][i].cpu(),
+                        'dinov3_patches': batch['dino_patches'][i].cpu(),  # NEW - spatial patches
                         't5_hidden': batch['t5_hidden'][i].cpu(),
                         't5_mask': batch['t5_mask'][i].cpu(),
                         'caption': batch['captions'][i],
@@ -209,13 +210,14 @@ class ValidationRunner:
             batch_samples = [samples[idx] for idx in batch_indices]
             
             dino_emb = torch.stack([s['dino_embedding'] for s in batch_samples])
+            dino_patches = torch.stack([s['dinov3_patches'] for s in batch_samples])  # NEW - patches
             text_emb = torch.stack([s['t5_hidden'] for s in batch_samples])
             text_mask = torch.stack([s['t5_mask'] for s in batch_samples])
             gt_latents = torch.stack([s['vae_latent'] for s in batch_samples])
             image_ids = [s['image_id'] for s in batch_samples]
             
             # Generate images
-            gen_images = sampler.generate(dino_emb, text_emb, text_mask)
+            gen_images = sampler.generate(dino_emb, dino_patches, text_emb, text_mask)
             
             # Decode ground truth latents for comparison
             gt_images = sampler.vae.decode(gt_latents.half().to(self.device)).sample
@@ -237,7 +239,7 @@ class ValidationRunner:
             )
             
             # Clear GPU memory after each batch
-            del dino_emb, text_emb, text_mask, gt_latents, gen_images, gt_images
+            del dino_emb, dino_patches, text_emb, text_mask, gt_latents, gen_images, gt_images
             torch.cuda.empty_cache()
         
         mean_lpips = sum(lpips_scores) / len(lpips_scores)
@@ -286,13 +288,15 @@ class ValidationRunner:
             # 1. Reference: A's caption + A's DINO
             gen_a_ref = sampler.generate(
                 sample_a['dino_embedding'].unsqueeze(0),
+                sample_a['dinov3_patches'].unsqueeze(0),
                 sample_a['t5_hidden'].unsqueeze(0),
                 sample_a['t5_mask'].unsqueeze(0)
             )[0]  # (3, H, W)
             
-            # 2. Swapped: A's caption + B's DINO
+            # 2. Swapped: A's caption + B's DINO (swap CLS + patches together)
             gen_a_swap = sampler.generate(
                 sample_b['dino_embedding'].unsqueeze(0),
+                sample_b['dinov3_patches'].unsqueeze(0),
                 sample_a['t5_hidden'].unsqueeze(0),
                 sample_a['t5_mask'].unsqueeze(0)
             )[0]  # (3, H, W)
@@ -300,6 +304,7 @@ class ValidationRunner:
             # 3. Reference: B's caption + B's DINO
             gen_b_ref = sampler.generate(
                 sample_b['dino_embedding'].unsqueeze(0),
+                sample_b['dinov3_patches'].unsqueeze(0),
                 sample_b['t5_hidden'].unsqueeze(0),
                 sample_b['t5_mask'].unsqueeze(0)
             )[0]  # (3, H, W)
@@ -377,6 +382,7 @@ class ValidationRunner:
             # Generate: text-only (scale_text=4.0, scale_dino=0.0)
             gen_text_only = sampler.generate(
                 sample['dino_embedding'].unsqueeze(0),
+                sample['dinov3_patches'].unsqueeze(0),
                 sample['t5_hidden'].unsqueeze(0),
                 sample['t5_mask'].unsqueeze(0),
                 text_scale=4.0,
@@ -389,6 +395,7 @@ class ValidationRunner:
             # Generate: DINO-only (scale_text=0.0, scale_dino=2.0)
             gen_dino_only = sampler.generate(
                 sample['dino_embedding'].unsqueeze(0),
+                sample['dinov3_patches'].unsqueeze(0),
                 sample['t5_hidden'].unsqueeze(0),
                 sample['t5_mask'].unsqueeze(0),
                 text_scale=0.0,
@@ -401,6 +408,7 @@ class ValidationRunner:
             # Generate: both (default scales)
             gen_both = sampler.generate(
                 sample['dino_embedding'].unsqueeze(0),
+                sample['dinov3_patches'].unsqueeze(0),
                 sample['t5_hidden'].unsqueeze(0),
                 sample['t5_mask'].unsqueeze(0),
             )[0]  # (3, H, W)
@@ -476,14 +484,16 @@ class ValidationRunner:
             # NOTE: We still pass DINO embeddings to avoid tensor shape issues,
             # but set dino_scale=0.0 so they have zero influence
             dino_emb = torch.stack([s['dino_embedding'] for s in batch_samples])
+            dino_patches = torch.stack([s['dinov3_patches'] for s in batch_samples])
             text_emb = torch.stack([s['t5_hidden'] for s in batch_samples])
             text_mask = torch.stack([s['t5_mask'] for s in batch_samples])
             gt_latents = torch.stack([s['vae_latent'] for s in batch_samples])
             image_ids = [s['image_id'] for s in batch_samples]
             
-            # Generate images with TEXT ONLY (dino_scale=0.0 disables DINO)
+            # Generate images with TEXT ONLY (dino_scale=0.0 disables DINO CLS + patches)
             gen_images = sampler.generate(
-                dino_emb, 
+                dino_emb,
+                dino_patches,
                 text_emb, 
                 text_mask,
                 dino_scale=0.0,  # Zero DINO influence
@@ -510,7 +520,7 @@ class ValidationRunner:
             )
             
             # Clear GPU memory after each batch
-            del dino_emb, text_emb, text_mask, gt_latents, gen_images, gt_images
+            del dino_emb, dino_patches, text_emb, text_mask, gt_latents, gen_images, gt_images
             torch.cuda.empty_cache()
         
         mean_lpips = sum(lpips_scores) / len(lpips_scores)
@@ -622,17 +632,18 @@ class ValidationRunner:
             modified_caption = original_caption.replace(original_text, modified_text)
             
             dino_emb = sample['dino_embedding'].unsqueeze(0)
+            dino_patches = sample['dinov3_patches'].unsqueeze(0)
             
             # Generate with original caption
             text_emb_orig = sample['t5_hidden'].unsqueeze(0)
             text_mask_orig = sample['t5_mask'].unsqueeze(0)
-            gen_orig = sampler.generate(dino_emb, text_emb_orig, text_mask_orig)[0]  # (3, H, W)
+            gen_orig = sampler.generate(dino_emb, dino_patches, text_emb_orig, text_mask_orig)[0]  # (3, H, W)
             
             # Re-encode modified caption with T5
             text_emb_mod, text_mask_mod = self.encode_caption(modified_caption)
             
             # Generate with modified caption
-            gen_mod = sampler.generate(dino_emb, text_emb_mod, text_mask_mod)[0]  # (3, H, W)
+            gen_mod = sampler.generate(dino_emb, dino_patches, text_emb_mod, text_mask_mod)[0]  # (3, H, W)
             
             # Compute LPIPS between original and modified generations
             lpips_val = self.lpips_fn(gen_orig.unsqueeze(0), gen_mod.unsqueeze(0)).item()
@@ -671,7 +682,7 @@ class ValidationRunner:
             })
             
             # Clear GPU memory
-            del dino_emb, text_emb_orig, text_mask_orig, text_emb_mod, text_mask_mod
+            del dino_emb, dino_patches, text_emb_orig, text_mask_orig, text_emb_mod, text_mask_mod
             del gen_orig, gen_mod
             torch.cuda.empty_cache()
         
