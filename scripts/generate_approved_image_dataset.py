@@ -305,18 +305,29 @@ def compute_dinov3_embedding(dino, device, image):
     return emb.detach().cpu().float().tolist()
 
 
-def compute_dinov3_patches(dino, device, image):
-    """Extract DINOv3 patch embeddings (spatial features).
+def compute_dinov3_patches(dino, device, image, target_width: int = None, target_height: int = None):
+    """Extract DINOv3 patch embeddings with dynamic resolution for spatial alignment.
+    
+    Args:
+        dino: DINOv3 model dict
+        device: torch device
+        image: PIL Image
+        target_width: Target width (bucket dimension). If None, uses default 224.
+        target_height: Target height (bucket dimension). If None, uses default 224.
     
     Returns:
-        numpy array of shape (196, 1024) - 14x14 spatial patch grid
-        or None for pipeline (not supported)
+        numpy array of shape (num_patches, 1024) where num_patches varies by resolution.
+        Returns None for pipeline (not supported).
         
-    Note: DINOv3 outputs 201 tokens total:
+    CRITICAL: Uses dynamic resolution (no center-crop) to preserve spatial alignment!
+    - Rounds target dims to nearest multiple of 14 (DINOv3 patch size)
+    - Feeds full aspect-correct image to DINO (no cropping!)
+    - Example: 1216×832 bucket → 1218×826 DINO → 87×59 = 5133 patches
+    
+    Note: DINOv3 outputs variable tokens based on input size:
         - 1 CLS token (index 0)
-        - 196 spatial patches (indices 1-196, 14x14 grid)
-        - 4 register tokens (indices 197-200, used during training)
-    We extract only the 196 spatial patches for downstream use.
+        - num_patches = (dino_h // 14) * (dino_w // 14) spatial patches
+        - 4 register tokens at end (exclude these)
     """
     import torch
     import numpy as np
@@ -328,29 +339,59 @@ def compute_dinov3_patches(dino, device, image):
     processor = dino["processor"]
     model = dino["model"]
 
-    inputs = processor(images=image, return_tensors="pt")
+    # Compute DINO input size: round target dims to nearest multiple of 14
+    if target_width is not None and target_height is not None:
+        dino_w = round(target_width / 14) * 14
+        dino_h = round(target_height / 14) * 14
+        
+        # Use processor with dynamic size, NO center-crop (preserves spatial alignment!)
+        inputs = processor(
+            images=image,
+            size={"height": dino_h, "width": dino_w},
+            do_center_crop=False,  # CRITICAL: preserve spatial alignment
+            do_resize=True,
+            return_tensors="pt"
+        )
+    else:
+        # Fallback to default behavior (for backward compatibility)
+        inputs = processor(images=image, return_tensors="pt")
+        dino_h, dino_w = 224, 224
+    
     inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.no_grad():
         outputs = model(**inputs)
 
-    # Extract spatial patch tokens only (skip CLS at 0, exclude register tokens at 197-200)
-    # last_hidden_state shape: (batch=1, num_tokens=201, hidden=1024)
-    # tokens: [CLS, patch_1, ..., patch_196, register_1, ..., register_4]
-    patches = outputs.last_hidden_state[0, 1:197, :]  # (196, 1024)
+    # Calculate expected number of patches
+    num_patches = (dino_h // 14) * (dino_w // 14)
+    
+    # Extract spatial patch tokens only
+    # last_hidden_state shape: (batch=1, num_tokens, hidden=1024)
+    # tokens: [CLS, patch_1, ..., patch_N, register_1, ..., register_4]
+    # We want indices [1:num_patches+1] to get all spatial patches, excluding CLS and registers
+    patches = outputs.last_hidden_state[0, 1:num_patches+1, :]  # (num_patches, 1024)
     
     return patches.detach().cpu().float().numpy()
 
 
-def compute_dinov3_both(dino, device, image):
-    """Extract both CLS token and patch embeddings in a single forward pass.
+def compute_dinov3_both(dino, device, image, target_width: int = None, target_height: int = None):
+    """Extract both CLS token and patch embeddings in a single forward pass with dynamic resolution.
+    
+    Args:
+        dino: DINOv3 model dict
+        device: torch device
+        image: PIL Image
+        target_width: Target width (bucket dimension). If None, uses default 224.
+        target_height: Target height (bucket dimension). If None, uses default 224.
     
     Returns:
         tuple: (cls_embedding, patches) where:
             - cls_embedding: list of 1024 floats (CLS token)
-            - patches: numpy array (196, 1024) or None if pipeline
+            - patches: numpy array (num_patches, 1024) or None if pipeline
     
     This is more efficient than calling compute_dinov3_embedding() and 
     compute_dinov3_patches() separately since it only runs the model once.
+    
+    CRITICAL: Uses dynamic resolution (no center-crop) to preserve spatial alignment!
     """
     import torch
     import numpy as np
@@ -368,7 +409,24 @@ def compute_dinov3_both(dino, device, image):
     processor = dino["processor"]
     model = dino["model"]
 
-    inputs = processor(images=image, return_tensors="pt")
+    # Compute DINO input size: round target dims to nearest multiple of 14
+    if target_width is not None and target_height is not None:
+        dino_w = round(target_width / 14) * 14
+        dino_h = round(target_height / 14) * 14
+        
+        # Use processor with dynamic size, NO center-crop (preserves spatial alignment!)
+        inputs = processor(
+            images=image,
+            size={"height": dino_h, "width": dino_w},
+            do_center_crop=False,  # CRITICAL: preserve spatial alignment
+            do_resize=True,
+            return_tensors="pt"
+        )
+    else:
+        # Fallback to default behavior (for backward compatibility)
+        inputs = processor(images=image, return_tensors="pt")
+        dino_h, dino_w = 224, 224
+    
     inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.no_grad():
         outputs = model(**inputs)
@@ -381,8 +439,11 @@ def compute_dinov3_both(dino, device, image):
     
     cls_list = cls_emb.detach().cpu().float().tolist()
 
-    # Extract patches (skip CLS at 0, exclude register tokens at 197-200)
-    patches = outputs.last_hidden_state[0, 1:197, :]  # (196, 1024)
+    # Calculate expected number of patches
+    num_patches = (dino_h // 14) * (dino_w // 14)
+    
+    # Extract patches (skip CLS at 0, exclude register tokens at end)
+    patches = outputs.last_hidden_state[0, 1:num_patches+1, :]  # (num_patches, 1024)
     patches_np = patches.detach().cpu().float().numpy()
     
     return cls_list, patches_np
@@ -1341,11 +1402,20 @@ def main(argv):
                 needs_cls = item.get("needs_dino_cls", True)
                 needs_patches = item.get("needs_dino_patches", True)
                 
+                # Extract bucket dimensions for spatial alignment
+                bucket_w, bucket_h = None, None
+                aspect_bucket = records[i].get("aspect_bucket")
+                if aspect_bucket:
+                    dims = parse_bucket_dims(aspect_bucket)
+                    if dims:
+                        bucket_w, bucket_h = dims
+                
                 if needs_cls and needs_patches:
                     # Need both - use optimized single forward pass
                     if args.verbose:
-                        eprint(f"verbose: computing DINOv3 CLS + patches for {item['record']['image_path']}...")
-                    cls_emb, patches = compute_dinov3_both(dino, device, images[i])
+                        bucket_str = f" (bucket: {bucket_w}x{bucket_h})" if bucket_w else ""
+                        eprint(f"verbose: computing DINOv3 CLS + patches for {item['record']['image_path']}{bucket_str}...")
+                    cls_emb, patches = compute_dinov3_both(dino, device, images[i], bucket_w, bucket_h)
                     records[i]["dinov3_embedding"] = cls_emb
                     if patches is not None:
                         records[i]["dinov3_patches"] = patches
@@ -1359,8 +1429,9 @@ def main(argv):
                 elif needs_patches:
                     # Only need patches
                     if args.verbose:
-                        eprint(f"verbose: computing DINOv3 patches for {item['record']['image_path']}...")
-                    patches = compute_dinov3_patches(dino, device, images[i])
+                        bucket_str = f" (bucket: {bucket_w}x{bucket_h})" if bucket_w else ""
+                        eprint(f"verbose: computing DINOv3 patches for {item['record']['image_path']}{bucket_str}...")
+                    patches = compute_dinov3_patches(dino, device, images[i], bucket_w, bucket_h)
                     if patches is not None:
                         records[i]["dinov3_patches"] = patches
 
