@@ -21,6 +21,25 @@ Current architecture uses only DINO CLS token (1024-dim global vector) for visua
   2. Global token in cross-attention (fallback for spatial routing)
 - **Efficient routing**: Model learns to attend to text semantics, global style, or specific spatial patches as needed
 
+### Open Questions - RESOLVED ✓
+
+**1. Patches mask: Should we mask invalid patches?**
+- ✅ **No**. All 196 patches + CLS are always valid. 
+- Mask implementation: `torch.cat([t5_mask, torch.ones(B, 197)], dim=1)` → `(B, 709)`
+- T5 portion handles padding, DINO portion (197 tokens) always unmasked
+
+**2. CFG scaling: Do patches need a separate CFG scale?**
+- ✅ **No**. Standard equation works: `v_pred = v_uncond + s_text * Δv_text + s_dino * Δv_dino`
+- CLS and patches dropped together during training → unified "visual semantic" signal at inference
+
+**3. CLS positioning: [T5, CLS, patches] or [CLS, T5, patches]?**
+- ✅ **Either works** (transformers are permutation invariant)
+- Choose: **[T5, CLS, patches]** (clean and logical)
+
+**4. Positional encoding for patches: Add 2D pos encoding?**
+- ✅ **MVP: No**. DINOv3 embeddings already contain absolute positional info from ViT's first layer
+- **Phase 2 (if needed)**: Add tiny learnable 2D sinusoidal embedding if model struggles with 14×14→64×64 mapping after 20k steps
+
 ### Component Specifications
 
 1. **T5 Text Embeddings**: 
