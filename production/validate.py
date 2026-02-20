@@ -167,7 +167,7 @@ class ValidationRunner:
                     samples.append({
                         'vae_latent': batch['vae_latent'][i].cpu(),
                         'dino_embedding': batch['dino_embedding'][i].cpu(),
-                        'dinov3_patches': batch['dino_patches'][i].cpu(),  # NEW - spatial patches
+                        'dinov3_patches': batch['dinov3_patches'][i].cpu(),  # NEW - spatial patches
                         't5_hidden': batch['t5_hidden'][i].cpu(),
                         't5_mask': batch['t5_mask'][i].cpu(),
                         'caption': batch['captions'][i],

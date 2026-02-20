@@ -12,8 +12,8 @@ import webdataset as wds
 
 # Flux VAE latent normalization (computed from dataset statistics)
 # These are automatically computed at training startup if not already cached
-FLUX_LATENT_MEAN = -0.046356
-FLUX_LATENT_STD = 2.925166
+FLUX_LATENT_MEAN = -0.046423
+FLUX_LATENT_STD = 2.958330
 USE_LATENT_NORMALIZATION = True # Enable after verifying compatibility
 
 # Cache file for computed statistics
@@ -250,7 +250,7 @@ class ValidationDataset:
             sample: dict with keys: __key__, json, dinov3.npy, dinov3_patches.npy, vae.npy, t5h.npy, t5m.npy
         
         Returns:
-            dict with keys: vae_latent, dino_embedding, dino_patches, t5_hidden, t5_mask, caption, image_id
+            dict with keys: vae_latent, dino_embedding, dinov3_patches, t5_hidden, t5_mask, caption, image_id
         """
         # Parse metadata (webdataset already decoded JSON)
         metadata = sample['json']
@@ -288,7 +288,7 @@ class ValidationDataset:
         return {
             'vae_latent': vae_latent.float(),  # (16, H, W)
             'dino_embedding': torch.from_numpy(dino_emb).float(),  # (1024,)
-            'dino_patches': torch.from_numpy(dino_patches).float(),  # (num_patches, 1024) - VARIABLE!
+            'dinov3_patches': torch.from_numpy(dino_patches).float(),  # (num_patches, 1024) - VARIABLE!
             't5_hidden': torch.from_numpy(t5_hidden).float(),  # (512, 1024)
             't5_mask': torch.from_numpy(t5_mask).long(),  # (512,)
             'caption': caption,
@@ -298,7 +298,7 @@ class ValidationDataset:
     def collate_fn(self, batch):
         """Collate batch of samples into batched tensors.
         
-        NOTE: For batch_size > 1, dino_patches will need padding since they're variable-length.
+        NOTE: For batch_size > 1, dinov3_patches will need padding since they're variable-length.
         Current training uses batch_size=1, so no padding is needed.
         """
         if len(batch) > 1:
@@ -312,7 +312,7 @@ class ValidationDataset:
         return {
             'vae_latent': torch.stack([s['vae_latent'] for s in batch]),
             'dino_embedding': torch.stack([s['dino_embedding'] for s in batch]),
-            'dino_patches': torch.stack([s['dino_patches'] for s in batch]),  # (B, num_patches, 1024)
+            'dinov3_patches': torch.stack([s['dinov3_patches'] for s in batch]),  # (B, num_patches, 1024)
             't5_hidden': torch.stack([s['t5_hidden'] for s in batch]),
             't5_mask': torch.stack([s['t5_mask'] for s in batch]),
             'captions': [s['caption'] for s in batch],
