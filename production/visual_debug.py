@@ -208,7 +208,7 @@ def _load_debug_samples(shard_dir, num_samples, device):
         # collate_fn returns: dino_embedding, dinov3_patches, t5_hidden, t5_mask, captions (list), image_ids (list)
         sample = {
             'dino': batch['dino_embedding'][0].to(device),  # (1024,)
-            'dino_patches': batch['dino_patches'][0].to(device),  # (num_patches, 1024)
+            'dino_patches': batch['dinov3_patches'][0].to(device),  # (num_patches, 1024)
             'text_emb': batch['t5_hidden'][0].to(device),  # (500, 1024)
             'text_mask': batch['t5_mask'][0].to(device),  # (500,)
             'caption': batch['captions'][0],
