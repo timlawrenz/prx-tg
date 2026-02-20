@@ -206,11 +206,11 @@ def extract_dinov3_patches_to_npy(record: dict, output_dir: Path) -> bool:
             eprint(f"warning: unexpected DINOv3 patches shape {array.shape} for {image_id}, expected (num_patches, 1024)")
             return False
         
-        # Sanity check: patch count should be in the typical DINOv3 range
-        # Note: Extreme aspect ratios (704x1344) may produce ~3600 patches
+        # Sanity check: patch count should match (H÷16)×(W÷16) for variable-length DINOv3
+        # Typical ranges: 1024×1024→4096, 832×1216→3952, 768×1280→3840, 704×1344→3696
         num_patches = array.shape[0]
-        if num_patches < 3500 or num_patches > 4200:
-            eprint(f"warning: unusual patch count {num_patches} for {image_id}, expected ~3600-4000 for DINOv3")
+        if num_patches < 3600 or num_patches > 5500:
+            eprint(f"warning: unusual patch count {num_patches} for {image_id}, expected 3600-5500 for DINOv3")
             # Don't fail - just warn, as this might indicate a different model or issue
         
         save_npy(array, npy_path, np.float32)
@@ -325,17 +325,22 @@ def compute_dinov3_patches(dino, device, image, target_width: int = None, target
         target_height: Target height (bucket dimension). If None, uses default 224.
     
     Returns:
-        numpy array of shape (num_patches, 1024) where num_patches is ~3800-4000.
+        numpy array of shape (num_patches, 1024) where num_patches varies by input size.
         Returns None for pipeline (not supported).
         
-    IMPORTANT: DINOv3 models have fixed internal grids (~3800-4000 patches) regardless
-    of input size. The preprocessing still resizes to bucket dimensions (no center-crop!)
-    to preserve spatial correspondence - the model interpolates positional embeddings
-    internally to handle different aspect ratios.
+    IMPORTANT: DINOv3 uses RoPE positional embeddings and supports variable-length sequences.
+    Patch count is determined by: (H÷16) × (W÷16) where H,W are rounded to multiples of 16.
     
-    Note: DINOv3 token sequence:
+    Examples:
+        - 1024×1024 bucket → 4096 patches (64×64 grid)
+        - 832×1216 bucket → 3952 patches (52×76 grid)
+        - 768×1280 bucket → 3840 patches (48×80 grid)
+    
+    Preprocessing: Resize to bucket dimensions (no center-crop) to preserve spatial alignment.
+    
+    Note: DINOv3 token sequence structure:
         - 1 CLS token (index 0)
-        - ~3800-4000 spatial patches (fixed internal grid)
+        - variable number of spatial patches (depends on input size)
         - 4 register tokens at end (exclude these)
     """
     import torch
@@ -348,10 +353,10 @@ def compute_dinov3_patches(dino, device, image, target_width: int = None, target
     processor = dino["processor"]
     model = dino["model"]
 
-    # Compute DINO input size: round target dims to nearest multiple of 14
+    # Compute DINO input size: round target dims to nearest multiple of 16 (DINOv3 patch_size)
     if target_width is not None and target_height is not None:
-        dino_w = round(target_width / 14) * 14
-        dino_h = round(target_height / 14) * 14
+        dino_w = round(target_width / 16) * 16
+        dino_h = round(target_height / 16) * 16
         
         # Use processor with dynamic size, NO center-crop (preserves spatial alignment!)
         inputs = processor(
@@ -399,9 +404,9 @@ def compute_dinov3_both(dino, device, image, target_width: int = None, target_he
     This is more efficient than calling compute_dinov3_embedding() and 
     compute_dinov3_patches() separately since it only runs the model once.
     
-    IMPORTANT: DINOv3 models have fixed internal grids (~3800-4000 patches) regardless
-    of input size. The model interpolates positional embeddings to handle different
-    aspect ratios while maintaining spatial correspondence.
+    IMPORTANT: DINOv3 uses RoPE positional embeddings and supports variable-length sequences.
+    Patch count: (H÷16) × (W÷16) where H,W are rounded to multiples of 16.
+    Spatial alignment preserved via aspect-correct preprocessing (no center-crop).
     """
     import torch
     import numpy as np
@@ -419,10 +424,10 @@ def compute_dinov3_both(dino, device, image, target_width: int = None, target_he
     processor = dino["processor"]
     model = dino["model"]
 
-    # Compute DINO input size: round target dims to nearest multiple of 14
+    # Compute DINO input size: round target dims to nearest multiple of 16 (DINOv3 patch_size)
     if target_width is not None and target_height is not None:
-        dino_w = round(target_width / 14) * 14
-        dino_h = round(target_height / 14) * 14
+        dino_w = round(target_width / 16) * 16
+        dino_h = round(target_height / 16) * 16
         
         # Use processor with dynamic size, NO center-crop (preserves spatial alignment!)
         inputs = processor(
