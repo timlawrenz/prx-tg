@@ -199,10 +199,17 @@ def extract_dinov3_patches_to_npy(record: dict, output_dir: Path) -> bool:
         else:
             array = patches.astype(np.float32)
         
-        # Expected shape: (196, 1024) for DINOv3-L with 14x14 spatial patch grid
-        if array.shape != (196, 1024):
-            eprint(f"warning: unexpected DINOv3 patches shape {array.shape} for {image_id}, expected (196, 1024)")
+        # Expected shape: (num_patches, 1024) where num_patches varies by bucket
+        # Example shapes: (5329, 1024) for 1024×1024, (5133, 1024) for 1216×832, etc.
+        if array.ndim != 2 or array.shape[1] != 1024:
+            eprint(f"warning: unexpected DINOv3 patches shape {array.shape} for {image_id}, expected (num_patches, 1024)")
             return False
+        
+        # Reasonable patch count check (should be between ~4800 and ~5400 for our buckets)
+        num_patches = array.shape[0]
+        if num_patches < 4500 or num_patches > 5500:
+            eprint(f"warning: unusual patch count {num_patches} for {image_id}, expected ~4800-5400 depending on bucket")
+            # Don't fail - just warn, as this might be valid for extreme aspect ratios
         
         save_npy(array, npy_path, np.float32)
         return True
