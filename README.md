@@ -70,7 +70,7 @@ Images are assigned to 7 buckets (~1 megapixel each) to enable variable aspect r
 4. All subsequent processing uses this bucketed view
 
 #### 2. **Caption Generation**
-Dense, objective image descriptions generated using Florence-2 (Microsoft):
+Dense, objective image descriptions generated using Google Gemma3:27b:
 - Physical attributes, composition, lighting, colors
 - No subjective interpretation
 - ~150-200 words per image
@@ -392,7 +392,7 @@ See full environment in `.venv/` (not committed).
 - **Flux VAE**: Black Forest Labs (Flux.1-dev)
 - **T5-XXL**: Google (text encoder)
 - **DINOv3**: Facebook AI Research (visual encoder)
-- **Florence-2**: Microsoft (caption generation)
+- **Gemma3:27b**: Google (caption generation)
 - **Flow Matching**: Inspired by Stable Diffusion 3 and Flux.1 training methodology
 
 ---
