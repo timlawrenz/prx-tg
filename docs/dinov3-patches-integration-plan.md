@@ -1,42 +1,40 @@
 # Implementation Plan: DINOv3 Spatial Patches Integration
 
-## ⚠️ CRITICAL BUG DISCOVERED
+## ⚠️ CRITICAL DISCOVERY: Fixed-Grid Behavior
 
-**Current preprocessing BREAKS spatial alignment!**
+**DINOv3 models use FIXED internal patch grids (~3800-4000 patches) regardless of input size!**
 
-Line 245 in `scripts/generate_approved_image_dataset.py`:
-```python
-transforms.CenterCrop(224)  # ❌ WRONG: Only processes center of image
-```
+The model interpolates positional embeddings internally to handle different aspect ratios. This means:
+- ✅ Spatial alignment IS preserved (via preprocessing without center-crop)
+- ✅ Patch count is ~constant across all buckets (~3880 patches typically)
+- ✅ Model internally maps the fixed grid to variable input sizes
 
-**Problem**: For 1216×832 image, center-crop gives 224×224 from center → DINO patches represent only the center, but VAE latents represent the full image → spatial misalignment!
+**Preprocessing fix implemented**: 
+- Images resized to bucket dimensions (no center-crop) ✓
+- DINO processor receives aspect-correct images ✓  
+- Model outputs ~3880 patches + 1 CLS = **~3881 DINO tokens** (fixed count)
 
-**Solution**: Dynamic resolution (preserve aspect ratio, perfect alignment)
-- Feed images at multiples of 14 (e.g., 1218×826 → 87×59 patch grid)
-- Each bucket gets its own patch grid size
-- **Verified**: DINOv3 supports this natively via `processor(size={"height": H, "width": W}, do_center_crop=False)`
+**Status**: Bug discovered, investigated, and resolved! Preprocessing is now correct.
 
 ## Problem Statement
 
-Current architecture uses only DINO CLS token (1024-dim global vector) for visual conditioning, resulting in "blobs in wrong places" - correct colors/style but poor spatial layout. DINOv3 extracts spatial patch embeddings that are currently computed but **spatially misaligned due to center-crop bug**.
+Current architecture uses only DINO CLS token (1024-dim global vector) for visual conditioning, resulting in "blobs in wrong places" - correct colors/style but poor spatial layout. DINOv3 extracts spatial patch embeddings (~3880 patches) that maintain spatial correspondence with the input image.
 
-**Goal**: Fix preprocessing AND integrate DINO patches to provide spatially-aligned conditioning.
+**Goal**: Integrate DINO patches to provide spatially-aligned conditioning.
 
 ## Architecture Decisions (Confirmed)
 
-### Method: Concatenated Cross-Attention with CLS Fallback + Dynamic Resolution
+### Method: Concatenated Cross-Attention with CLS Fallback + Fixed Grid
 
 - **Single cross-attention module** per DiT block (simpler than parallel)
-- **Variable-length sequences**: T5 text [512] + DINO_CLS [1] + DINO_patches [**variable**]
-- **Bucket-specific patch counts**:
-  - 1024×1024 → 1022×1022 DINO → 73×73 patches = 5329 + 1 CLS = **5842 total tokens**
-  - 1216×832 → 1218×826 DINO → 87×59 patches = 5133 + 1 CLS = **5646 total tokens**
-  - etc. (each bucket has different patch count)
+- **Fixed-length sequences**: T5 text [500] + DINO_CLS [1] + DINO_patches [**~3880**] = **~4381 total tokens**
+- **Fixed patch count**: ~3880 patches for all buckets (model interpolates internally)
 - All projected to same hidden_size before concatenation
 
 **Rationale**: 
 - **Simpler than parallel**: Fewer parameters, single attention mechanism
-- **Perfect spatial alignment**: No center-crop, preserve aspect ratio
+- **Perfect spatial alignment**: No center-crop, preserve aspect ratio in preprocessing
+- **Fixed grid**: Simpler implementation, no variable-length handling needed
 - **CLS as fallback**: Attention heads can route to global CLS when local patches aren't needed
 - **Dual CLS usage**: 
   1. adaLN modulation (controls entire block via scale/shift)
@@ -46,10 +44,10 @@ Current architecture uses only DINO CLS token (1024-dim global vector) for visua
 ### Open Questions - RESOLVED ✓
 
 **1. Patches mask: Should we mask invalid patches?**
-- ✅ **No**. All patches + CLS are always valid (no padding in spatial dimension)
-- Mask implementation: `torch.cat([t5_mask, torch.ones(B, num_dino_tokens)], dim=1)`
+- ✅ **No**. All patches + CLS are always valid (no padding)
+- Mask implementation: `torch.cat([t5_mask, torch.ones(B, 3881)], dim=1)`
 - T5 portion handles padding, DINO portion always unmasked
-- **Note**: `num_dino_tokens` varies per bucket (CLS + variable patches)
+- **Note**: Fixed 3881 DINO tokens (1 CLS + ~3880 patches)
 
 **2. CFG scaling: Do patches need a separate CFG scale?**
 - ✅ **No**. Standard equation works: `v_pred = v_uncond + s_text * Δv_text + s_dino * Δv_dino`
@@ -60,21 +58,21 @@ Current architecture uses only DINO CLS token (1024-dim global vector) for visua
 - Choose: **[T5, CLS, patches]** (clean and logical)
 
 **4. Positional encoding for patches: Add 2D pos encoding?**
-- ✅ **MVP: No**. DINOv3 embeddings already contain absolute positional info from ViT's first layer
-- **Dynamic resolution**: Patches inherently encode their 2D position in the original image
-- **Phase 2 (if needed)**: Add tiny learnable 2D sinusoidal embedding if model struggles with variable-grid→64×64 mapping after 20k steps
+- ✅ **MVP: No**. DINOv3 embeddings already contain absolute positional info
+- Fixed grid internally maps to variable input sizes via learned interpolation
+- **Phase 2 (if needed)**: Add tiny learnable 2D sinusoidal embedding if model struggles after 20k steps
 
-**5. CRITICAL: Spatial alignment bug**
-- ✅ **FIXED via dynamic resolution**
-- Current preprocessing uses `CenterCrop(224)` → misalignment
-- Solution: Round each bucket to nearest multiple of 14, feed full aspect-corrected image to DINO
-- Example: 1216×832 bucket → 1218×826 DINO input → 87×59 patch grid → perfect alignment with VAE latents
+**5. CRITICAL: Spatial alignment**
+- ✅ **FIXED via aspect-correct preprocessing**
+- Solution: Resize to bucket dims (no center-crop), feed to DINO processor
+- Model uses fixed internal grid but maintains spatial correspondence
+- Example: 1216×832 bucket → 826×1218 DINO input → ~3880 patches → spatially aligned with VAE latents
 
 ### Component Specifications
 
 1. **T5 Text Embeddings**: 
-   - Shape: [512, 4096] (unchanged)
-   - Projected to [512, hidden_size] via existing `text_proj`
+   - Shape: [500, 4096] (from config: max_seq_length=500)
+   - Projected to [500, hidden_size] via existing `text_proj`
 
 2. **DINO CLS Token**:
    - Shape: [1, 1024]
@@ -83,25 +81,16 @@ Current architecture uses only DINO CLS token (1024-dim global vector) for visua
      - adaLN modulation: `dino_proj(CLS) + timestep_emb` (existing)
      - Cross-attention: Prepended to patch sequence as global fallback token
 
-3. **DINO Patches (Variable-Length)**:
-   - Shape: **[num_patches, 1024]** where `num_patches` depends on bucket
-   - **Bucket-specific dimensions** (rounded to nearest multiple of 14):
-     ```
-     1024×1024 → 1022×1022 DINO → 73×73 = 5329 patches
-     1216×832  → 1218×826  DINO → 87×59 = 5133 patches
-     832×1216  → 826×1218  DINO → 59×87 = 5133 patches
-     1280×768  → 1274×770  DINO → 91×55 = 5005 patches
-     768×1280  → 770×1274  DINO → 55×91 = 5005 patches
-     1344×704  → 1344×700  DINO → 96×50 = 4800 patches
-     704×1344  → 700×1344  DINO → 50×96 = 4800 patches
-     ```
-   - Projected to [num_patches, hidden_size] via new `dino_patch_proj`
-   - **Spatial alignment preserved**: No center-crop, patches map directly to image regions
+3. **DINO Patches (Fixed-Length)**:
+   - Shape: **[~3880, 1024]** (fixed count for all buckets)
+   - **Fixed internal grid**: DINOv3 models output ~3880 patches regardless of input size
+   - The model interpolates positional embeddings internally for different aspect ratios
+   - Projected to [~3880, hidden_size] via new `dino_patch_proj`
+   - **Spatial alignment preserved**: No center-crop in preprocessing, patches maintain spatial correspondence
    
-4. **Combined Cross-Attention Sequence (Variable-Length)**:
+4. **Combined Cross-Attention Sequence (Fixed-Length)**:
    - Concatenate: `[text_proj(T5), dino_proj(CLS), dino_patch_proj(patches)]`
-   - Final shape: **`[512 + 1 + num_patches, hidden_size]`** (varies per bucket)
-   - Example: 1024×1024 bucket → `[512 + 1 + 5329, 768] = [5842, 768]`
+   - Final shape: **`[500 + 1 + 3880, hidden_size] = [4381, hidden_size]`**
    - Model learns to route attention between text concepts, global style, and spatially-aligned features
 
 5. **CFG Dropout Strategy**:
@@ -111,25 +100,23 @@ Current architecture uses only DINO CLS token (1024-dim global vector) for visua
    - Use learned null embeddings for dropped signals
    - **Key insight**: Dropping DINO forces model to generate spatial layout from text alone
 
-5. **Training Start**:
+6. **Training Start**:
    - Attempt warm-start from current checkpoint
-   - New parameters (cross-attn-2, dino_patch_proj, null_dino_patches) initialized randomly
+   - New parameters (dino_patch_proj, null_dino_patches) initialized randomly
    - May need to reduce learning rate initially for stability
 
 ## Implementation Plan
 
-### Phase 1: Data Pipeline (4-6 hours)
+### Phase 1: Data Pipeline (2-4 hours)
 
-**Goal**: Fix spatial alignment bug AND load variable-length DINO patches during training.
+**Goal**: Load fixed-length DINO patches during training.
 
-#### 1.0 ⚠️ FIX CRITICAL BUG: DINO Preprocessing
+#### 1.0 ✅ FIXED: DINO Preprocessing Bug
 **File**: `scripts/generate_approved_image_dataset.py`
 
-**CRITICAL**: Current preprocessing breaks spatial alignment! Must fix before regenerating patches.
+**Status**: ✅ **COMPLETE** - Bug discovered, investigated, and fixed!
 
-- [ ] **Remove/replace `preprocess_vit_like` function** (lines 238-250):
-  ```python
-  # OLD (BROKEN):
+**What was fixed**:
   transforms.Resize(size + 32)
   transforms.CenterCrop(size)  # ❌ LOSES SPATIAL ALIGNMENT
   
