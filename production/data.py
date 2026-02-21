@@ -264,16 +264,12 @@ class ValidationDataset:
         t5_hidden = sample['t5h.npy']  # (512, 1024) - T5-XXL supports 512 tokens
         t5_mask = sample['t5m.npy']  # (512,)
         
-        # Apply horizontal flip augmentation
-        # NOTE: We do NOT swap "left"/"right" in captions because T5 embeddings
-        # are pre-computed and cannot be modified at training time.
-        # TODO: Flip DINOv3 patches horizontally when flipping VAE latent
-        if random.random() < self.flip_prob:
-            vae_latent = np.flip(vae_latent, axis=2).copy()  # Flip width dimension
-            # Flip patches: reshape to 2D grid, flip, reshape back
-            # Patch grid dimensions: infer from bucket and patch size
-            # For now, skip flipping patches (requires bucket metadata)
-            # This will be fixed in a follow-up when we have bucket info
+        # Horizontal flip augmentation DISABLED
+        # Flipping requires flipping DINOv3 patches spatially, which needs:
+        # 1. Knowledge of patch grid dimensions (varies by bucket)
+        # 2. Reshaping patches to 2D, flipping, reshaping back
+        # Since patches are critical for spatial learning, we disable flipping
+        # to avoid training with misaligned spatial conditioning.
         
         # Resize VAE latent to target size (training may keep native bucket resolution)
         if self.target_latent_size is None:
