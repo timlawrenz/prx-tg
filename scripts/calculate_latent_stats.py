@@ -31,9 +31,9 @@ def calculate_stats(shard_dir, num_samples=1000):
     
     # Create dataset
     dataset = (
-        wds.WebDataset([str(s) for s in shards])
-        .decode()
-        .to_tuple("vae.npy")
+        wds.WebDataset([str(s) for s in shards], handler=wds.warn_and_continue)
+        .decode(handler=wds.warn_and_continue)
+        .to_tuple("vae.npy", handler=wds.warn_and_continue)
     )
     
     # Accumulate pixel values
