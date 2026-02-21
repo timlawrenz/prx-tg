@@ -298,8 +298,13 @@ class Trainer:
         # Backward (accumulate gradients)
         loss.backward()
         
+        # Increment micro step counter
+        if not hasattr(self, 'micro_step'):
+            self.micro_step = 0
+        self.micro_step += 1
+        
         # Only step optimizer every accumulation_steps
-        is_accumulation_step = (self.step + 1) % self.grad_accumulation_steps == 0
+        is_accumulation_step = self.micro_step % self.grad_accumulation_steps == 0
         
         # Always compute LR for reporting (even if not stepping)
         lr = get_lr_schedule(
@@ -346,7 +351,7 @@ class Trainer:
         
         # Every 100 steps, add weight statistics for monitoring parameter evolution
         # Note: self.step gets incremented AFTER train_step returns, so check (self.step + 1)
-        if (self.step + 1) % 100 == 0:
+        if is_accumulation_step and (self.step + 1) % 100 == 0:
             # Handle DataParallel wrapper
             model = self.model.module if hasattr(self.model, 'module') else self.model
             
@@ -388,7 +393,7 @@ class Trainer:
             metrics['vram_allocated_gb'] = torch.cuda.memory_allocated(self.device) / 1024**3
             metrics['vram_reserved_gb'] = torch.cuda.memory_reserved(self.device) / 1024**3
         
-        return metrics
+        return metrics, is_accumulation_step
     
     def save_checkpoint(self, path=None):
         """Save training checkpoint."""
@@ -475,6 +480,8 @@ class Trainer:
         
         data_iter = iter(self.dataloader)
         
+        accum_loss = 0.0
+        
         while self.step < self.total_steps:
             # Get batch
             try:
@@ -485,40 +492,47 @@ class Trainer:
                 batch = next(data_iter)
             
             # Training step
-            metrics = self.train_step(batch)
-            self.step += 1
+            metrics, is_step = self.train_step(batch)
+            accum_loss += metrics['loss']
             
-            # Logging
-            if self.step % self.log_every == 0:
-                self.log(metrics)
-                pbar.set_postfix({
-                    'loss': f"{metrics['loss']:.4f}",
-                    'grad': f"{metrics['grad_norm']:.2f}",
-                    'lr': f"{metrics['lr']:.2e}",
-                })
-            
-            # Visual debugging (more frequent than full validation)
-            if visual_debug_fn is not None:
-                # Check if visual_debug_interval is configured (ProductionTrainer only)
-                interval = getattr(self, 'visual_debug_interval', 0)
-                if interval > 0 and self.step % interval == 0:
-                    visual_debug_fn(self.ema.model if self.ema else self.model, self.step)
-            
-            # Checkpointing
-            if self.step % self.checkpoint_every == 0:
-                self.save_checkpoint()
+            if is_step:
+                self.step += 1
                 
-                # Run validation if provided
-                if validate_fn is not None:
-                    # Free training memory before validation
-                    torch.cuda.empty_cache()
-                    validate_fn(self.model, self.ema, self.step, self.device)
-                    # Clean up after validation
-                    torch.cuda.empty_cache()
-                    # Put model back in train mode
-                    self.model.train()
-            
-            pbar.update(1)
+                # Average loss over accumulation steps
+                metrics['loss'] = accum_loss / self.grad_accumulation_steps
+                accum_loss = 0.0
+                
+                # Logging
+                if self.step % self.log_every == 0:
+                    self.log(metrics)
+                    pbar.set_postfix({
+                        'loss': f"{metrics['loss']:.4f}",
+                        'grad': f"{metrics['grad_norm']:.2f}",
+                        'lr': f"{metrics['lr']:.2e}",
+                    })
+                
+                # Visual debugging (more frequent than full validation)
+                if visual_debug_fn is not None:
+                    # Check if visual_debug_interval is configured (ProductionTrainer only)
+                    interval = getattr(self, 'visual_debug_interval', 0)
+                    if interval > 0 and self.step % interval == 0:
+                        visual_debug_fn(self.ema.model if self.ema else self.model, self.step)
+                
+                # Checkpointing
+                if self.step % self.checkpoint_every == 0:
+                    self.save_checkpoint()
+                    
+                    # Run validation if provided
+                    if validate_fn is not None:
+                        # Free training memory before validation
+                        torch.cuda.empty_cache()
+                        validate_fn(self.model, self.ema, self.step, self.device)
+                        # Clean up after validation
+                        torch.cuda.empty_cache()
+                        # Put model back in train mode
+                        self.model.train()
+                
+                pbar.update(1)
         
         pbar.close()
         
