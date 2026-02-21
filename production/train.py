@@ -267,7 +267,7 @@ class Trainer:
         self.epoch = 0
         
         # Logging
-        self.log_file = self.checkpoint_dir / 'training_log.jsonl'
+        self.log_file = self.checkpoint_dir.parent / 'training_log.jsonl'
     
     def train_step(self, batch):
         """Execute one training step.
