@@ -345,7 +345,8 @@ class Trainer:
             metrics[f'grad_norm/{layer_name}'] = grad_norm_val
         
         # Every 100 steps, add weight statistics for monitoring parameter evolution
-        if self.step % 100 == 0:
+        # Note: self.step gets incremented AFTER train_step returns, so check (self.step + 1)
+        if (self.step + 1) % 100 == 0:
             # Handle DataParallel wrapper
             model = self.model.module if hasattr(self.model, 'module') else self.model
             
