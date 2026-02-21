@@ -595,8 +595,9 @@ class ProductionTrainer(Trainer):
         # TensorBoard logging
         try:
             from torch.utils.tensorboard import SummaryWriter
-            # Use experiment name as subdirectory for better organization
-            tensorboard_dir = Path(checkpoint_cfg.output_dir) / 'tensorboard' / self.experiment_name
+            # Use experiment directory root for tensorboard (not inside checkpoints/)
+            exp_dir = Path(checkpoint_cfg.output_dir).parent  # checkpoints/ -> experiment/
+            tensorboard_dir = exp_dir / 'tensorboard'
             self.writer = SummaryWriter(log_dir=tensorboard_dir)
             print(f"  TensorBoard logging: {tensorboard_dir}")
         except ImportError:
