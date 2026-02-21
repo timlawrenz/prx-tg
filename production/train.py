@@ -346,15 +346,17 @@ class Trainer:
         
         # Every 100 steps, add weight statistics for monitoring parameter evolution
         if self.step % 100 == 0:
-            if hasattr(self.model, 'dino_patch_proj'):
-                w = self.model.dino_patch_proj.weight.data
+            # Handle DataParallel wrapper
+            model = self.model.module if hasattr(self.model, 'module') else self.model
+            if hasattr(model, 'dino_patch_proj'):
+                w = model.dino_patch_proj.weight.data
                 metrics['weights/patch_proj_std'] = w.std().item()
                 metrics['weights/patch_proj_mean'] = w.mean().item()
-            if hasattr(self.model, 'text_proj'):
-                w = self.model.text_proj.weight.data
+            if hasattr(model, 'text_proj'):
+                w = model.text_proj.weight.data
                 metrics['weights/text_proj_std'] = w.std().item()
-            if hasattr(self.model, 'null_dino_patch_token'):
-                w = self.model.null_dino_patch_token.data
+            if hasattr(model, 'null_dino_patch_token'):
+                w = model.null_dino_patch_token.data
                 metrics['weights/null_patch_token_norm'] = w.norm().item()
         
         # Add velocity norm monitoring (collapse detection)
