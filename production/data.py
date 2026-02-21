@@ -16,9 +16,6 @@ FLUX_LATENT_MEAN = -0.036260
 FLUX_LATENT_STD = 2.968345
 USE_LATENT_NORMALIZATION = True # Enable after verifying compatibility
 
-# Cache file for computed statistics
-LATENT_STATS_CACHE = "data/.latent_stats.json"
-
 
 def compute_latent_stats(shard_dir, num_samples=1000):
     """Compute global mean and std for VAE latents from dataset.
@@ -99,7 +96,8 @@ def load_or_compute_latent_stats(shard_dir, num_samples=1000, force_recompute=Fa
     import json
     from pathlib import Path
     
-    cache_path = Path(LATENT_STATS_CACHE)
+    # Store the cache file inside the specific shard directory
+    cache_path = Path(shard_dir) / ".latent_stats.json"
     
     # Try to load from cache
     if not force_recompute and cache_path.exists():
