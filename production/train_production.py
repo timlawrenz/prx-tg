@@ -189,6 +189,11 @@ def main():
     
     print_config_summary(config)
     
+    # Override config paths to use experiment directory
+    config.checkpoint.output_dir = str(experiment_dir / 'checkpoints')
+    config.validation.output_dir = str(experiment_dir / 'validation')
+    config.validation.visual_debug_dir = str(experiment_dir / 'visual_debug')
+    
     # Create output directories
     Path(config.checkpoint.output_dir).mkdir(parents=True, exist_ok=True)
     if config.validation.enabled:
