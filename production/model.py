@@ -13,6 +13,7 @@ where DINO_CLS serves as a global fallback token and patches provide spatial ali
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def modulate(x, shift, scale):
@@ -46,7 +47,7 @@ class TimestepEmbedder(nn.Module):
         return embedding
 
     def forward(self, t):
-        t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
+        t_freq = self.timestep_embedding(t * 1000.0, self.frequency_embedding_size)
         t_emb = self.mlp(t_freq)
         return t_emb
 
@@ -159,18 +160,15 @@ class Attention(nn.Module):
             q, k, v = qkv[0], qkv[1], qkv[2]
             M = N
         
-        # (B, num_heads, N, head_dim) @ (B, num_heads, head_dim, M) -> (B, num_heads, N, M)
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        
-        # Apply mask if provided (for cross-attention with padding)
+        # Use memory-efficient scaled dot product attention
         if mask is not None:
-            # mask: (B, M) -> (B, 1, 1, M) for broadcasting
-            mask = mask.unsqueeze(1).unsqueeze(2)
-            attn = attn.masked_fill(mask == 0, float('-inf'))
-        
-        attn = attn.softmax(dim=-1)
-        
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+            # mask: (B, M) -> (B, 1, 1, M) boolean mask for SDPA
+            attn_mask = mask.unsqueeze(1).unsqueeze(2).bool()
+            x = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+        else:
+            x = F.scaled_dot_product_attention(q, k, v)
+            
+        x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         return x
 
