@@ -48,9 +48,9 @@ def compute_latent_stats(shard_dir, num_samples=1000):
     
     # Create dataset
     dataset = (
-        wds.WebDataset([str(s) for s in shards], shardshuffle=False)
-        .decode()
-        .to_tuple("vae.npy")
+        wds.WebDataset([str(s) for s in shards], shardshuffle=False, handler=wds.warn_and_continue)
+        .decode(handler=wds.warn_and_continue)
+        .to_tuple("vae.npy", handler=wds.warn_and_continue)
     )
     
     # Accumulate pixel values
@@ -326,9 +326,9 @@ class ValidationDataset:
         
         # Create WebDataset pipeline
         dataset = (
-            wds.WebDataset(shard_urls, shardshuffle=1000 if self.shuffle else False)
-            .decode()
-            .map(self.process_sample)
+            wds.WebDataset(shard_urls, shardshuffle=1000 if self.shuffle else False, handler=wds.warn_and_continue)
+            .decode(handler=wds.warn_and_continue)
+            .map(self.process_sample, handler=wds.warn_and_continue)
             .batched(self.batch_size, collation_fn=self.collate_fn, partial=False)
         )
         
