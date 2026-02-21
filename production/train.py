@@ -348,16 +348,28 @@ class Trainer:
         if self.step % 100 == 0:
             # Handle DataParallel wrapper
             model = self.model.module if hasattr(self.model, 'module') else self.model
+            
+            # Debug: always log that we're trying
+            metrics['debug/weights_check'] = 1.0
+            
             if hasattr(model, 'dino_patch_proj'):
                 w = model.dino_patch_proj.weight.data
                 metrics['weights/patch_proj_std'] = w.std().item()
                 metrics['weights/patch_proj_mean'] = w.mean().item()
+            else:
+                metrics['debug/no_patch_proj'] = 1.0
+                
             if hasattr(model, 'text_proj'):
                 w = model.text_proj.weight.data
                 metrics['weights/text_proj_std'] = w.std().item()
+            else:
+                metrics['debug/no_text_proj'] = 1.0
+                
             if hasattr(model, 'null_dino_patch_token'):
                 w = model.null_dino_patch_token.data
                 metrics['weights/null_patch_token_norm'] = w.norm().item()
+            else:
+                metrics['debug/no_null_token'] = 1.0
         
         # Add velocity norm monitoring (collapse detection)
         if self.monitor_velocity:
