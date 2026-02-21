@@ -358,11 +358,10 @@ class NanoDiT(nn.Module):
         nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
         nn.init.constant_(self.x_embedder.proj.bias, 0)
         
-        # Zero-out final projection (adaLN-Zero pattern for output)
-        nn.init.zeros_(self.final_proj.weight)
-        nn.init.zeros_(self.final_proj.bias)
+        # Keep final_proj normally initialized (xavier from _basic_init)
+        # DO NOT zero-init - that would kill all gradients!
         
-        # Zero-init output conv for training stability (starts as pass-through)
+        # Zero-init output conv for training stability (residual starts at zero)
         nn.init.zeros_(self.output_conv.weight)
         nn.init.zeros_(self.output_conv.bias)
 
