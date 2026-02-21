@@ -11,8 +11,8 @@ model:
   input_size: 128              # Validation/sampling latent size (1024px / 8 = 128)
 
 training:
-  total_steps: 250000           # Total training steps
-  warmup_steps: 7500           # Linear LR warmup (10% of total)
+  total_steps: 6000           # Total optimizer steps (approx 14 days on 4090)
+  warmup_steps: 500           # Linear LR warmup
   batch_size: 1               # Per-GPU batch size
   grad_accumulation_steps: 256 # Effective batch
   
@@ -26,7 +26,7 @@ training:
   
   grad_clip: 1.0               # Gradient clipping norm
   ema_decay: 0.9999            # Target EMA decay
-  ema_warmup_steps: 5000       # Warm EMA from 0 to target over N steps
+  ema_warmup_steps: 500       # Warm EMA from 0 to target over N steps
   
   # CFG dropout (mutually exclusive categorical as per fixed validation code)
   cfg_dropout:
@@ -80,7 +80,7 @@ sampling:
 
 validation:
   enabled: true                      # Enable validation runs
-  interval_steps: 5000               # Run validation every N steps (full suite)
+  interval_steps: 500               # Run validation every N steps (full suite)
   num_samples: 25                    # Number of samples to validate
   output_dir: "validation_outputs"   # Validation output directory
   
@@ -90,18 +90,18 @@ validation:
   run_text_manip: true               # Test text manipulation
   
   # Visual debugging (quick image generation during training)
-  visual_debug_interval: 1000        # Generate sample images every N steps (0 = disabled)
+  visual_debug_interval: 100        # Generate sample images every N steps (0 = disabled)
   visual_debug_num_samples: 4        # Number of samples per visual debug checkpoint
   visual_debug_dir: "visual_debug"   # Output directory for visual debugging images
 
 checkpoint:
-  save_every: 5000                   # Save checkpoint every N steps
+  save_every: 500                   # Save checkpoint every N steps
   keep_last_n: 3                     # Keep only last N checkpoints (0 = keep all)
   output_dir: "checkpoints"          # Checkpoint output directory
   save_optimizer: true               # Save optimizer state (needed for resume)
 
 logging:
-  log_every: 50                      # Log metrics every N steps
+  log_every: 5                      # Log metrics every N steps
   log_file: "training.log"           # JSON-lines log file
   
   # Monitoring (from the-plan.md Part E)
