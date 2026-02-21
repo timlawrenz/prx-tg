@@ -28,6 +28,7 @@ def main():
     x = torch.randn(B, C, H, W, device=device)
     t = torch.rand(B, device=device)
     dino_emb = torch.randn(B, 1024, device=device)
+    dino_patches = torch.randn(B, 3880, 1024, device=device)
     text_emb = torch.randn(B, 512, 1024, device=device)
     text_mask = torch.ones(B, 512, device=device)
     
@@ -35,12 +36,13 @@ def main():
     print(f"  x: {x.shape}")
     print(f"  t: {t.shape}")
     print(f"  dino_emb: {dino_emb.shape}")
+    print(f"  dino_patches: {dino_patches.shape}")
     print(f"  text_emb: {text_emb.shape}")
     
     # Forward pass
     model.eval()
     with torch.no_grad():
-        v_pred = model(x, t, dino_emb, text_emb, text_mask)
+        v_pred = model(x, t, dino_emb, text_emb, dino_patches, text_mask)
     
     print(f"\nOutput shape: {v_pred.shape}")
     print(f"Expected shape: {x.shape}")

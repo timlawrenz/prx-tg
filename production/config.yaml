@@ -2,16 +2,16 @@
 # Based on the-plan.md Part D specifications
 
 model:
-  hidden_size: 384             # Hidden dimension (scale to 768-1024 for production)
-  depth: 12                    # Number of transformer layers (start small, scale to 24-28)
-  num_heads: 6                 # Attention heads
+  hidden_size: 768             # Hidden dimension (scale to 768-1024 for production)
+  depth: 18                    # Number of transformer layers (start small, scale to 24-28)
+  num_heads: 12                 # Attention heads
   patch_size: 2                # Spatial downsampling (2 for high detail as per plan)
   mlp_ratio: 4.0               # MLP expansion factor
   in_channels: 16              # VAE latent channels
   input_size: 128              # Validation/sampling latent size (1024px / 8 = 128)
 
 training:
-  total_steps: 100000           # Total training steps
+  total_steps: 250000           # Total training steps
   warmup_steps: 7500           # Linear LR warmup (10% of total)
   batch_size: 1               # Per-GPU batch size
   grad_accumulation_steps: 256 # Effective batch
@@ -41,14 +41,14 @@ training:
   logit_normal_scale: 1.0            # Std of logit-normal distribution
   
   # Memory optimization
-  gradient_checkpointing: false       # Enable to trade 20-30% speed for 3-4x memory savings
+  gradient_checkpointing: true       # Enable to trade 20-30% speed for 3-4x memory savings
   
   # Precision
   mixed_precision: true              # Use bfloat16 (required for flow matching)
   precision: "bfloat16"              # "bfloat16" or "float32"
 
 data:
-  shard_base_dir: "data/shards/7000"      # Base directory for WebDataset shards
+  shard_base_dir: "data/shards/15000"      # Base directory for WebDataset shards
   
   # Aspect ratio buckets to read (each bucket is a subdirectory with tar files)
   buckets:
