@@ -310,6 +310,15 @@ class Trainer:
         # Compute grad norm for reporting
         grad_norm = sum(p.grad.norm().item() ** 2 for p in self.model.parameters() if p.grad is not None) ** 0.5
         
+        # Collect per-layer gradient norms for monitoring patch learning
+        layer_grad_norms = {}
+        if hasattr(self.model, 'dino_patch_proj') and self.model.dino_patch_proj.weight.grad is not None:
+            layer_grad_norms['patch_proj'] = self.model.dino_patch_proj.weight.grad.norm().item()
+        if hasattr(self.model, 'text_proj') and self.model.text_proj.weight.grad is not None:
+            layer_grad_norms['text_proj'] = self.model.text_proj.weight.grad.norm().item()
+        if hasattr(self.model, 'dino_proj') and self.model.dino_proj.weight.grad is not None:
+            layer_grad_norms['dino_proj'] = self.model.dino_proj.weight.grad.norm().item()
+        
         if is_accumulation_step:
             # Gradient clipping
             grad_norm = clip_grad_norm_(self.model.parameters(), self.grad_clip).item()
@@ -330,6 +339,23 @@ class Trainer:
             'grad_norm': grad_norm,
             'lr': lr,
         }
+        
+        # Add per-layer gradient norms
+        for layer_name, grad_norm_val in layer_grad_norms.items():
+            metrics[f'grad_norm/{layer_name}'] = grad_norm_val
+        
+        # Every 100 steps, add weight statistics for monitoring parameter evolution
+        if self.step % 100 == 0:
+            if hasattr(self.model, 'dino_patch_proj'):
+                w = self.model.dino_patch_proj.weight.data
+                metrics['weights/patch_proj_std'] = w.std().item()
+                metrics['weights/patch_proj_mean'] = w.mean().item()
+            if hasattr(self.model, 'text_proj'):
+                w = self.model.text_proj.weight.data
+                metrics['weights/text_proj_std'] = w.std().item()
+            if hasattr(self.model, 'null_dino_patch_token'):
+                w = self.model.null_dino_patch_token.data
+                metrics['weights/null_patch_token_norm'] = w.norm().item()
         
         # Add velocity norm monitoring (collapse detection)
         if self.monitor_velocity:
@@ -587,6 +613,18 @@ class ProductionTrainer(Trainer):
                 self.writer.add_scalar('train/grad_norm', metrics['grad_norm'], step)
             if 'lr' in metrics:
                 self.writer.add_scalar('train/learning_rate', metrics['lr'], step)
+            
+            # Per-layer gradient norms (for monitoring patch learning)
+            for key, value in metrics.items():
+                if key.startswith('grad_norm/'):
+                    layer_name = key.split('/', 1)[1]
+                    self.writer.add_scalar(f'gradients/{layer_name}', value, step)
+            
+            # Weight statistics (for monitoring parameter evolution)
+            for key, value in metrics.items():
+                if key.startswith('weights/'):
+                    weight_name = key.split('/', 1)[1]
+                    self.writer.add_scalar(f'weights/{weight_name}', value, step)
             
             # GPU memory metrics
             if 'vram_allocated_gb' in metrics:
