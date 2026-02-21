@@ -12,8 +12,8 @@ import webdataset as wds
 
 # Flux VAE latent normalization (computed from dataset statistics)
 # These are automatically computed at training startup if not already cached
-FLUX_LATENT_MEAN = -0.046423
-FLUX_LATENT_STD = 2.958330
+FLUX_LATENT_MEAN = -0.036260
+FLUX_LATENT_STD = 2.968345
 USE_LATENT_NORMALIZATION = True # Enable after verifying compatibility
 
 # Cache file for computed statistics
