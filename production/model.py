@@ -212,7 +212,7 @@ class DiTBlock(nn.Module):
         nn.init.zeros_(self.adaLN_modulation[1].weight)
         nn.init.zeros_(self.adaLN_modulation[1].bias)
 
-    def _forward_impl(self, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches):
+    def _forward_impl(self, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask=None):
         """Internal forward implementation for checkpointing."""
         # Get adaLN modulation parameters from DINOv3
         shift_msa, scale_msa, shift_ca, scale_ca, shift_mlp, scale_mlp = \
@@ -227,13 +227,20 @@ class DiTBlock(nn.Module):
         # c_patches: (B, num_patches, hidden_size) - VARIABLE LENGTH!
         combined_context = torch.cat([c_text, c_dino_cls_token, c_patches], dim=1)
         
-        # Concatenate masks: T5 mask + all-ones for DINO (CLS + patches)
+        # Concatenate masks: T5 mask + CLS mask (1) + patches mask
         B = x.shape[0]
-        num_dino_tokens = 1 + c_patches.shape[1]  # 1 CLS + num_patches
         
         if text_mask is not None:
-            dino_mask = torch.ones(B, num_dino_tokens, device=text_mask.device, dtype=text_mask.dtype)
-            combined_mask = torch.cat([text_mask, dino_mask], dim=1)  # (B, 500 + num_dino_tokens)
+            # CLS is always valid
+            cls_mask = torch.ones(B, 1, device=text_mask.device, dtype=text_mask.dtype)
+            
+            # Patches mask (if provided), otherwise assume all patches valid
+            if patches_mask is None:
+                patches_mask = torch.ones(B, c_patches.shape[1], device=text_mask.device, dtype=text_mask.dtype)
+            else:
+                patches_mask = patches_mask.to(device=text_mask.device, dtype=text_mask.dtype)
+                
+            combined_mask = torch.cat([text_mask, cls_mask, patches_mask], dim=1)  # (B, seq + 1 + num_patches)
         else:
             combined_mask = None
         
@@ -249,7 +256,7 @@ class DiTBlock(nn.Module):
         
         return x
 
-    def forward(self, x, c_dino, c_text, text_mask=None, c_dino_cls_token=None, c_patches=None):
+    def forward(self, x, c_dino, c_text, text_mask=None, c_dino_cls_token=None, c_patches=None, patches_mask=None):
         """
         Args:
             x: (B, N, C) latent tokens
@@ -258,13 +265,14 @@ class DiTBlock(nn.Module):
             text_mask: (B, M) attention mask for T5
             c_dino_cls_token: (B, 1, C) DINO CLS token for cross-attention
             c_patches: (B, num_patches, C) DINO patch tokens for cross-attention (variable length)
+            patches_mask: (B, num_patches) attention mask for DINO patches
         """
         if self.use_checkpoint and self.training:
             return torch.utils.checkpoint.checkpoint(
-                self._forward_impl, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, use_reentrant=False
+                self._forward_impl, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask, use_reentrant=False
             )
         else:
-            return self._forward_impl(x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches)
+            return self._forward_impl(x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask)
 
 
 class NanoDiT(nn.Module):
@@ -380,7 +388,7 @@ class NanoDiT(nn.Module):
         latents = x.reshape(B, self.in_channels, h * self.patch_size, w * self.patch_size)
         return latents
 
-    def forward(self, x, t, dino_emb, text_emb, dino_patches=None, text_mask=None, 
+    def forward(self, x, t, dino_emb, text_emb, dino_patches=None, text_mask=None, dino_patches_mask=None,
                 cfg_drop_both=None, cfg_drop_dino=None, cfg_drop_text=None):
         """
         Args:
@@ -390,6 +398,7 @@ class NanoDiT(nn.Module):
             text_emb: (B, seq_len, 1024) T5 hidden states (seq_len=500 for full captions)
             dino_patches: (B, num_patches, 1024) DINOv3 spatial patches (VARIABLE LENGTH!)
             text_mask: (B, seq_len) T5 attention mask (1=valid, 0=padding)
+            dino_patches_mask: (B, num_patches) DINOv3 patches attention mask
             cfg_drop_both: (B,) bool mask for unconditional
             cfg_drop_dino: (B,) bool mask for text-only
             cfg_drop_text: (B,) bool mask for dino-only
@@ -468,7 +477,7 @@ class NanoDiT(nn.Module):
         
         # Transformer blocks (with concatenated cross-attention)
         for block in self.blocks:
-            x = block(x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond)
+            x = block(x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask)
         
         # Output projection
         x = self.final_norm(x)
