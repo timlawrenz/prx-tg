@@ -13,7 +13,7 @@ For each item:
 Notes:
 - Automatically downloads missing files from exportable_url (CDN)
 - In dry-run mode, downloads are skipped (only reported)
-- Use --prune to remove symlinks no longer in the approved set (full scan only)
+- Use --no-prune to skip removal of stale symlinks and their derived data
 - Does NOT enumerate `data/raw/`; uses per-filename path lookups
 
 Examples:
@@ -196,9 +196,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--retries", type=int, default=5, help="Retries per page fetch (default: %(default)s)")
     p.add_argument("--raw-dir", default=os.path.join("data", "raw"), help="Raw images directory")
     p.add_argument("--approved-dir", default=os.path.join("data", "approved"), help="Approved symlinks directory")
-    p.add_argument("--prune", action="store_true", help="After a full scan, remove symlinks/records/embeddings for images no longer approved")
-    p.add_argument("--derived-dir", default=os.path.join("data", "derived"), help="Derived data directory (for --prune)")
-    p.add_argument("--jsonl", default=os.path.join("data", "derived", "approved_image_dataset.jsonl"), help="JSONL dataset path (for --prune)")
+    p.add_argument("--no-prune", dest="prune", action="store_false", help="Skip removal of stale symlinks/records/embeddings after scan")
+    p.set_defaults(prune=True)
+    p.add_argument("--derived-dir", default=os.path.join("data", "derived"), help="Derived data directory (for pruning)")
+    p.add_argument("--jsonl", default=os.path.join("data", "derived", "approved_image_dataset.jsonl"), help="JSONL dataset path (for pruning)")
     return p.parse_args(argv)
 
 
@@ -206,7 +207,7 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
 
     if args.prune and (args.end_page is not None or args.limit is not None):
-        print("error: --prune requires a full scan; cannot be used with --end-page or --limit", file=sys.stderr)
+        print("error: pruning requires a full scan; use --no-prune with --end-page or --limit", file=sys.stderr)
         return 2
 
     raw_dir = os.path.abspath(args.raw_dir)
