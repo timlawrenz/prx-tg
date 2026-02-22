@@ -292,21 +292,35 @@ class ValidationDataset:
     def collate_fn(self, batch):
         """Collate batch of samples into batched tensors.
         
-        NOTE: For batch_size > 1, dinov3_patches will need padding since they're variable-length.
-        Current training uses batch_size=1, so no padding is needed.
+        Pads variable-length dinov3_patches to the max length in the batch.
         """
-        if len(batch) > 1:
-            # Variable-length patches require padding for batching
-            # For now, assert batch_size=1 (current training config)
-            raise NotImplementedError(
-                "batch_size > 1 not yet supported with variable-length DINOv3 patches. "
-                "Current training uses batch_size=1."
-            )
+        # Find max patch length in this batch
+        max_patches = max(s['dinov3_patches'].shape[0] for s in batch)
         
+        padded_patches = []
+        patch_masks = []
+        for s in batch:
+            patches = s['dinov3_patches']
+            num_patches = patches.shape[0]
+            
+            # Create mask (1 for valid, 0 for padding)
+            mask = torch.zeros(max_patches, dtype=torch.long)
+            mask[:num_patches] = 1
+            patch_masks.append(mask)
+            
+            if num_patches < max_patches:
+                # Pad with zeros
+                pad = torch.zeros(max_patches - num_patches, patches.shape[1], dtype=patches.dtype)
+                padded = torch.cat([patches, pad], dim=0)
+            else:
+                padded = patches
+            padded_patches.append(padded)
+            
         return {
             'vae_latent': torch.stack([s['vae_latent'] for s in batch]),
             'dino_embedding': torch.stack([s['dino_embedding'] for s in batch]),
-            'dinov3_patches': torch.stack([s['dinov3_patches'] for s in batch]),  # (B, num_patches, 1024)
+            'dinov3_patches': torch.stack(padded_patches),  # (B, max_patches, 1024)
+            'dinov3_patches_mask': torch.stack(patch_masks), # (B, max_patches)
             't5_hidden': torch.stack([s['t5_hidden'] for s in batch]),
             't5_mask': torch.stack([s['t5_mask'] for s in batch]),
             'captions': [s['caption'] for s in batch],
