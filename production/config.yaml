@@ -32,8 +32,9 @@ training:
   cfg_dropout:
     p_uncond: 0.1              # Drop both DINO and text (unconditional)
     p_text_only: 0.3           # Drop DINO more often (reduce DINO reliance)
-    p_dino_only: 0.05          # Drop text less often (reduce DINO-only cases)
-    # Remaining 55% keeps both signals
+    p_dino_cls_only: 0.05      # Drop text and patches (keep only global style)
+    p_dino_patches_only: 0.05  # Drop text and CLS (keep only spatial layout)
+    # Remaining 50% keeps all signals
 
   # Timestep sampling strategy
   timestep_sampling: "logit_normal"  # "uniform" or "logit_normal"

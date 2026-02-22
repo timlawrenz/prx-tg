@@ -80,22 +80,34 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     # Mutually exclusive CFG dropout (categorical sampling)
     # Sample one random number per batch item and threshold it
     rand = torch.rand(B, device=device)
-    p_both = cfg_probs['p_drop_both']
-    p_text = cfg_probs['p_drop_text']
-    p_dino = cfg_probs['p_drop_dino']
+    p_both = cfg_probs['p_uncond']
+    p_text = cfg_probs['p_text_only']
+    p_dino_cls = cfg_probs['p_dino_cls_only']
+    p_dino_patches = cfg_probs['p_dino_patches_only']
     
     # Assign to exclusive categories
     drop_both = rand < p_both
-    drop_text = (rand >= p_both) & (rand < p_both + p_text)
-    drop_dino = (rand >= p_both + p_text) & (rand < p_both + p_text + p_dino)
-    # Remainder (70% by default) has both conditionings present
+    drop_dino = (rand >= p_both) & (rand < p_both + p_text)
+    drop_text_and_patches = (rand >= p_both + p_text) & (rand < p_both + p_text + p_dino_cls)
+    drop_text_and_cls = (rand >= p_both + p_text + p_dino_cls) & (rand < p_both + p_text + p_dino_cls + p_dino_patches)
+    # Remainder (50% by default) has all conditionings present
+    
+    # Combine masks for specific components
+    # We want to drop text when: drop_both OR drop_text_and_patches OR drop_text_and_cls
+    drop_text = drop_both | drop_text_and_patches | drop_text_and_cls
+    
+    # We want to drop DINO CLS when: drop_both OR drop_dino OR drop_text_and_cls
+    drop_dino_cls = drop_both | drop_dino | drop_text_and_cls
+    
+    # We want to drop DINO patches when: drop_both OR drop_dino OR drop_text_and_patches
+    drop_dino_patches = drop_both | drop_dino | drop_text_and_patches
     
     # Predict velocity (with DINO patches)
     v_pred = model(
         zt, t, dino_emb, text_emb, dino_patches, text_mask, dino_patches_mask=dino_patches_mask,
-        cfg_drop_both=drop_both,
-        cfg_drop_dino=drop_dino,
         cfg_drop_text=drop_text,
+        cfg_drop_dino_cls=drop_dino_cls,
+        cfg_drop_dino_patches=drop_dino_patches,
     )
     
     # MSE loss
@@ -246,9 +258,10 @@ class Trainer:
         
         # CFG dropout probabilities
         self.cfg_probs = cfg_probs or {
-            'p_drop_both': 0.1,
-            'p_drop_text': 0.1,
-            'p_drop_dino': 0.1,
+            'p_uncond': 0.1,
+            'p_text_only': 0.1,
+            'p_dino_cls_only': 0.1,
+            'p_dino_patches_only': 0.1,
         }
         
         # Optimizer
