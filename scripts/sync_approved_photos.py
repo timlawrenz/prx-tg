@@ -13,7 +13,7 @@ For each item:
 Notes:
 - Automatically downloads missing files from exportable_url (CDN)
 - In dry-run mode, downloads are skipped (only reported)
-- Pruning (removing stale links) is intentionally NOT implemented
+- Use --prune to remove symlinks no longer in the approved set (full scan only)
 - Does NOT enumerate `data/raw/`; uses per-filename path lookups
 
 Examples:
@@ -47,6 +47,9 @@ class Counters:
     symlink_created: int = 0
     symlink_updated: int = 0
     symlink_unchanged: int = 0
+    stale_symlinks: int = 0
+    stale_records: int = 0
+    stale_npy: int = 0
 
 
 def build_page_url(base_url: str, page: int) -> str:
@@ -193,11 +196,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--retries", type=int, default=5, help="Retries per page fetch (default: %(default)s)")
     p.add_argument("--raw-dir", default=os.path.join("data", "raw"), help="Raw images directory")
     p.add_argument("--approved-dir", default=os.path.join("data", "approved"), help="Approved symlinks directory")
+    p.add_argument("--prune", action="store_true", help="After a full scan, remove symlinks/records/embeddings for images no longer approved")
+    p.add_argument("--derived-dir", default=os.path.join("data", "derived"), help="Derived data directory (for --prune)")
+    p.add_argument("--jsonl", default=os.path.join("data", "derived", "approved_image_dataset.jsonl"), help="JSONL dataset path (for --prune)")
     return p.parse_args(argv)
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
+
+    if args.prune and (args.end_page is not None or args.limit is not None):
+        print("error: --prune requires a full scan; cannot be used with --end-page or --limit", file=sys.stderr)
+        return 2
 
     raw_dir = os.path.abspath(args.raw_dir)
     approved_dir = os.path.abspath(args.approved_dir)
@@ -209,6 +219,8 @@ def main(argv: list[str]) -> int:
     os.makedirs(approved_dir, exist_ok=True)
 
     counters = Counters()
+    approved_filenames: set[str] = set()
+    failed_pages: int = 0
 
     page = args.start_page
     while True:
@@ -217,7 +229,13 @@ def main(argv: list[str]) -> int:
 
         url = build_page_url(args.base_url, page)
         print(f"page {page}: fetching {url}", file=sys.stderr)
-        items = fetch_json_array(url, timeout_s=args.timeout, retries=args.retries)
+        try:
+            items = fetch_json_array(url, timeout_s=args.timeout, retries=args.retries)
+        except Exception as e:
+            print(f"warning: page {page}: fetch failed: {e}", file=sys.stderr)
+            failed_pages += 1
+            page += 1
+            continue
         if not items:
             print(f"page {page}: empty; stopping", file=sys.stderr)
             break
@@ -243,6 +261,8 @@ def main(argv: list[str]) -> int:
                 exportable_url = item.get("exportable_url")
             if not filename:
                 continue
+
+            approved_filenames.add(filename)
 
             raw_path = os.path.join(raw_dir, filename)
             
@@ -304,25 +324,116 @@ def main(argv: list[str]) -> int:
 
         page += 1
 
+    if args.prune:
+        if failed_pages > 0:
+            print(
+                f"warning: skipping prune — {failed_pages} page(s) failed to fetch; run again when all pages succeed",
+                file=sys.stderr,
+            )
+        else:
+            stale_sym, stale_rec, stale_npy = prune_stale(
+                approved_filenames=approved_filenames,
+                approved_dir=approved_dir,
+                derived_dir=os.path.abspath(args.derived_dir),
+                jsonl_path=os.path.abspath(args.jsonl),
+                dry_run=args.dry_run,
+                verbose=args.verbose,
+            )
+            counters.stale_symlinks = stale_sym
+            counters.stale_records = stale_rec
+            counters.stale_npy = stale_npy
+
     return summarize_and_exit(counters)
 
 
+def prune_stale(
+    approved_filenames: set[str],
+    approved_dir: str,
+    derived_dir: str,
+    jsonl_path: str,
+    dry_run: bool,
+    verbose: bool,
+) -> tuple[int, int, int]:
+    """Remove symlinks, JSONL records, and .npy files for images no longer in the approved set."""
+    stale_symlinks = 0
+    stale_records = 0
+    stale_npy = 0
+
+    stale_stems: list[str] = []
+    for entry in os.scandir(approved_dir):
+        if not entry.is_symlink():
+            continue
+        stem = os.path.splitext(entry.name)[0]
+        if stem not in approved_filenames:
+            stale_stems.append(stem)
+            if verbose:
+                print(f"stale symlink: {entry.path}", file=sys.stderr)
+            if not dry_run:
+                os.unlink(entry.path)
+            stale_symlinks += 1
+
+    if not stale_stems:
+        return stale_symlinks, stale_records, stale_npy
+
+    stale_set = set(stale_stems)
+
+    if os.path.isfile(jsonl_path):
+        kept_lines: list[str] = []
+        with open(jsonl_path, "r") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                    if record.get("id") in stale_set:
+                        stale_records += 1
+                        if verbose:
+                            print(f"stale record: {record.get('id')}", file=sys.stderr)
+                        continue
+                except json.JSONDecodeError:
+                    pass
+                kept_lines.append(line)
+        if stale_records > 0 and not dry_run:
+            tmp_path = jsonl_path + ".prune-tmp"
+            with open(tmp_path, "w") as f:
+                for line in kept_lines:
+                    f.write(line + "\n")
+            os.replace(tmp_path, jsonl_path)
+
+    npy_subdirs = ["dinov3", "vae_latents", "t5_hidden"]
+    for stem in stale_stems:
+        for subdir in npy_subdirs:
+            npy_path = os.path.join(derived_dir, subdir, stem + ".npy")
+            if os.path.isfile(npy_path):
+                if verbose:
+                    print(f"stale npy: {npy_path}", file=sys.stderr)
+                if not dry_run:
+                    os.unlink(npy_path)
+                stale_npy += 1
+
+    return stale_symlinks, stale_records, stale_npy
+
+
 def summarize_and_exit(c: Counters) -> int:
-    print(
-        "\n".join(
-            [
-                "Summary:",
-                f"  processed:        {c.processed}",
-                f"  downloaded:       {c.downloaded}",
-                f"  download failed:  {c.download_failed}",
-                f"  missing raw:      {c.missing_raw}",
-                f"  unknown type:     {c.unknown_type}",
-                f"  symlink created:  {c.symlink_created}",
-                f"  symlink updated:  {c.symlink_updated}",
-                f"  symlink unchanged:{c.symlink_unchanged}",
-            ]
-        )
-    )
+    lines = [
+        "Summary:",
+        f"  processed:        {c.processed}",
+        f"  downloaded:       {c.downloaded}",
+        f"  download failed:  {c.download_failed}",
+        f"  missing raw:      {c.missing_raw}",
+        f"  unknown type:     {c.unknown_type}",
+        f"  symlink created:  {c.symlink_created}",
+        f"  symlink updated:  {c.symlink_updated}",
+        f"  symlink unchanged:{c.symlink_unchanged}",
+    ]
+    if c.stale_symlinks or c.stale_records or c.stale_npy:
+        lines += [
+            f"  stale symlinks:   {c.stale_symlinks}",
+            f"  stale records:    {c.stale_records}",
+            f"  stale npy files:  {c.stale_npy}",
+        ]
+    print("\n".join(lines))
     return 0
 
 
