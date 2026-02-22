@@ -19,9 +19,10 @@ This project demonstrates that you don't need massive datasets (millions of imag
 - **Current (baseline)**: 384 hidden, 12 layers, 6 heads (~90M parameters)
 - **Target (production)**: 768 hidden, 18 layers, 12 heads (~400M parameters)
 - **Patch-based**: 2×2 patches in latent space for high detail
-- **Dual conditioning**: 
+- **Triple conditioning**: 
   - Text via T5-XXL embeddings (4096-dim)
   - Visual style via DINOv3 CLS token (1024-dim)
+  - Spatial layout via DINOv3 patch embeddings (~4000 tokens × 1024-dim)
 - **Dynamic positional encoding**: Supports variable aspect ratios
 
 ### Training: Rectified Flow Matching
@@ -29,6 +30,7 @@ This project demonstrates that you don't need massive datasets (millions of imag
 - **Algorithm**: Flow matching (continuous-time diffusion)
 - **Loss**: MSE between predicted and target velocity vectors
 - **Timestep sampling**: Logit-normal distribution (focuses on mid-diffusion)
+- **Timestep Encoding**: High-frequency 1000x scaled sinusoidal embeddings for stable flow
 - **CFG strategy**: 
   - 10% unconditional (drop both text + DINO)
   - 30% text-only (drop DINO, reduce over-reliance on visual conditioning)
@@ -40,6 +42,7 @@ This project demonstrates that you don't need massive datasets (millions of imag
 - Pre-trained VAE from Black Forest Labs
 - 16 channels, 8× spatial compression
 - All training happens in latent space (no pixel-level operations)
+- **Normalization**: Dataset-specific mean/std calibration (computed per shard collection)
 
 ## Dataset
 
@@ -161,11 +164,11 @@ model:
   patch_size: 2
 
 training:
-  total_steps: 250000  # Subject to change
+  total_steps: 6000     # Optimizer steps (accumulated)
   batch_size: 1
   grad_accumulation_steps: 256  # Effective batch = 256
   learning_rate: 3e-4 → 1e-6 (cosine decay)
-  warmup_steps: 7,500
+  warmup_steps: 500
   mixed_precision: bfloat16
   gradient_checkpointing: true  # Saves ~3-4× memory
 ```
@@ -173,11 +176,11 @@ training:
 ### Optimization Techniques
 
 1. **Gradient Accumulation**: Effective batch size of 256 with batch_size=1
-2. **Mixed Precision**: bfloat16 training (required for flow matching stability)
-3. **Gradient Checkpointing**: Trade 20-30% speed for 3-4× memory savings
-4. **Pre-computed Embeddings**: No T5/DINO forward passes during training
+2. **FlashAttention (SDPA)**: Uses memory-efficient `scaled_dot_product_attention` to avoid OOM on large cross-attention sequences
+3. **Mixed Precision**: bfloat16 training (required for flow matching stability)
+4. **Gradient Checkpointing**: Trade 20-30% speed for 3-4× memory savings
 5. **Bucket-aware Batching**: Sample from aspect ratio buckets proportionally
-6. **EMA**: Exponential moving average of weights (decay=0.9999) for stable inference
+6. **EMA**: Exponential moving average of weights (decay=0.9999) with 500-step warmup
 
 ### Data Augmentation
 
@@ -223,7 +226,7 @@ Comprehensive validation suite runs every 5,000 steps:
 - **Training**:
   - Loss (flow matching MSE)
   - Gradient norm
-  - Velocity norm (RMS of predicted velocity vectors)
+  - Velocity norm (RMS of predicted velocity vectors, should be ~1.0)
   - Learning rate
 - **Validation**:
   - LPIPS (reconstruction, DINO swap, text manipulation)
@@ -231,14 +234,14 @@ Comprehensive validation suite runs every 5,000 steps:
 
 ### Visual Debugging
 
-Quick 4-image generation every 1,000 steps:
+Quick 4-image generation every 100 steps:
 - Fixed deterministic samples for consistency
-- Saved to `visual_debug/step{N}/`
+- Saved to `experiments/{timestamp}/visual_debug/step{N}/`
 - Useful for spotting training issues early
 
 ### Checkpoints
 
-- Saved every 5,000 steps to `checkpoints/`
+- Saved every 500 steps to `experiments/{timestamp}/checkpoints/`
 - Includes:
   - Model weights
   - Optimizer state
@@ -249,44 +252,33 @@ Quick 4-image generation every 1,000 steps:
 
 ## Current Status
 
-### Baseline Training (384 hidden, 12 layers)
-- ✅ Completed: Initial training run
-- Results: "Watercolor blobs" - correct colors, poor spatial coherence
-- Conclusion: Model capacity too small for this task
-
 ### Production Training (768 hidden, 18 layers)
-- 🚧 In progress: Started fresh training
-- Expected: Better spatial structure and detail
-- Architecture limitation: Using only DINO CLS token (no spatial info)
-  - This explains "blobs in wrong places" - model has color/style but no spatial layout
-  - Future: Integrate 196 DINOv3 patch embeddings for spatial conditioning
+- ✅ **Integrated DINOv3 Patches**: Model now uses ~4000 spatial conditioning tokens per image for precise layout.
+- ✅ **Fixed Timestep Scaling**: Anchored flow matching with 1000x scaled temporal embeddings.
+- ✅ **Memory Optimized**: FlashAttention (SDPA) and Gradient Checkpointing enable training at 1024px on 24GB GPUs.
+- 🚧 In progress: Training on 15k image subset, scaling to 86k.
 
 ### Known Limitations
 
-1. **Spatial Layout**: Current architecture uses only global DINO CLS token
-   - No spatial conditioning → poor layout accuracy
-   - DINOv3 patches extracted but not yet integrated into architecture
-   
-2. **Caption Flipping**: Horizontal flip augmentation doesn't modify T5 embeddings
+1. **Caption Flipping**: Horizontal flip augmentation doesn't modify T5 embeddings
    - Left/right mentions in captions don't swap with image
    - Would require NLP caption rewriting (future work)
 
-3. **Training Data Size**: Dataset is small by modern standards
-   - Adequate for proof-of-concept and vertical domains
-   - Larger datasets would improve generalization
+2. **Training Data Size**: Dataset is growing towards 86k images.
+   - Currently training on high-quality 15k subset.
 
 ## Repository Structure
 
 ```
 prx-tg/
 ├── production/              # Core training code
-│   ├── train.py            # Training loop, optimizer, EMA
-│   ├── model.py            # NanoDiT architecture
-│   ├── data.py             # WebDataset loading, bucketing
+│   ├── train.py            # Training loop (optimizer-step based)
+│   ├── model.py            # NanoDiT with SDPA & high-freq timesteps
+│   ├── data.py             # WebDataset loading, bucket-specific stats
 │   ├── validate.py         # Validation suite
 │   ├── visual_debug.py     # Quick sample generation
 │   ├── sample.py           # Inference sampler (Euler)
-│   └── config.yaml         # Training configuration
+│   └── config.yaml         # Training configuration (14-day schedule)
 │
 ├── scripts/
 │   ├── generate_approved_image_dataset.py  # Data preprocessing
@@ -295,16 +287,10 @@ prx-tg/
 ├── data/
 │   ├── approved/           # Original images
 │   ├── derived/            # Pre-computed embeddings
-│   │   ├── dinov3/         # DINO CLS tokens
-│   │   ├── dinov3_patches/ # DINO spatial patches
-│   │   ├── vae/            # VAE latents
-│   │   └── t5/             # T5 text embeddings
-│   └── shards/10000/       # WebDataset tar shards
+│   └── shards/15000/       # WebDataset tar shards
 │
-├── checkpoints/            # Training checkpoints
-├── validation_outputs/     # Validation results by step
-├── visual_debug/           # Quick debug samples
-└── experiments/            # Experiment tracking
+├── experiments/            # Unified experiment tracking (checkpoints, logs, visuals)
+└── docs/                   # Documentation and plans
 ```
 
 ## Usage
@@ -362,17 +348,17 @@ See full environment in `.venv/` (not committed).
 
 ## Future Work
 
-1. **Spatial Conditioning**: Integrate DINOv3 patch embeddings into architecture
-   - Add cross-attention to spatial features
-   - Should dramatically improve layout accuracy
-
-2. **Larger Dataset**: Expand dataset size
+1. **Larger Dataset**: Expand dataset size towards 86k target.
    - Better generalization
    - More diverse compositions
 
-3. **Caption Augmentation**: Implement left/right swapping for flipped images
+2. **Caption Augmentation**: Implement left/right swapping for flipped images
    - Requires NLP caption rewriting
    - More coherent flip augmentation
+
+3. **Multi-GPU Training**: Scale to multiple GPUs
+   - Faster iteration
+   - Larger effective batch sizes
 
 4. **Multi-GPU Training**: Scale to multiple GPUs
    - Faster iteration
