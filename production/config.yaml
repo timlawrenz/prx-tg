@@ -90,7 +90,7 @@ validation:
   run_text_manip: true               # Test text manipulation
   
   # Visual debugging (quick image generation during training)
-  visual_debug_interval: 100        # Generate sample images every N steps (0 = disabled)
+  visual_debug_interval: 50        # Generate sample images every N steps (0 = disabled)
   visual_debug_num_samples: 4        # Number of samples per visual debug checkpoint
   visual_debug_dir: "visual_debug"   # Output directory for visual debugging images
 
