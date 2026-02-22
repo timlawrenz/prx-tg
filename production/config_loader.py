@@ -36,15 +36,17 @@ class OptimizerConfig:
 class CFGDropoutConfig:
     """CFG dropout probabilities (mutually exclusive)."""
     p_uncond: float = 0.1        # Drop both
-    p_text_only: float = 0.1     # Drop DINO only
-    p_dino_only: float = 0.1     # Drop text only
+    p_text_only: float = 0.3     # Keep text, drop DINO
+    p_dino_cls_only: float = 0.05    # Keep DINO CLS, drop text and patches
+    p_dino_patches_only: float = 0.05 # Keep DINO patches, drop text and CLS
     
     def to_dict(self):
         """Convert to dict for compatibility with training code."""
         return {
-            'p_drop_both': self.p_uncond,
-            'p_drop_text': self.p_dino_only,  # Note: swap! text dropout means drop text
-            'p_drop_dino': self.p_text_only,  # dino dropout means drop dino
+            'p_uncond': self.p_uncond,
+            'p_text_only': self.p_text_only,
+            'p_dino_cls_only': self.p_dino_cls_only,
+            'p_dino_patches_only': self.p_dino_patches_only,
         }
 
 
