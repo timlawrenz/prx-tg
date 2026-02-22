@@ -69,22 +69,28 @@ class EulerSampler:
             t_batch = torch.full((B,), t_curr, device=device)
             
             # Three forward passes for dual CFG
-            # 1. Unconditional (both dropped)
+            # 1. Unconditional (all dropped)
             v_uncond = model(
                 zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
-                cfg_drop_both=torch.ones(B, dtype=torch.bool, device=device),
+                cfg_drop_text=torch.ones(B, dtype=torch.bool, device=device),
+                cfg_drop_dino_cls=torch.ones(B, dtype=torch.bool, device=device),
+                cfg_drop_dino_patches=torch.ones(B, dtype=torch.bool, device=device),
             )
             
-            # 2. Text-only (DINO dropped)
+            # 2. Text-only (DINO CLS and patches dropped)
             v_text = model(
                 zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
-                cfg_drop_dino=torch.ones(B, dtype=torch.bool, device=device),
+                cfg_drop_text=torch.zeros(B, dtype=torch.bool, device=device),
+                cfg_drop_dino_cls=torch.ones(B, dtype=torch.bool, device=device),
+                cfg_drop_dino_patches=torch.ones(B, dtype=torch.bool, device=device),
             )
             
-            # 3. DINO-only (text dropped)
+            # 3. DINO-only (text dropped, DINO CLS and patches kept)
             v_dino = model(
                 zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
                 cfg_drop_text=torch.ones(B, dtype=torch.bool, device=device),
+                cfg_drop_dino_cls=torch.zeros(B, dtype=torch.bool, device=device),
+                cfg_drop_dino_patches=torch.zeros(B, dtype=torch.bool, device=device),
             )
             
             # Dual CFG combination

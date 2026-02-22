@@ -389,7 +389,7 @@ class NanoDiT(nn.Module):
         return latents
 
     def forward(self, x, t, dino_emb, text_emb, dino_patches=None, text_mask=None, dino_patches_mask=None,
-                cfg_drop_both=None, cfg_drop_dino=None, cfg_drop_text=None):
+                cfg_drop_text=None, cfg_drop_dino_cls=None, cfg_drop_dino_patches=None):
         """
         Args:
             x: (B, C, H, W) noisy latents (H and W can vary for different aspect ratios)
@@ -399,9 +399,9 @@ class NanoDiT(nn.Module):
             dino_patches: (B, num_patches, 1024) DINOv3 spatial patches (VARIABLE LENGTH!)
             text_mask: (B, seq_len) T5 attention mask (1=valid, 0=padding)
             dino_patches_mask: (B, num_patches) DINOv3 patches attention mask
-            cfg_drop_both: (B,) bool mask for unconditional
-            cfg_drop_dino: (B,) bool mask for text-only
-            cfg_drop_text: (B,) bool mask for dino-only
+            cfg_drop_text: (B,) bool mask for dropping text
+            cfg_drop_dino_cls: (B,) bool mask for dropping DINO CLS
+            cfg_drop_dino_patches: (B,) bool mask for dropping DINO patches
         
         Returns:
             v: (B, C, H, W) predicted velocity
@@ -416,34 +416,18 @@ class NanoDiT(nn.Module):
             num_patches = 3880  # Approximate typical count
             dino_patches = self.null_dino_patch_token.expand(B, num_patches, -1)
         
-        # Apply CFG dropout (drop CLS and patches together for DINO)
-        if cfg_drop_both is not None:
+        # Apply CFG dropout independently
+        if cfg_drop_dino_cls is not None:
             dino_emb = torch.where(
-                cfg_drop_both.unsqueeze(1),
+                cfg_drop_dino_cls.unsqueeze(1),
                 self.null_dino.expand(B, -1),
                 dino_emb
             )
+            
+        if cfg_drop_dino_patches is not None:
             null_patches = self.null_dino_patch_token.expand(B, num_patches, -1)
             dino_patches = torch.where(
-                cfg_drop_both.unsqueeze(1).unsqueeze(2),
-                null_patches,
-                dino_patches
-            )
-            text_emb = torch.where(
-                cfg_drop_both.unsqueeze(1).unsqueeze(2),
-                self.null_text.expand(B, text_emb.shape[1], -1),
-                text_emb
-            )
-        
-        if cfg_drop_dino is not None:
-            dino_emb = torch.where(
-                cfg_drop_dino.unsqueeze(1),
-                self.null_dino.expand(B, -1),
-                dino_emb
-            )
-            null_patches = self.null_dino_patch_token.expand(B, num_patches, -1)
-            dino_patches = torch.where(
-                cfg_drop_dino.unsqueeze(1).unsqueeze(2),
+                cfg_drop_dino_patches.unsqueeze(1).unsqueeze(2),
                 null_patches,
                 dino_patches
             )
