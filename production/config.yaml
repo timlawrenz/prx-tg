@@ -13,8 +13,8 @@ model:
 training:
   total_steps: 6000           # Total optimizer steps (approx 14 days on 4090)
   warmup_steps: 500           # Linear LR warmup
-  batch_size: 1               # Per-GPU batch size
-  grad_accumulation_steps: 256 # Effective batch
+  batch_size: 2               # Per-GPU batch size
+  grad_accumulation_steps: 128 # Effective batch
   
   optimizer:
     type: "AdamW"
