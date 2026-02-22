@@ -387,7 +387,7 @@ def prune_stale(
                     continue
                 try:
                     record = json.loads(line)
-                    if record.get("id") in stale_set:
+                    if record.get("image_id") in stale_set:
                         stale_records += 1
                         if verbose:
                             print(f"stale record: {record.get('id')}", file=sys.stderr)
