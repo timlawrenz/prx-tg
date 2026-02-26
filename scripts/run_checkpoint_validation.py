@@ -45,7 +45,7 @@ def main():
     
     # Load checkpoint
     print(f"Loading checkpoint: {args.checkpoint}")
-    ckpt = torch.load(args.checkpoint, map_location='cpu', weights_only=True)
+    ckpt = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
     
     # Create model
     print("Creating model architecture...")
@@ -69,8 +69,8 @@ def main():
     
     # Load weights
     print("Loading weights...")
-    model.load_state_dict(ckpt['model_state'])
-    ema.load_state_dict(ckpt['ema_state'])
+    model.load_state_dict(ckpt['model'])
+    ema.load_state_dict(ckpt['ema'])
     
     model = model.to(device)
     for param in ema.ema_params.values():
@@ -78,12 +78,20 @@ def main():
     
     model.eval()
     
+    # Create TensorBoard writer
+    from torch.utils.tensorboard import SummaryWriter
+    tensorboard_dir = exp_dir / 'tensorboard'
+    writer = SummaryWriter(log_dir=str(tensorboard_dir))
+    
     # Create validation function
     print("Creating validation suite...")
     validate_fn = create_validation_fn(
-        config=config,
-        device=device,
-        experiment_dir=exp_dir
+        shard_dir=config.data.shard_base_dir,
+        output_dir=str(exp_dir / config.validation.output_dir),
+        tensorboard_writer=writer,
+        text_scale=config.sampling.text_scale,
+        dino_scale=config.sampling.dino_scale,
+        num_steps=config.sampling.num_steps
     )
     
     # Run validation
@@ -93,6 +101,8 @@ def main():
     
     with torch.no_grad():
         validate_fn(model, ema, step, device)
+        
+    writer.close()
         
     print("\nValidation complete!")
 
