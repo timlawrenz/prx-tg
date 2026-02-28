@@ -541,11 +541,23 @@ class ValidationRunner:
             print("Loading T5 encoder for text manipulation...")
             from transformers import T5EncoderModel, AutoTokenizer
             
-            self.t5_tokenizer = AutoTokenizer.from_pretrained("t5-large")
-            self.t5_encoder = T5EncoderModel.from_pretrained(
-                "t5-large", 
-                torch_dtype=torch.float16
-            )
+            # Try loading from local cache first, fallback to network
+            try:
+                self.t5_tokenizer = AutoTokenizer.from_pretrained("t5-large", local_files_only=True)
+            except Exception:
+                self.t5_tokenizer = AutoTokenizer.from_pretrained("t5-large")
+                
+            try:
+                self.t5_encoder = T5EncoderModel.from_pretrained(
+                    "t5-large", 
+                    torch_dtype=torch.float16,
+                    local_files_only=True
+                )
+            except Exception:
+                self.t5_encoder = T5EncoderModel.from_pretrained(
+                    "t5-large", 
+                    torch_dtype=torch.float16
+                )
             self.t5_encoder.to(self.device)
             self.t5_encoder.eval()
         
@@ -729,22 +741,18 @@ class ValidationRunner:
         # Free up memory before validation
         torch.cuda.empty_cache()
         
-        # Copy EMA weights to a temporary model for evaluation
-        eval_model = type(self.model)(
-            input_size=self.model.input_size,
-            patch_size=self.model.patch_size,
-            in_channels=self.model.in_channels,
-            hidden_size=self.model.hidden_size,
-            depth=len(self.model.blocks),
-            num_heads=self.model.num_heads,
-        ).to(self.device)
+        # Backup current model weights to CPU (save GPU memory)
+        print("Backing up model weights to CPU...")
+        model_backup = {k: v.cpu() for k, v in self.model.state_dict().items()}
         
-        self.ema.copy_to(eval_model)
-        eval_model.eval()
+        # Load EMA weights into main model (in-place)
+        print("Loading EMA weights for validation...")
+        self.ema.copy_to(self.model)
+        self.model.eval()
         
-        # Create sampler
+        # Create sampler using main model (now with EMA weights)
         sampler = ValidationSampler(
-            eval_model,
+            self.model,
             self.vae,
             device=self.device,
             num_steps=self.num_steps,
@@ -752,20 +760,28 @@ class ValidationRunner:
             dino_scale=self.dino_scale,
         )
         
-        # Run tests
-        results = {
-            'step': step,
-            'reconstruction': self.run_reconstruction_test(step, sampler),
-            'dino_swap': self.run_dino_swap_test(step, sampler),
-            'divergence': self.run_divergence_test(step, sampler),
-            'text_only': self.run_text_only_test(step, sampler),
-            'text_manip': self.run_text_manip_test(step, sampler),
-        }
-        
-        # Clean up eval_model and sampler to prevent memory leak
-        del sampler
-        del eval_model
-        torch.cuda.empty_cache()
+        try:
+            # Run tests
+            results = {
+                'step': step,
+                'reconstruction': self.run_reconstruction_test(step, sampler),
+                'dino_swap': self.run_dino_swap_test(step, sampler),
+                'divergence': self.run_divergence_test(step, sampler),
+                'text_only': self.run_text_only_test(step, sampler),
+                'text_manip': self.run_text_manip_test(step, sampler),
+            }
+        finally:
+            # Clean up sampler to prevent memory leak
+            del sampler
+            
+            # Restore original weights
+            print("Restoring training weights...")
+            self.model.load_state_dict(model_backup)
+            self.model.train()
+            
+            # Delete backup and clear cache
+            del model_backup
+            torch.cuda.empty_cache()
         
         # Save results
         results_file = self.output_dir / f'step{step:07d}' / 'results.json'

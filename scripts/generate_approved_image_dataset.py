@@ -918,6 +918,28 @@ def check_disk_space(path: Path, required_gb: int = 20) -> bool:
         return True  # Don't block if check fails
 
 
+def backup_output_file(output_path: Path):
+    """Create a timestamped backup of the output file before processing."""
+    import shutil
+    import datetime
+    
+    if not output_path.exists():
+        return
+        
+    # Generate timestamp YYYY-MM-DD-HH-MM
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M")
+    
+    # Construct backup path (e.g. data/derived/approved_image_dataset.2026-02-26-10-30.jsonl)
+    backup_name = f"{output_path.stem}.{timestamp}{output_path.suffix}"
+    backup_path = output_path.parent / backup_name
+    
+    try:
+        shutil.copy2(output_path, backup_path)
+        eprint(f"created backup: {backup_path}")
+    except Exception as e:
+        eprint(f"warning: failed to create backup at {backup_path}: {e}")
+
+
 def verify_stage2_data(output_path: Path, base_dir: Path) -> dict:
     """
     Verify Stage 2 data integrity.
@@ -1260,6 +1282,9 @@ def main(argv):
         eprint(f"  missing: {results['t5']['missing']}")
         
         return 0
+
+    # Create backup before any processing begins
+    backup_output_file(output_path)
 
     # Check disk space
     if not check_disk_space(base_dir, required_gb=20):
