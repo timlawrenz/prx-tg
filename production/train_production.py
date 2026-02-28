@@ -97,18 +97,53 @@ def print_config_summary(config):
     print("="*60 + "\n")
 
 
-def create_experiment_dir(config_path):
-    """Create timestamped experiment directory and save metadata.
+def create_experiment_dir(config_path, resume_path=None):
+    """Create timestamped experiment directory and save metadata, or reuse existing.
+    
+    If resume_path is provided (e.g., experiments/2026-02-22_1200/checkpoints/checkpoint.pt),
+    it will reuse the existing 'experiments/2026-02-22_1200' directory.
     
     Creates: experiments/YYYY-MM-DD_HHMM/
     Saves: config.yaml, metadata.json (git commit, timestamp, command)
     
     Args:
         config_path: Path to config file
+        resume_path: Optional path to checkpoint being resumed
     
     Returns:
-        experiment_dir: Path to created directory
+        experiment_dir: Path to created/reused directory
     """
+    if resume_path:
+        # Expected resume_path: experiments/2026-02-22_1200/checkpoints/checkpoint.pt
+        # Get the parent directory of the 'checkpoints' directory
+        try:
+            exp_dir = Path(resume_path).parent.parent
+            if exp_dir.name.startswith('202') and exp_dir.parent.name == 'experiments':
+                print(f"Resuming existing experiment: {exp_dir}")
+                
+                # Append resume info to metadata
+                metadata_path = exp_dir / 'metadata.json'
+                if metadata_path.exists():
+                    with open(metadata_path, 'r') as f:
+                        metadata = json.load(f)
+                    
+                    if 'resumes' not in metadata:
+                        metadata['resumes'] = []
+                    
+                    metadata['resumes'].append({
+                        'timestamp': datetime.now().isoformat(),
+                        'checkpoint': str(resume_path),
+                        'command': ' '.join(sys.argv)
+                    })
+                    
+                    with open(metadata_path, 'w') as f:
+                        json.dump(metadata, f, indent=2)
+                
+                return exp_dir
+        except Exception as e:
+            print(f"Warning: Could not resolve experiment dir from resume path: {e}")
+            print("Falling back to creating new experiment directory.")
+    
     # Create timestamp: 2026-02-15_1130
     timestamp = datetime.now().strftime('%Y-%m-%d_%H%M')
     
@@ -169,7 +204,7 @@ def main():
     print("\n" + "="*60)
     print("EXPERIMENT TRACKING")
     print("="*60)
-    experiment_dir = create_experiment_dir(args.config)
+    experiment_dir = create_experiment_dir(args.config, args.resume)
     print(f"Experiment directory: {experiment_dir}")
     print("="*60 + "\n")
     

@@ -189,9 +189,21 @@ training:
 
 ## Validation
 
-Comprehensive validation suite runs every 5,000 steps:
+Comprehensive validation suite runs periodically during training, but can also be executed on demand for specific checkpoints.
 
-### 1. Reconstruction Test
+### On-Demand Checkpoint Validation
+If training is interrupted during a validation phase, or if you want to back-test an older checkpoint with new validation logic, you can run the validation suite standalone:
+
+```bash
+python scripts/run_checkpoint_validation.py \
+  --config experiments/2026-02-22_1227/config.yaml \
+  --checkpoint experiments/2026-02-22_1227/checkpoints/checkpoint_step001200.pt
+```
+This loads the model and EMA weights, runs the full validation suite (Reconstruction, DINO Swap, CFG Divergence, Text Manipulation), and saves the LPIPS scores and images to the corresponding `validation_outputs/step{N}/` directory within the experiment folder.
+
+### Validation Suite Tests:
+
+#### 1. Reconstruction Test
 - **Goal**: Test model's ability to reconstruct training images
 - **Method**: Use original image's DINO + T5 embeddings as "perfect" conditioning
 - **Metric**: LPIPS (perceptual similarity, lower is better)
