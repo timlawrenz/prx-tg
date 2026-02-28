@@ -178,12 +178,14 @@ def delete_orphaned_npy_files(image_ids: list[str], derived_dir: Path, dry_run: 
     """
     counts = {
         'dinov3': 0,
+        'dinov3_patches': 0,
         'vae_latents': 0,
         't5_hidden': 0
     }
     
     subdirs = {
         'dinov3': derived_dir / 'dinov3',
+        'dinov3_patches': derived_dir / 'dinov3_patches',
         'vae_latents': derived_dir / 'vae_latents',
         't5_hidden': derived_dir / 't5_hidden'
     }
