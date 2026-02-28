@@ -196,7 +196,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--retries", type=int, default=5, help="Retries per page fetch (default: %(default)s)")
     p.add_argument("--raw-dir", default=os.path.join("data", "raw"), help="Raw images directory")
     p.add_argument("--approved-dir", default=os.path.join("data", "approved"), help="Approved symlinks directory")
-    p.add_argument("--no-prune", dest="prune", action="store_false", help="Skip removal of stale symlinks/records/embeddings after scan")
+    p.add_argument("--no-prune", dest="prune", action="store_false", help="Skip removal of stale symlinks/records/embeddings after scan (required with --start-page, --end-page, or --limit)")
     p.set_defaults(prune=True)
     p.add_argument("--derived-dir", default=os.path.join("data", "derived"), help="Derived data directory (for pruning)")
     p.add_argument("--jsonl", default=os.path.join("data", "derived", "approved_image_dataset.jsonl"), help="JSONL dataset path (for pruning)")
@@ -206,8 +206,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
 
-    if args.prune and (args.end_page is not None or args.limit is not None):
-        print("error: pruning requires a full scan; use --no-prune with --end-page or --limit", file=sys.stderr)
+    if args.prune and (args.end_page is not None or args.limit is not None or args.start_page != 1):
+        print("error: pruning requires a full scan; use --no-prune with --end-page, --limit, or --start-page", file=sys.stderr)
         return 2
 
     raw_dir = os.path.abspath(args.raw_dir)
