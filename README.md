@@ -177,6 +177,11 @@ training:
       nesterov: true
       ns_steps: 5
       adjust_lr_fn: match_rms_adamw
+  resolution_schedule:             # Train at lower res first (optional)
+    - until_step: 3000
+      scale: 0.5                   # Half resolution (4× fewer tokens)
+    - until_step: 6000
+      scale: 1.0                   # Full resolution
   repa:
     enabled: true
     weight: 0.5           # REPA loss weight
@@ -209,6 +214,7 @@ sampling:
 7. **REPA (REPresentation Alignment)**: Auxiliary loss aligning transformer hidden states with DINOv3 patch features at the middle block, improving convergence and representation quality (weight=0.5, cosine similarity)
 8. **TREAD (Token Routing)**: Randomly routes 50% of latent tokens past middle blocks (1→depth-2), effectively halving compute for 16 of 18 blocks. Parameter-free — adds zero new weights. Pairs with self-guidance sampling (2 passes instead of 3-pass dual CFG)
 9. **Muon Optimizer**: Hybrid Muon + AdamW — all 2D weight matrices (~237M params) use Muon's Newton-Schulz orthogonalization for geometry-aware updates; non-2D params (convs, biases, ~0.1M) stay on AdamW. Uses `adjust_lr_fn="match_rms_adamw"` so both optimizers share the same LR schedule.
+10. **Resolution Scheduling**: Train at lower resolution first (e.g., 0.5× spatial scale = 4× fewer tokens), then transition to full resolution. Configurable multi-phase schedule with automatic even-dimension enforcement for patch_size=2.
 
 ### Data Augmentation
 
@@ -300,6 +306,7 @@ Quick 4-image generation every 100 steps:
 - ✅ **REPA Alignment**: Auxiliary loss aligns hidden states with DINOv3 teacher features for faster convergence.
 - ✅ **TREAD Token Routing**: Routes 50% of tokens past middle blocks for ~2× throughput, with self-guidance sampling.
 - ✅ **Muon Optimizer**: Hybrid Muon + AdamW for geometry-aware weight updates with Newton-Schulz orthogonalization.
+- ✅ **Resolution Scheduling**: Multi-phase training at lower resolution first for faster convergence.
 - 🚧 In progress: Training on 15k image subset, scaling to 86k.
 
 ### Known Limitations

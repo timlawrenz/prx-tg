@@ -443,6 +443,32 @@ class Trainer:
             for pg in self.optimizer_adam.param_groups:
                 pg['lr'] = lr
     
+    def _update_resolution_schedule(self):
+        """Check and apply resolution scale based on current step.
+        
+        Uses self.resolution_phases (set by ProductionTrainer) to determine
+        the correct scale for the current step. Updates the dataloader's
+        resolution_scale property when the phase changes.
+        """
+        phases = getattr(self, 'resolution_phases', None)
+        if not phases:
+            return
+        
+        # Find the current phase
+        scale = 1.0
+        for phase in phases:
+            if self.step < phase.until_step:
+                scale = phase.scale
+                break
+        
+        current = getattr(self, '_current_resolution_scale', None)
+        if current != scale:
+            if hasattr(self.dataloader, 'resolution_scale'):
+                self.dataloader.resolution_scale = scale
+                self._current_resolution_scale = scale
+                if current is not None:
+                    print(f"\n  Resolution schedule: scale {current} → {scale} at step {self.step}")
+    
     def train_step(self, batch):
         """Execute one training step.
         
@@ -687,6 +713,9 @@ class Trainer:
         accum_loss = 0.0
         
         while self.step < self.total_steps:
+            # Update resolution schedule if configured
+            self._update_resolution_schedule()
+            
             # Get batch
             try:
                 batch = next(data_iter)
@@ -812,6 +841,10 @@ class ProductionTrainer(Trainer):
         
         # TREAD config
         self.tread_config = training.tread if training.tread.enabled else None
+        
+        # Resolution schedule
+        self.resolution_phases = training.get_resolution_phases()
+        self._current_resolution_scale = None  # Will be set on first step
         
         # Gradient accumulation state
         self.accum_steps = 0

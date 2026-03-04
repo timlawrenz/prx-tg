@@ -428,6 +428,32 @@ class BucketAwareDataLoader:
         self.bucket_names = list(bucket_datasets.keys())
         self.bucket_weights = bucket_weights
         self._logged = set()
+        self._resolution_scale = 1.0
+        # Store original (full-res) target sizes per bucket
+        self._base_target_sizes = {
+            name: ds.target_latent_size for name, ds in bucket_datasets.items()
+        }
+    
+    @property
+    def resolution_scale(self):
+        return self._resolution_scale
+    
+    @resolution_scale.setter
+    def resolution_scale(self, scale):
+        """Update resolution scale, adjusting target_latent_size on all bucket datasets."""
+        if scale == self._resolution_scale:
+            return
+        self._resolution_scale = scale
+        for name, ds in self.bucket_datasets.items():
+            base = self._base_target_sizes[name]
+            if isinstance(base, tuple):
+                # Ensure even dims for patch_size=2
+                h = max(2, (int(base[0] * scale) // 2) * 2)
+                w = max(2, (int(base[1] * scale) // 2) * 2)
+                ds.target_latent_size = (h, w)
+            else:
+                ds.target_latent_size = max(2, (int(base * scale) // 2) * 2)
+        self._logged.clear()  # Re-log shapes at new resolution
 
     def __iter__(self):
         iters = {name: iter(ds) for name, ds in self.bucket_datasets.items()}
