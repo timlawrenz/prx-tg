@@ -88,6 +88,15 @@ class REPAConfig:
 
 
 @dataclass
+class PerceptualLossConfig:
+    """Perceptual loss (LPIPS) configuration."""
+    enabled: bool = False
+    lpips_weight: float = 0.1       # PRX article uses 0.1
+    every_n_microsteps: int = 4     # Compute every N micro-steps to amortize VAE decode cost
+    crop_size: int = 32             # Latent crop size (32 → 256px decoded via VAE)
+
+
+@dataclass
 class TrainingConfig:
     """Training loop configuration."""
     total_steps: int = 50000
@@ -104,6 +113,7 @@ class TrainingConfig:
     cfg_dropout: CFGDropoutConfig = field(default_factory=CFGDropoutConfig)
     repa: REPAConfig = field(default_factory=REPAConfig)
     tread: TREADConfig = field(default_factory=TREADConfig)
+    perceptual: PerceptualLossConfig = field(default_factory=PerceptualLossConfig)
     
     timestep_sampling: Literal["uniform", "logit_normal"] = "logit_normal"
     logit_normal_loc: float = 0.0

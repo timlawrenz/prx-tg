@@ -78,6 +78,15 @@ training:
     - until_step: 6000               # Remaining steps at full resolution
       scale: 1.0
 
+  # Perceptual loss (LPIPS) — pixel-space quality signal via VAE decode
+  # Decodes a random crop of predicted latents and computes LPIPS vs ground truth
+  # Computed every N micro-steps to amortize the VAE decode cost
+  perceptual:
+    enabled: false
+    lpips_weight: 0.1                # Loss weight (PRX Part 3 uses 0.1)
+    every_n_microsteps: 4            # Compute every N micro-steps (amortize cost)
+    crop_size: 32                    # Latent crop size (32 → 256px decoded)
+
 data:
   shard_base_dir: "data/shards/new4k"      # Base directory for WebDataset shards
   

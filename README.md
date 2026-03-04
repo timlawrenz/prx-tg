@@ -194,6 +194,11 @@ training:
     route_end: -1          # -1 = depth - 2
     self_guidance: true    # Use self-guidance instead of dual CFG
     guidance_scale: 3.0
+  perceptual:
+    enabled: false         # LPIPS perceptual loss on decoded crops
+    lpips_weight: 0.1      # Loss weight
+    every_n_microsteps: 4  # Compute every N micro-steps
+    crop_size: 32          # Latent crop (32 → 256px decoded)
 
 sampling:
   num_steps: 35
@@ -215,6 +220,7 @@ sampling:
 8. **TREAD (Token Routing)**: Randomly routes 50% of latent tokens past middle blocks (1→depth-2), effectively halving compute for 16 of 18 blocks. Parameter-free — adds zero new weights. Pairs with self-guidance sampling (2 passes instead of 3-pass dual CFG)
 9. **Muon Optimizer**: Hybrid Muon + AdamW — all 2D weight matrices (~237M params) use Muon's Newton-Schulz orthogonalization for geometry-aware updates; non-2D params (convs, biases, ~0.1M) stay on AdamW. Uses `adjust_lr_fn="match_rms_adamw"` so both optimizers share the same LR schedule.
 10. **Resolution Scheduling**: Train at lower resolution first (e.g., 0.5× spatial scale = 4× fewer tokens), then transition to full resolution. Configurable multi-phase schedule with automatic even-dimension enforcement for patch_size=2.
+11. **Perceptual Loss (LPIPS)**: Periodic LPIPS loss on VAE-decoded latent crops. Reconstructs predicted x0 from velocity prediction, decodes a random spatial crop via frozen VAE decoder, and computes perceptual similarity. Computed every N micro-steps to amortize cost (~325 MB overhead).
 
 ### Data Augmentation
 
@@ -272,6 +278,7 @@ This loads the model and EMA weights, runs the full validation suite (Reconstruc
 - **Training**:
   - Loss (flow matching MSE + REPA alignment)
   - REPA loss (cosine alignment with DINOv3 patches)
+  - LPIPS loss (perceptual quality on decoded crops, when enabled)
   - Gradient norm
   - Velocity norm (RMS of predicted velocity vectors, should be ~1.0)
   - Learning rate
@@ -307,6 +314,7 @@ Quick 4-image generation every 100 steps:
 - ✅ **TREAD Token Routing**: Routes 50% of tokens past middle blocks for ~2× throughput, with self-guidance sampling.
 - ✅ **Muon Optimizer**: Hybrid Muon + AdamW for geometry-aware weight updates with Newton-Schulz orthogonalization.
 - ✅ **Resolution Scheduling**: Multi-phase training at lower resolution first for faster convergence.
+- ✅ **Perceptual Loss (LPIPS)**: Pixel-space LPIPS on VAE-decoded latent crops for quality signal beyond MSE.
 - 🚧 In progress: Training on 15k image subset, scaling to 86k.
 
 ### Known Limitations

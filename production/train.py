@@ -12,6 +12,87 @@ import random
 import numpy as np
 
 
+class PerceptualLossModule:
+    """Computes LPIPS perceptual loss on VAE-decoded latent crops.
+    
+    Lazily loads a frozen VAE decoder and LPIPS network. Computes loss on
+    random spatial crops of latents to keep memory usage constant.
+    """
+    
+    def __init__(self, device='cuda'):
+        self.device = device
+        self._vae = None
+        self._lpips_fn = None
+    
+    def _ensure_loaded(self):
+        """Lazily load VAE decoder and LPIPS network on first use."""
+        if self._vae is not None:
+            return
+        
+        from diffusers import AutoencoderKL
+        import lpips
+        
+        vae = AutoencoderKL.from_pretrained(
+            "black-forest-labs/FLUX.1-dev", subfolder="vae",
+            torch_dtype=torch.float16,
+        ).to(self.device)
+        vae.eval()
+        vae.enable_slicing()
+        vae.enable_tiling()
+        # Free encoder (we only need decoder)
+        del vae.encoder
+        for p in vae.parameters():
+            p.requires_grad_(False)
+        self._vae = vae
+        
+        self._lpips_fn = lpips.LPIPS(net='alex').to(self.device)
+        self._lpips_fn.eval()
+        for p in self._lpips_fn.parameters():
+            p.requires_grad_(False)
+    
+    def compute(self, x0, x0_hat, crop_size=32):
+        """Compute LPIPS loss between decoded latent crops.
+        
+        Args:
+            x0: (B, C, H, W) ground truth latents (normalized)
+            x0_hat: (B, C, H, W) predicted latents (with grad from v_pred)
+            crop_size: spatial size of latent crop
+        
+        Returns:
+            lpips_loss: scalar tensor with gradient
+        """
+        self._ensure_loaded()
+        from .data import denormalize_vae_latent
+        
+        B, C, H, W = x0.shape
+        cs = min(crop_size, H, W)
+        
+        # Random crop (same location for x0 and x0_hat)
+        top = random.randint(0, H - cs)
+        left = random.randint(0, W - cs)
+        x0_crop = x0[:, :, top:top+cs, left:left+cs]
+        x0_hat_crop = x0_hat[:, :, top:top+cs, left:left+cs]
+        
+        # Denormalize for VAE decode
+        x0_crop = denormalize_vae_latent(x0_crop)
+        x0_hat_crop = denormalize_vae_latent(x0_hat_crop)
+        
+        # Decode ground truth (no grad needed)
+        with torch.no_grad():
+            pixels_gt = self._vae.decode(x0_crop.half()).sample.float()
+        
+        # Decode prediction (grad flows through x0_hat_crop → v_pred)
+        pixels_pred = self._vae.decode(x0_hat_crop.half()).sample.float()
+        
+        # Clamp to [-1, 1] for LPIPS
+        pixels_gt = pixels_gt.clamp(-1, 1)
+        pixels_pred = pixels_pred.clamp(-1, 1)
+        
+        # LPIPS expects float32
+        loss = self._lpips_fn(pixels_gt, pixels_pred).mean()
+        return loss
+
+
 def logit_normal_sample(size, mean=0.0, std=1.0, device='cpu'):
     """Sample timesteps from logit-normal distribution.
     
@@ -95,7 +176,7 @@ def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="c
     return per_token_loss.mean()
 
 
-def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, return_v_pred=False, repa_config=None, tread_config=None):
+def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0):
     """Compute flow matching loss with mutually exclusive CFG dropout.
     
     CFG dropout uses categorical sampling to ensure exactly one of:
@@ -116,9 +197,12 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
         return_v_pred: bool, if True return (loss, v_pred) for monitoring
         repa_config: optional REPAConfig; when enabled, adds alignment loss
         tread_config: optional TREADConfig; when enabled, activates token routing
+        perceptual_module: optional PerceptualLossModule for LPIPS loss
+        perceptual_config: optional PerceptualLossConfig
+        micro_step: current micro-step (for every-N gating)
     
     Returns:
-        loss: scalar tensor, or (loss, v_pred) if return_v_pred=True
+        loss: scalar tensor, or (loss, v_pred, repa_loss, lpips_loss) if return_v_pred=True
         If repa_config is enabled, the returned loss includes the weighted REPA loss.
     """
     B = x0.shape[0]
@@ -200,8 +284,22 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
         )
         loss = loss + repa_config.weight * repa_loss
     
+    # Perceptual (LPIPS) loss — computed every N micro-steps
+    lpips_loss = None
+    use_perceptual = (
+        perceptual_module is not None
+        and perceptual_config is not None
+        and perceptual_config.enabled
+        and micro_step % perceptual_config.every_n_microsteps == 0
+    )
+    if use_perceptual:
+        # Reconstruct predicted clean latent: x0_hat = zt - t * v_pred
+        x0_hat = zt - t_expanded * v_pred
+        lpips_loss = perceptual_module.compute(x0, x0_hat, perceptual_config.crop_size)
+        loss = loss + perceptual_config.lpips_weight * lpips_loss
+    
     if return_v_pred:
-        return loss, v_pred, repa_loss
+        return loss, v_pred, repa_loss, lpips_loss
     return loss
 
 
@@ -491,11 +589,14 @@ class Trainer:
             dino_patches_mask = dino_patches_mask.to(self.device)
         
         # Compute loss (with velocity prediction for monitoring)
-        loss, v_pred, repa_loss = flow_matching_loss(
+        loss, v_pred, repa_loss, lpips_loss = flow_matching_loss(
             self.model, x0, dino_emb, dino_patches, text_emb, text_mask, self.cfg_probs, 
             dino_patches_mask=dino_patches_mask, return_v_pred=True,
             repa_config=self.repa_config,
             tread_config=self.tread_config,
+            perceptual_module=getattr(self, 'perceptual_module', None),
+            perceptual_config=getattr(self, 'perceptual_config', None),
+            micro_step=getattr(self, 'micro_step', 0),
         )
         
         # Scale loss by accumulation steps
@@ -556,6 +657,10 @@ class Trainer:
         # REPA loss logging
         if repa_loss is not None:
             metrics['repa_loss'] = repa_loss.item()
+        
+        # LPIPS perceptual loss logging
+        if lpips_loss is not None:
+            metrics['lpips_loss'] = lpips_loss.item()
         
         # Every 100 steps, add weight statistics for monitoring parameter evolution
         # Note: self.step gets incremented AFTER train_step returns, so check (self.step + 1)
@@ -846,6 +951,14 @@ class ProductionTrainer(Trainer):
         self.resolution_phases = training.get_resolution_phases()
         self._current_resolution_scale = None  # Will be set on first step
         
+        # Perceptual loss (LPIPS)
+        if training.perceptual.enabled:
+            self.perceptual_module = PerceptualLossModule(device=device)
+            self.perceptual_config = training.perceptual
+        else:
+            self.perceptual_module = None
+            self.perceptual_config = None
+        
         # Gradient accumulation state
         self.accum_steps = 0
         self.accum_loss = 0.0
@@ -913,6 +1026,8 @@ class ProductionTrainer(Trainer):
                 self.writer.add_scalar('train/ema_decay', metrics['ema_decay'], step)
             if 'repa_loss' in metrics:
                 self.writer.add_scalar('train/repa_loss', metrics['repa_loss'], step)
+            if 'lpips_loss' in metrics:
+                self.writer.add_scalar('train/lpips_loss', metrics['lpips_loss'], step)
     
     def __del__(self):
         """Cleanup: close TensorBoard writer."""
