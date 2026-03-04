@@ -121,6 +121,10 @@ def load_vae_decoder(device='cuda'):
         ).to(device)
         vae.eval()
         
+        # Enable slicing and tiling to save memory
+        vae.enable_slicing()
+        vae.enable_tiling()
+        
         return vae
     except Exception as e:
         print(f"Error loading VAE decoder: {e}")
