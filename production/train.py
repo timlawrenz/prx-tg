@@ -33,22 +33,32 @@ def logit_normal_sample(size, mean=0.0, std=1.0, device='cpu'):
     return t
 
 
-def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="cosine"):
+def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="cosine", visible_idx=None):
     """Compute REPA alignment loss between projected hidden states and DINOv3 patches.
     
     Handles size mismatches between latent token grid and DINOv3 patch grid
     by truncating to the shorter sequence (both are raster-order from the
     same aspect ratio, so spatial correspondence is preserved).
     
+    When TREAD routing is active, repa_hidden contains only visible tokens.
+    visible_idx maps them back to spatial positions for correct alignment.
+    
     Args:
         repa_hidden: (B, N_latent, dino_dim) projected hidden states from REPA block
         dino_patches: (B, N_dino, dino_dim) raw DINOv3 patch features (teacher signal)
         dino_patches_mask: (B, N_dino) mask for valid (non-padded) patches, or None
         loss_type: "cosine" or "mse"
+        visible_idx: (N_visible,) indices of visible tokens when TREAD is active, or None
     
     Returns:
         loss: scalar REPA alignment loss
     """
+    # When TREAD is active, index DINOv3 patches to match visible token positions
+    if visible_idx is not None:
+        dino_patches = dino_patches[:, visible_idx]
+        if dino_patches_mask is not None:
+            dino_patches_mask = dino_patches_mask[:, visible_idx]
+    
     N_latent = repa_hidden.shape[1]
     N_dino = dino_patches.shape[1]
     N = min(N_latent, N_dino)
@@ -79,7 +89,7 @@ def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="c
     return per_token_loss.mean()
 
 
-def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, return_v_pred=False, repa_config=None):
+def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, return_v_pred=False, repa_config=None, tread_config=None):
     """Compute flow matching loss with mutually exclusive CFG dropout.
     
     CFG dropout uses categorical sampling to ensure exactly one of:
@@ -99,6 +109,7 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
         dino_patches_mask: (B, num_patches) mask for padding in batched patches
         return_v_pred: bool, if True return (loss, v_pred) for monitoring
         repa_config: optional REPAConfig; when enabled, adds alignment loss
+        tread_config: optional TREADConfig; when enabled, activates token routing
     
     Returns:
         loss: scalar tensor, or (loss, v_pred) if return_v_pred=True
@@ -153,6 +164,9 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     # Determine if we need REPA hidden states
     use_repa = repa_config is not None and repa_config.enabled
     
+    # TREAD: enable routing during training
+    tread_enabled = tread_config is not None and tread_config.enabled
+    
     # Predict velocity (with DINO patches)
     model_output = model(
         zt, t, dino_emb, text_emb, dino_patches, text_mask, dino_patches_mask=dino_patches_mask,
@@ -160,10 +174,11 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
         cfg_drop_dino_cls=drop_dino_cls,
         cfg_drop_dino_patches=drop_dino_patches_mask,
         return_repa_hidden=use_repa,
+        tread_enabled=tread_enabled,
     )
     
     if use_repa:
-        v_pred, repa_hidden = model_output
+        v_pred, repa_hidden, tread_visible_idx = model_output
     else:
         v_pred = model_output
     
@@ -174,7 +189,8 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     repa_loss = None
     if use_repa and repa_hidden is not None:
         repa_loss = compute_repa_loss(
-            repa_hidden, dino_patches, dino_patches_mask, repa_config.loss_type
+            repa_hidden, dino_patches, dino_patches_mask, repa_config.loss_type,
+            visible_idx=tread_visible_idx if tread_enabled else None,
         )
         loss = loss + repa_config.weight * repa_loss
     
@@ -348,6 +364,9 @@ class Trainer:
         # REPA config (set by ProductionTrainer if enabled)
         self.repa_config = None
         
+        # TREAD config (set by ProductionTrainer if enabled)
+        self.tread_config = None
+        
         # Logging
         self.log_file = self.checkpoint_dir.parent / 'training_log.jsonl'
     
@@ -377,6 +396,7 @@ class Trainer:
             self.model, x0, dino_emb, dino_patches, text_emb, text_mask, self.cfg_probs, 
             dino_patches_mask=dino_patches_mask, return_v_pred=True,
             repa_config=self.repa_config,
+            tread_config=self.tread_config,
         )
         
         # Scale loss by accumulation steps
@@ -695,6 +715,9 @@ class ProductionTrainer(Trainer):
         
         # REPA config
         self.repa_config = training.repa if training.repa.enabled else None
+        
+        # TREAD config
+        self.tread_config = training.tread if training.tread.enabled else None
         
         # Gradient accumulation state
         self.accum_steps = 0

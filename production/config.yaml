@@ -43,6 +43,15 @@ training:
     block_index: -1                # Block to align at (-1 = depth // 2)
     loss_type: "cosine"            # "cosine" or "mse"
 
+  # TREAD (Token Routing) — route 50% of tokens past middle blocks for throughput
+  tread:
+    enabled: false
+    routing_probability: 0.5       # Fraction of tokens to route (skip middle blocks)
+    route_start: 1                 # First routed block (0-indexed)
+    route_end: -1                  # Last routed block (-1 = depth - 2)
+    self_guidance: true            # Use self-guidance instead of dual CFG at inference
+    guidance_scale: 3.0            # Self-guidance scale
+
   # Timestep sampling strategy
   timestep_sampling: "logit_normal"  # "uniform" or "logit_normal"
   logit_normal_loc: 0.0              # Mean of logit-normal distribution

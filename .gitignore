@@ -56,3 +56,4 @@ Thumbs.db
 .ipynb_checkpoints/
 *.ipynb
 .latent_stats.json
+experiments/

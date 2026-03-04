@@ -51,6 +51,17 @@ class CFGDropoutConfig:
 
 
 @dataclass
+class TREADConfig:
+    """TREAD (Token Routing for Efficient Architecture-agnostic Diffusion Training) configuration."""
+    enabled: bool = False
+    routing_probability: float = 0.5
+    route_start: int = 1       # First routed block (0-indexed)
+    route_end: int = -1        # Last routed block (-1 means depth - 2)
+    self_guidance: bool = True  # Use self-guidance instead of dual CFG at inference
+    guidance_scale: float = 3.0
+
+
+@dataclass
 class REPAConfig:
     """REPA (REPresentation Alignment) configuration."""
     enabled: bool = False
@@ -75,6 +86,7 @@ class TrainingConfig:
     
     cfg_dropout: CFGDropoutConfig = field(default_factory=CFGDropoutConfig)
     repa: REPAConfig = field(default_factory=REPAConfig)
+    tread: TREADConfig = field(default_factory=TREADConfig)
     
     timestep_sampling: Literal["uniform", "logit_normal"] = "logit_normal"
     logit_normal_loc: float = 0.0

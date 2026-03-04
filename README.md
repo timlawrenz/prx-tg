@@ -176,6 +176,13 @@ training:
     weight: 0.5           # REPA loss weight
     block_index: -1        # -1 = depth // 2 (block 9)
     loss_type: cosine      # Cosine similarity alignment
+  tread:
+    enabled: false         # Token routing for throughput
+    routing_probability: 0.5
+    route_start: 1
+    route_end: -1          # -1 = depth - 2
+    self_guidance: true    # Use self-guidance instead of dual CFG
+    guidance_scale: 3.0
 ```
 
 ### Optimization Techniques
@@ -187,6 +194,7 @@ training:
 5. **Bucket-aware Batching**: Sample from aspect ratio buckets proportionally
 6. **EMA**: Exponential moving average of weights (decay=0.9999) with 500-step warmup
 7. **REPA (REPresentation Alignment)**: Auxiliary loss aligning transformer hidden states with DINOv3 patch features at the middle block, improving convergence and representation quality (weight=0.5, cosine similarity)
+8. **TREAD (Token Routing)**: Randomly routes 50% of latent tokens past middle blocks (1→depth-2), effectively halving compute for 16 of 18 blocks. Parameter-free — adds zero new weights. Pairs with self-guidance sampling (2 passes instead of 3-pass dual CFG)
 
 ### Data Augmentation
 
@@ -276,6 +284,7 @@ Quick 4-image generation every 100 steps:
 - ✅ **Fixed Timestep Scaling**: Anchored flow matching with 1000x scaled temporal embeddings.
 - ✅ **Memory Optimized**: FlashAttention (SDPA) and Gradient Checkpointing enable training at 1024px on 24GB GPUs.
 - ✅ **REPA Alignment**: Auxiliary loss aligns hidden states with DINOv3 teacher features for faster convergence.
+- ✅ **TREAD Token Routing**: Routes 50% of tokens past middle blocks for ~2× throughput, with self-guidance sampling.
 - 🚧 In progress: Training on 15k image subset, scaling to 86k.
 
 ### Known Limitations
