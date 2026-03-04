@@ -315,6 +315,9 @@ def main():
     if res_phases:
         phase_strs = [f"{p.scale}x until step {p.until_step}" for p in res_phases]
         print(f"Resolution schedule: {', '.join(phase_strs)}")
+    if config.training.perceptual.enabled:
+        p = config.training.perceptual
+        print(f"Perceptual loss (LPIPS): weight={p.lpips_weight}, every {p.every_n_microsteps} micro-steps, crop={p.crop_size}")
     
     # Create validation function if enabled
     validate_fn = None

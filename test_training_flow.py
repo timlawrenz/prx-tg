@@ -53,7 +53,7 @@ print("\n" + "="*60)
 print("RUNNING TRAINING STEP (no REPA)")
 print("="*60)
 
-loss, v_pred, repa_loss = flow_matching_loss(
+loss, v_pred, repa_loss, lpips_loss = flow_matching_loss(
     model, x0, dino_emb, dino_patches, text_emb, text_mask,
     cfg_probs, return_v_pred=True
 )
@@ -62,7 +62,9 @@ print(f"\n✓ Forward pass complete")
 print(f"  Loss: {loss.item():.6f}")
 print(f"  v_pred shape: {v_pred.shape}")
 print(f"  repa_loss: {repa_loss}")
+print(f"  lpips_loss: {lpips_loss}")
 assert repa_loss is None, "REPA loss should be None when not enabled"
+assert lpips_loss is None, "LPIPS loss should be None when not enabled"
 
 # Backward
 loss.backward()
@@ -134,7 +136,7 @@ dino_patches_mask = torch.ones(B, num_latent_tokens)
 
 repa_config = REPAConfig(enabled=True, weight=0.5, block_index=repa_block_idx, loss_type="cosine")
 
-loss_repa, v_pred_repa, repa_loss_val = flow_matching_loss(
+loss_repa, v_pred_repa, repa_loss_val, _ = flow_matching_loss(
     model_repa, x0, dino_emb, dino_patches_repa, text_emb, text_mask,
     cfg_probs, dino_patches_mask=dino_patches_mask, return_v_pred=True,
     repa_config=repa_config,
@@ -162,7 +164,7 @@ optimizer_repa.zero_grad()
 dino_patches_mask_partial = torch.ones(B, num_latent_tokens)
 dino_patches_mask_partial[:, num_latent_tokens // 2:] = 0  # mask out half
 
-loss_masked, _, repa_loss_masked = flow_matching_loss(
+loss_masked, _, repa_loss_masked, _ = flow_matching_loss(
     model_repa, x0, dino_emb, dino_patches_repa, text_emb, text_mask,
     cfg_probs, dino_patches_mask=dino_patches_mask_partial, return_v_pred=True,
     repa_config=repa_config,
@@ -178,7 +180,7 @@ fewer_patches = num_latent_tokens - 48  # simulate DINOv3 having fewer patches
 dino_patches_fewer = torch.randn(B, fewer_patches, 1024)
 dino_patches_mask_fewer = torch.ones(B, fewer_patches)
 
-loss_mismatch, _, repa_loss_mismatch = flow_matching_loss(
+loss_mismatch, _, repa_loss_mismatch, _ = flow_matching_loss(
     model_repa, x0, dino_emb, dino_patches_fewer, text_emb, text_mask,
     cfg_probs, dino_patches_mask=dino_patches_mask_fewer, return_v_pred=True,
     repa_config=repa_config,
@@ -275,7 +277,7 @@ tread_config = TREADConfig(enabled=True, routing_probability=0.5,
                            route_start=tread_route_start, route_end=tread_route_end)
 repa_config = REPAConfig(enabled=True, weight=0.5, block_index=6, loss_type="cosine")
 
-loss_tr, v_pred_tr2, repa_loss_tr = flow_matching_loss(
+loss_tr, v_pred_tr2, repa_loss_tr, _ = flow_matching_loss(
     model_tread_repa, x0, dino_emb, dino_patches_repa, text_emb, text_mask,
     cfg_probs, dino_patches_mask=dino_patches_mask, return_v_pred=True,
     repa_config=repa_config, tread_config=tread_config,
@@ -551,6 +553,63 @@ trainer4 = Trainer(
 trainer4.resolution_phases = []
 trainer4._update_resolution_schedule()  # Should not error
 print(f"✓ Empty resolution schedule is a no-op")
+
+# ==============================================================
+# PERCEPTUAL LOSS TESTS
+# ==============================================================
+print("\n" + "="*60)
+print("TESTING PERCEPTUAL LOSS (LPIPS)")
+print("="*60)
+
+from production.config_loader import PerceptualLossConfig
+from production.train import PerceptualLossModule
+
+# Test 1: Config dataclass defaults
+pcfg = PerceptualLossConfig()
+assert pcfg.enabled == False
+assert pcfg.lpips_weight == 0.1
+assert pcfg.every_n_microsteps == 4
+assert pcfg.crop_size == 32
+print(f"✓ PerceptualLossConfig defaults correct")
+
+# Test 2: every_n gating in flow_matching_loss
+# With perceptual disabled, lpips_loss should always be None
+pcfg_disabled = PerceptualLossConfig(enabled=False)
+_, _, _, lpips_val = flow_matching_loss(
+    model, x0, dino_emb, dino_patches, text_emb, text_mask,
+    cfg_probs, return_v_pred=True,
+    perceptual_config=pcfg_disabled, micro_step=0,
+)
+assert lpips_val is None, "LPIPS loss should be None when disabled"
+print(f"✓ Perceptual loss returns None when disabled")
+
+# Test 3: every_n gating — no module provided
+pcfg_on = PerceptualLossConfig(enabled=True, every_n_microsteps=4)
+_, _, _, lpips_val2 = flow_matching_loss(
+    model, x0, dino_emb, dino_patches, text_emb, text_mask,
+    cfg_probs, return_v_pred=True,
+    perceptual_config=pcfg_on, perceptual_module=None, micro_step=0,
+)
+assert lpips_val2 is None, "LPIPS loss should be None when module is None"
+print(f"✓ Perceptual loss returns None when module is None")
+
+# Test 4: Module creation (lazy — doesn't load models until compute())
+plm = PerceptualLossModule(device='cpu')
+assert plm._vae is None, "VAE should not be loaded at construction"
+assert plm._lpips_fn is None, "LPIPS should not be loaded at construction"
+print(f"✓ PerceptualLossModule is lazy (no models loaded at init)")
+
+# Test 5: x0_hat reconstruction math
+# Verify x0_hat = zt - t * v_pred recovers x0 when v_pred = v_target
+B_test = 2
+x0_test = torch.randn(B_test, 16, 8, 8)
+z1_test = torch.randn(B_test, 16, 8, 8)
+t_test = torch.tensor([0.3, 0.7]).view(B_test, 1, 1, 1)
+zt_test = (1 - t_test) * x0_test + t_test * z1_test
+v_target_test = z1_test - x0_test
+x0_hat_test = zt_test - t_test * v_target_test
+assert torch.allclose(x0_hat_test, x0_test, atol=1e-5), "x0_hat should match x0 when v_pred is perfect"
+print(f"✓ x0_hat reconstruction: zt - t*v_target ≈ x0 (max diff: {(x0_hat_test - x0_test).abs().max():.2e})")
 
 print("\n" + "="*60)
 print("ALL TESTS PASSED ✓")
