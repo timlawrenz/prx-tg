@@ -45,7 +45,7 @@ training:
 
   # TREAD (Token Routing) — route 50% of tokens past middle blocks for throughput
   tread:
-    enabled: false
+    enabled: true
     routing_probability: 0.5       # Fraction of tokens to route (skip middle blocks)
     route_start: 1                 # First routed block (0-indexed)
     route_end: -1                  # Last routed block (-1 = depth - 2)
