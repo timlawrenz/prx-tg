@@ -268,6 +268,17 @@ def main():
         repa_block_idx = config.model.depth // 2 if idx < 0 else idx
         print(f"REPA enabled: alignment at block {repa_block_idx}, weight {config.training.repa.weight}")
     
+    # Resolve TREAD route range
+    tread_route_start = None
+    tread_route_end = None
+    tread_routing_prob = 0.5
+    if config.training.tread.enabled:
+        tread_route_start = config.training.tread.route_start
+        end = config.training.tread.route_end
+        tread_route_end = config.model.depth - 2 if end < 0 else end
+        tread_routing_prob = config.training.tread.routing_probability
+        print(f"TREAD enabled: routing {tread_routing_prob*100:.0f}% tokens past blocks {tread_route_start}-{tread_route_end}")
+    
     model = NanoDiT(
         input_size=config.model.input_size,
         patch_size=config.model.patch_size,
@@ -278,6 +289,9 @@ def main():
         mlp_ratio=config.model.mlp_ratio,
         use_gradient_checkpointing=config.training.gradient_checkpointing,
         repa_block_idx=repa_block_idx,
+        tread_route_start=tread_route_start,
+        tread_route_end=tread_route_end,
+        tread_routing_prob=tread_routing_prob,
     ).to(device)
     
     total_params = sum(p.numel() for p in model.parameters())

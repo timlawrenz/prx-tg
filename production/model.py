@@ -292,6 +292,9 @@ class NanoDiT(nn.Module):
         text_dim=1024,
         use_gradient_checkpointing=False,
         repa_block_idx=None,
+        tread_route_start=None,
+        tread_route_end=None,
+        tread_routing_prob=0.5,
     ):
         super().__init__()
         self.input_size = input_size  # For backward compatibility, but not used
@@ -301,6 +304,10 @@ class NanoDiT(nn.Module):
         self.hidden_size = hidden_size
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.repa_block_idx = repa_block_idx
+        self.tread_route_start = tread_route_start
+        self.tread_route_end = tread_route_end
+        self.tread_routing_prob = tread_routing_prob
+        self.tread_enabled = tread_route_start is not None and tread_route_end is not None
         
         # Patch embedding
         self.x_embedder = PatchEmbed(patch_size, in_channels, hidden_size)
@@ -400,7 +407,7 @@ class NanoDiT(nn.Module):
 
     def forward(self, x, t, dino_emb, text_emb, dino_patches=None, text_mask=None, dino_patches_mask=None,
                 cfg_drop_text=None, cfg_drop_dino_cls=None, cfg_drop_dino_patches=None,
-                return_repa_hidden=False):
+                return_repa_hidden=False, tread_enabled=None):
         """
         Args:
             x: (B, C, H, W) noisy latents (H and W can vary for different aspect ratios)
@@ -413,12 +420,14 @@ class NanoDiT(nn.Module):
             cfg_drop_text: (B,) bool mask for dropping text
             cfg_drop_dino_cls: (B,) bool mask for dropping DINO CLS
             cfg_drop_dino_patches: (B,) bool mask for dropping DINO patches
-            return_repa_hidden: if True, return (v_pred, repa_hidden) tuple
+            return_repa_hidden: if True, return (v_pred, repa_hidden, tread_visible_idx) tuple
+            tread_enabled: override for TREAD routing (None = use self.training when configured)
         
         Returns:
             v: (B, C, H, W) predicted velocity
             -- or if return_repa_hidden=True --
-            (v, repa_hidden): tuple of velocity and projected hidden states at REPA block
+            (v, repa_hidden, tread_visible_idx): tuple of velocity, projected hidden states,
+            and visible token indices (None when TREAD is inactive)
         """
         B, C, H, W = x.shape
         
@@ -473,12 +482,54 @@ class NanoDiT(nn.Module):
         text_cond = self.text_proj(text_emb)  # (B, seq_len, hidden_size)
         patches_cond = self.dino_patch_proj(dino_patches)  # (B, num_patches, hidden_size)
         
-        # Transformer blocks (with concatenated cross-attention)
+        # Determine if TREAD routing is active
+        use_tread = self.tread_enabled and (tread_enabled if tread_enabled is not None else self.training)
+        
+        # Transformer blocks with optional TREAD routing
         repa_hidden = None
-        for i, block in enumerate(self.blocks):
-            x = block(x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask)
-            if return_repa_hidden and i == self.repa_block_idx:
-                repa_hidden = self.repa_proj(x)  # (B, N, dino_patch_dim)
+        tread_visible_idx = None
+        
+        if use_tread:
+            N = x.shape[1]
+            N_visible = N - int(N * self.tread_routing_prob)
+            
+            # Random permutation to split tokens
+            perm = torch.randperm(N, device=x.device)
+            visible_idx = perm[:N_visible].sort().values
+            routed_idx = perm[N_visible:].sort().values
+            tread_visible_idx = visible_idx
+            
+            # Phase 1: All tokens through initial blocks
+            for i in range(self.tread_route_start):
+                x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask)
+            
+            # Stash routed tokens, keep only visible
+            routed_tokens = x[:, routed_idx]
+            x = x[:, visible_idx]
+            
+            # Phase 2: Visible tokens only through middle blocks
+            for i in range(self.tread_route_start, self.tread_route_end + 1):
+                x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask)
+                if return_repa_hidden and i == self.repa_block_idx:
+                    repa_hidden = self.repa_proj(x)  # (B, N_visible, dino_patch_dim)
+            
+            # Scatter: merge visible and routed tokens back
+            full_x = torch.empty(x.shape[0], N, x.shape[2], device=x.device, dtype=x.dtype)
+            full_x[:, visible_idx] = x
+            full_x[:, routed_idx] = routed_tokens
+            x = full_x
+            
+            # Phase 3: All tokens through final blocks
+            for i in range(self.tread_route_end + 1, len(self.blocks)):
+                x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask)
+                if return_repa_hidden and i == self.repa_block_idx:
+                    repa_hidden = self.repa_proj(x)
+        else:
+            # Standard path: all tokens through all blocks
+            for i, block in enumerate(self.blocks):
+                x = block(x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask)
+                if return_repa_hidden and i == self.repa_block_idx:
+                    repa_hidden = self.repa_proj(x)  # (B, N, dino_patch_dim)
         
         # Output projection
         x = self.final_norm(x)
@@ -489,7 +540,7 @@ class NanoDiT(nn.Module):
         x = x + self.output_conv(x)
         
         if return_repa_hidden:
-            return x, repa_hidden
+            return x, repa_hidden, tread_visible_idx
         return x
 
 

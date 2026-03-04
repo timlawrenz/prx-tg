@@ -31,8 +31,10 @@ class EulerSampler:
         device='cuda',
         text_scale=3.0,
         dino_scale=2.0,
+        self_guidance=False,
+        guidance_scale=3.0,
     ):
-        """Sample from model using Euler integration with dual CFG.
+        """Sample from model using Euler integration with dual CFG or self-guidance.
         
         Rectified flow sampling integrates the learned velocity field backward in time:
         - Start at t=1 (pure noise z1)
@@ -48,8 +50,10 @@ class EulerSampler:
             text_emb: (B, 500, 1024) T5 hidden states
             text_mask: (B, 500) T5 attention mask
             device: torch device
-            text_scale: CFG scale for text conditioning
-            dino_scale: CFG scale for DINO conditioning
+            text_scale: CFG scale for text conditioning (dual CFG mode)
+            dino_scale: CFG scale for DINO conditioning (dual CFG mode)
+            self_guidance: if True, use TREAD self-guidance instead of dual CFG
+            guidance_scale: self-guidance scale (self-guidance mode only)
         
         Returns:
             latents: (B, C, H, W) sampled latents
@@ -68,34 +72,50 @@ class EulerSampler:
             
             t_batch = torch.full((B,), t_curr, device=device)
             
-            # Three forward passes for dual CFG
-            # 1. Unconditional (all dropped)
-            v_uncond = model(
-                zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
-                cfg_drop_text=torch.ones(B, dtype=torch.bool, device=device),
-                cfg_drop_dino_cls=torch.ones(B, dtype=torch.bool, device=device),
-                cfg_drop_dino_patches=torch.ones(B, dtype=torch.bool, device=device),
-            )
-            
-            # 2. Text-only (DINO CLS and patches dropped)
-            v_text = model(
-                zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
-                cfg_drop_text=torch.zeros(B, dtype=torch.bool, device=device),
-                cfg_drop_dino_cls=torch.ones(B, dtype=torch.bool, device=device),
-                cfg_drop_dino_patches=torch.ones(B, dtype=torch.bool, device=device),
-            )
-            
-            # 3. DINO-only (text dropped, DINO CLS and patches kept)
-            v_dino = model(
-                zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
-                cfg_drop_text=torch.ones(B, dtype=torch.bool, device=device),
-                cfg_drop_dino_cls=torch.zeros(B, dtype=torch.bool, device=device),
-                cfg_drop_dino_patches=torch.zeros(B, dtype=torch.bool, device=device),
-            )
-            
-            # Dual CFG combination
-            # v = v_uncond + text_scale * (v_text - v_uncond) + dino_scale * (v_dino - v_uncond)
-            v_pred = v_uncond + text_scale * (v_text - v_uncond) + dino_scale * (v_dino - v_uncond)
+            if self_guidance:
+                # Self-guidance: 2 passes (dense vs routed conditional)
+                # Pass 1: Dense (all tokens, conditional, no routing)
+                v_dense = model(
+                    zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
+                    tread_enabled=False,
+                )
+                
+                # Pass 2: Routed (50% tokens, conditional, with routing)
+                v_routed = model(
+                    zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
+                    tread_enabled=True,
+                )
+                
+                # Self-guidance combination
+                v_pred = v_routed + guidance_scale * (v_dense - v_routed)
+            else:
+                # Dual CFG: 3 passes (unconditional, text-only, DINO-only)
+                # 1. Unconditional (all dropped)
+                v_uncond = model(
+                    zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
+                    cfg_drop_text=torch.ones(B, dtype=torch.bool, device=device),
+                    cfg_drop_dino_cls=torch.ones(B, dtype=torch.bool, device=device),
+                    cfg_drop_dino_patches=torch.ones(B, dtype=torch.bool, device=device),
+                )
+                
+                # 2. Text-only (DINO CLS and patches dropped)
+                v_text = model(
+                    zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
+                    cfg_drop_text=torch.zeros(B, dtype=torch.bool, device=device),
+                    cfg_drop_dino_cls=torch.ones(B, dtype=torch.bool, device=device),
+                    cfg_drop_dino_patches=torch.ones(B, dtype=torch.bool, device=device),
+                )
+                
+                # 3. DINO-only (text dropped, DINO CLS and patches kept)
+                v_dino = model(
+                    zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
+                    cfg_drop_text=torch.ones(B, dtype=torch.bool, device=device),
+                    cfg_drop_dino_cls=torch.zeros(B, dtype=torch.bool, device=device),
+                    cfg_drop_dino_patches=torch.zeros(B, dtype=torch.bool, device=device),
+                )
+                
+                # Dual CFG combination
+                v_pred = v_uncond + text_scale * (v_text - v_uncond) + dino_scale * (v_dino - v_uncond)
             
             # Euler integration: z_{t+dt} = z_t + v * dt
             # dt is negative, v points toward noise, so we move toward data

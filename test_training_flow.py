@@ -191,5 +191,116 @@ print(f"  REPA loss: {repa_loss_mismatch.item():.6f}")
 assert repa_loss_mismatch.item() > 0, "REPA loss should work with mismatched sizes"
 
 print("\n" + "="*60)
+print("TESTING TREAD")
+print("="*60)
+
+from production.config_loader import TREADConfig
+
+# Create model with TREAD routing
+tread_route_start = 1
+tread_route_end = 10  # depth - 2 for 12-layer model
+model_tread = NanoDiT(
+    input_size=64,
+    patch_size=2,
+    in_channels=16,
+    hidden_size=384,
+    depth=12,
+    num_heads=6,
+    mlp_ratio=4.0,
+    use_gradient_checkpointing=True,
+    tread_route_start=tread_route_start,
+    tread_route_end=tread_route_end,
+    tread_routing_prob=0.5,
+)
+
+print(f"\n✓ TREAD model created (routing blocks {tread_route_start}-{tread_route_end})")
+print(f"  Total params: {sum(p.numel() for p in model_tread.parameters())/1e6:.1f}M")
+assert model_tread.tread_enabled, "TREAD should be enabled"
+
+# Test forward with routing (training mode)
+model_tread.train()
+optimizer_tread = torch.optim.AdamW(model_tread.parameters(), lr=3e-4)
+optimizer_tread.zero_grad()
+
+v_pred_tread = model_tread(x0, torch.rand(B), dino_emb, text_emb, dino_patches_repa, text_mask,
+                           dino_patches_mask=dino_patches_mask, tread_enabled=True)
+print(f"\n✓ TREAD forward pass (routed)")
+print(f"  v_pred shape: {v_pred_tread.shape}")
+assert v_pred_tread.shape == x0.shape, f"Output shape should match input: {v_pred_tread.shape} vs {x0.shape}"
+
+# Test forward WITHOUT routing (eval mode / dense)
+v_pred_dense = model_tread(x0, torch.rand(B), dino_emb, text_emb, dino_patches_repa, text_mask,
+                           dino_patches_mask=dino_patches_mask, tread_enabled=False)
+print(f"✓ TREAD forward pass (dense)")
+print(f"  v_pred shape: {v_pred_dense.shape}")
+assert v_pred_dense.shape == x0.shape, "Dense output shape should match input"
+
+# Test TREAD + REPA interaction
+model_tread_repa = NanoDiT(
+    input_size=64,
+    patch_size=2,
+    in_channels=16,
+    hidden_size=384,
+    depth=12,
+    num_heads=6,
+    mlp_ratio=4.0,
+    use_gradient_checkpointing=True,
+    repa_block_idx=6,
+    tread_route_start=tread_route_start,
+    tread_route_end=tread_route_end,
+    tread_routing_prob=0.5,
+)
+
+model_tread_repa.train()
+v_pred_tr, repa_hidden_tr, visible_idx_tr = model_tread_repa(
+    x0, torch.rand(B), dino_emb, text_emb, dino_patches_repa, text_mask,
+    dino_patches_mask=dino_patches_mask, return_repa_hidden=True, tread_enabled=True,
+)
+
+num_latent_tokens = (64 // 2) * (64 // 2)  # 1024
+N_visible = num_latent_tokens - int(num_latent_tokens * 0.5)
+
+print(f"\n✓ TREAD + REPA forward pass")
+print(f"  v_pred shape: {v_pred_tr.shape}")
+print(f"  repa_hidden shape: {repa_hidden_tr.shape} (expected ~{N_visible} visible tokens)")
+print(f"  visible_idx shape: {visible_idx_tr.shape}")
+assert repa_hidden_tr.shape[1] == N_visible, f"REPA hidden should have {N_visible} visible tokens, got {repa_hidden_tr.shape[1]}"
+assert visible_idx_tr.shape[0] == N_visible, f"visible_idx should have {N_visible} entries"
+
+# Test TREAD + REPA loss computation
+optimizer_tr = torch.optim.AdamW(model_tread_repa.parameters(), lr=3e-4)
+optimizer_tr.zero_grad()
+
+tread_config = TREADConfig(enabled=True, routing_probability=0.5,
+                           route_start=tread_route_start, route_end=tread_route_end)
+repa_config = REPAConfig(enabled=True, weight=0.5, block_index=6, loss_type="cosine")
+
+loss_tr, v_pred_tr2, repa_loss_tr = flow_matching_loss(
+    model_tread_repa, x0, dino_emb, dino_patches_repa, text_emb, text_mask,
+    cfg_probs, dino_patches_mask=dino_patches_mask, return_v_pred=True,
+    repa_config=repa_config, tread_config=tread_config,
+)
+
+print(f"\n✓ TREAD + REPA flow_matching_loss")
+print(f"  Total loss: {loss_tr.item():.6f}")
+print(f"  REPA loss: {repa_loss_tr.item():.6f}")
+assert repa_loss_tr.item() > 0, "REPA loss should be positive with TREAD"
+
+# Backward pass
+loss_tr.backward()
+print(f"✓ TREAD + REPA backward pass complete")
+
+# Check gradients flow to all blocks
+grad_norms = []
+for i, block in enumerate(model_tread_repa.blocks):
+    block_grad = sum(p.grad.norm().item() for p in block.parameters() if p.grad is not None)
+    grad_norms.append(block_grad)
+print(f"\n  Block gradient norms (should all be > 0):")
+for i, gn in enumerate(grad_norms):
+    status = "✓" if gn > 0 else "✗"
+    print(f"    Block {i}: {gn:.6f} {status}")
+assert all(gn > 0 for gn in grad_norms), "All blocks should receive gradients"
+
+print("\n" + "="*60)
 print("ALL TESTS PASSED ✓")
 print("="*60)
