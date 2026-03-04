@@ -36,15 +36,28 @@ def logit_normal_sample(size, mean=0.0, std=1.0, device='cpu'):
 def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="cosine"):
     """Compute REPA alignment loss between projected hidden states and DINOv3 patches.
     
+    Handles size mismatches between latent token grid and DINOv3 patch grid
+    by truncating to the shorter sequence (both are raster-order from the
+    same aspect ratio, so spatial correspondence is preserved).
+    
     Args:
-        repa_hidden: (B, N, dino_dim) projected hidden states from REPA block
-        dino_patches: (B, N, dino_dim) raw DINOv3 patch features (teacher signal)
-        dino_patches_mask: (B, N) mask for valid (non-padded) patches, or None
+        repa_hidden: (B, N_latent, dino_dim) projected hidden states from REPA block
+        dino_patches: (B, N_dino, dino_dim) raw DINOv3 patch features (teacher signal)
+        dino_patches_mask: (B, N_dino) mask for valid (non-padded) patches, or None
         loss_type: "cosine" or "mse"
     
     Returns:
         loss: scalar REPA alignment loss
     """
+    N_latent = repa_hidden.shape[1]
+    N_dino = dino_patches.shape[1]
+    N = min(N_latent, N_dino)
+    
+    repa_hidden = repa_hidden[:, :N]
+    dino_patches = dino_patches[:, :N]
+    if dino_patches_mask is not None:
+        dino_patches_mask = dino_patches_mask[:, :N]
+    
     if loss_type == "cosine":
         # Normalize for cosine similarity
         h_norm = F.normalize(repa_hidden, dim=-1)

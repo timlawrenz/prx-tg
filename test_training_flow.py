@@ -172,6 +172,24 @@ print(f"\n✓ REPA with partial mask:")
 print(f"  Total loss: {loss_masked.item():.6f}")
 print(f"  REPA loss (half masked): {repa_loss_masked.item():.6f}")
 
+# Test with mismatched sizes (DINOv3 patches fewer than latent tokens)
+optimizer_repa.zero_grad()
+fewer_patches = num_latent_tokens - 48  # simulate DINOv3 having fewer patches
+dino_patches_fewer = torch.randn(B, fewer_patches, 1024)
+dino_patches_mask_fewer = torch.ones(B, fewer_patches)
+
+loss_mismatch, _, repa_loss_mismatch = flow_matching_loss(
+    model_repa, x0, dino_emb, dino_patches_fewer, text_emb, text_mask,
+    cfg_probs, dino_patches_mask=dino_patches_mask_fewer, return_v_pred=True,
+    repa_config=repa_config,
+)
+loss_mismatch.backward()
+
+print(f"\n✓ REPA with size mismatch ({num_latent_tokens} latent vs {fewer_patches} dino):")
+print(f"  Total loss: {loss_mismatch.item():.6f}")
+print(f"  REPA loss: {repa_loss_mismatch.item():.6f}")
+assert repa_loss_mismatch.item() > 0, "REPA loss should work with mismatched sizes"
+
 print("\n" + "="*60)
 print("ALL TESTS PASSED ✓")
 print("="*60)
