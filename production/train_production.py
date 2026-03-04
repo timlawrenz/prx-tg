@@ -260,6 +260,14 @@ def main():
     
     # Create model
     print("Creating model...")
+    
+    # Resolve REPA block index
+    repa_block_idx = None
+    if config.training.repa.enabled:
+        idx = config.training.repa.block_index
+        repa_block_idx = config.model.depth // 2 if idx < 0 else idx
+        print(f"REPA enabled: alignment at block {repa_block_idx}, weight {config.training.repa.weight}")
+    
     model = NanoDiT(
         input_size=config.model.input_size,
         patch_size=config.model.patch_size,
@@ -269,6 +277,7 @@ def main():
         num_heads=config.model.num_heads,
         mlp_ratio=config.model.mlp_ratio,
         use_gradient_checkpointing=config.training.gradient_checkpointing,
+        repa_block_idx=repa_block_idx,
     ).to(device)
     
     total_params = sum(p.numel() for p in model.parameters())

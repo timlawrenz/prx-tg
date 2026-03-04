@@ -291,6 +291,7 @@ class NanoDiT(nn.Module):
         dino_patch_dim=1024,
         text_dim=1024,
         use_gradient_checkpointing=False,
+        repa_block_idx=None,
     ):
         super().__init__()
         self.input_size = input_size  # For backward compatibility, but not used
@@ -299,6 +300,7 @@ class NanoDiT(nn.Module):
         self.num_heads = num_heads
         self.hidden_size = hidden_size
         self.use_gradient_checkpointing = use_gradient_checkpointing
+        self.repa_block_idx = repa_block_idx
         
         # Patch embedding
         self.x_embedder = PatchEmbed(patch_size, in_channels, hidden_size)
@@ -319,6 +321,10 @@ class NanoDiT(nn.Module):
             DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, use_checkpoint=use_gradient_checkpointing)
             for _ in range(depth)
         ])
+        
+        # REPA projection (projects hidden states to DINOv3 patch feature space)
+        if repa_block_idx is not None:
+            self.repa_proj = nn.Linear(hidden_size, dino_patch_dim, bias=False)
         
         # Output layers (keep bias for final projection)
         self.final_norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
@@ -370,6 +376,10 @@ class NanoDiT(nn.Module):
         # Zero-init output conv for training stability (residual starts at zero)
         nn.init.zeros_(self.output_conv.weight)
         nn.init.zeros_(self.output_conv.bias)
+        
+        # Xavier-init REPA projection if present
+        if self.repa_block_idx is not None:
+            nn.init.xavier_uniform_(self.repa_proj.weight)
 
     def unpatchify(self, x, h, w):
         """Convert patch tokens back to spatial latents.
@@ -389,7 +399,8 @@ class NanoDiT(nn.Module):
         return latents
 
     def forward(self, x, t, dino_emb, text_emb, dino_patches=None, text_mask=None, dino_patches_mask=None,
-                cfg_drop_text=None, cfg_drop_dino_cls=None, cfg_drop_dino_patches=None):
+                cfg_drop_text=None, cfg_drop_dino_cls=None, cfg_drop_dino_patches=None,
+                return_repa_hidden=False):
         """
         Args:
             x: (B, C, H, W) noisy latents (H and W can vary for different aspect ratios)
@@ -402,9 +413,12 @@ class NanoDiT(nn.Module):
             cfg_drop_text: (B,) bool mask for dropping text
             cfg_drop_dino_cls: (B,) bool mask for dropping DINO CLS
             cfg_drop_dino_patches: (B,) bool mask for dropping DINO patches
+            return_repa_hidden: if True, return (v_pred, repa_hidden) tuple
         
         Returns:
             v: (B, C, H, W) predicted velocity
+            -- or if return_repa_hidden=True --
+            (v, repa_hidden): tuple of velocity and projected hidden states at REPA block
         """
         B, C, H, W = x.shape
         
@@ -460,8 +474,11 @@ class NanoDiT(nn.Module):
         patches_cond = self.dino_patch_proj(dino_patches)  # (B, num_patches, hidden_size)
         
         # Transformer blocks (with concatenated cross-attention)
-        for block in self.blocks:
+        repa_hidden = None
+        for i, block in enumerate(self.blocks):
             x = block(x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask)
+            if return_repa_hidden and i == self.repa_block_idx:
+                repa_hidden = self.repa_proj(x)  # (B, N, dino_patch_dim)
         
         # Output projection
         x = self.final_norm(x)
@@ -471,6 +488,8 @@ class NanoDiT(nn.Module):
         # Smooth patch boundaries with residual connection
         x = x + self.output_conv(x)
         
+        if return_repa_hidden:
+            return x, repa_hidden
         return x
 
 

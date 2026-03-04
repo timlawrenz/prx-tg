@@ -33,7 +33,40 @@ def logit_normal_sample(size, mean=0.0, std=1.0, device='cpu'):
     return t
 
 
-def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, return_v_pred=False):
+def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="cosine"):
+    """Compute REPA alignment loss between projected hidden states and DINOv3 patches.
+    
+    Args:
+        repa_hidden: (B, N, dino_dim) projected hidden states from REPA block
+        dino_patches: (B, N, dino_dim) raw DINOv3 patch features (teacher signal)
+        dino_patches_mask: (B, N) mask for valid (non-padded) patches, or None
+        loss_type: "cosine" or "mse"
+    
+    Returns:
+        loss: scalar REPA alignment loss
+    """
+    if loss_type == "cosine":
+        # Normalize for cosine similarity
+        h_norm = F.normalize(repa_hidden, dim=-1)
+        t_norm = F.normalize(dino_patches, dim=-1)
+        # Per-token cosine similarity: 1 = perfect alignment
+        cos_sim = (h_norm * t_norm).sum(dim=-1)  # (B, N)
+        per_token_loss = 1.0 - cos_sim
+    else:
+        per_token_loss = F.mse_loss(repa_hidden, dino_patches, reduction='none').mean(dim=-1)  # (B, N)
+    
+    if dino_patches_mask is not None:
+        # Zero out loss for padded tokens and normalize by valid count
+        per_token_loss = per_token_loss * dino_patches_mask.float()
+        num_valid = dino_patches_mask.float().sum()
+        if num_valid > 0:
+            return per_token_loss.sum() / num_valid
+        return per_token_loss.sum() * 0.0  # all padded — return zero with grad
+    
+    return per_token_loss.mean()
+
+
+def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, return_v_pred=False, repa_config=None):
     """Compute flow matching loss with mutually exclusive CFG dropout.
     
     CFG dropout uses categorical sampling to ensure exactly one of:
@@ -52,9 +85,11 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
         cfg_probs: dict with p_drop_both, p_drop_text, p_drop_dino
         dino_patches_mask: (B, num_patches) mask for padding in batched patches
         return_v_pred: bool, if True return (loss, v_pred) for monitoring
+        repa_config: optional REPAConfig; when enabled, adds alignment loss
     
     Returns:
         loss: scalar tensor, or (loss, v_pred) if return_v_pred=True
+        If repa_config is enabled, the returned loss includes the weighted REPA loss.
     """
     B = x0.shape[0]
     device = x0.device
@@ -100,21 +135,38 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     drop_dino_cls = drop_both | drop_dino | drop_text_and_cls
     
     # We want to drop DINO patches when: drop_both OR drop_dino OR drop_text_and_patches
-    drop_dino_patches = drop_both | drop_dino | drop_text_and_patches
+    drop_dino_patches_mask = drop_both | drop_dino | drop_text_and_patches
+    
+    # Determine if we need REPA hidden states
+    use_repa = repa_config is not None and repa_config.enabled
     
     # Predict velocity (with DINO patches)
-    v_pred = model(
+    model_output = model(
         zt, t, dino_emb, text_emb, dino_patches, text_mask, dino_patches_mask=dino_patches_mask,
         cfg_drop_text=drop_text,
         cfg_drop_dino_cls=drop_dino_cls,
-        cfg_drop_dino_patches=drop_dino_patches,
+        cfg_drop_dino_patches=drop_dino_patches_mask,
+        return_repa_hidden=use_repa,
     )
+    
+    if use_repa:
+        v_pred, repa_hidden = model_output
+    else:
+        v_pred = model_output
     
     # MSE loss
     loss = F.mse_loss(v_pred, v_target)
     
+    # REPA alignment loss
+    repa_loss = None
+    if use_repa and repa_hidden is not None:
+        repa_loss = compute_repa_loss(
+            repa_hidden, dino_patches, dino_patches_mask, repa_config.loss_type
+        )
+        loss = loss + repa_config.weight * repa_loss
+    
     if return_v_pred:
-        return loss, v_pred
+        return loss, v_pred, repa_loss
     return loss
 
 
@@ -280,6 +332,9 @@ class Trainer:
         self.step = 0
         self.epoch = 0
         
+        # REPA config (set by ProductionTrainer if enabled)
+        self.repa_config = None
+        
         # Logging
         self.log_file = self.checkpoint_dir.parent / 'training_log.jsonl'
     
@@ -305,9 +360,10 @@ class Trainer:
             dino_patches_mask = dino_patches_mask.to(self.device)
         
         # Compute loss (with velocity prediction for monitoring)
-        loss, v_pred = flow_matching_loss(
+        loss, v_pred, repa_loss = flow_matching_loss(
             self.model, x0, dino_emb, dino_patches, text_emb, text_mask, self.cfg_probs, 
-            dino_patches_mask=dino_patches_mask, return_v_pred=True
+            dino_patches_mask=dino_patches_mask, return_v_pred=True,
+            repa_config=self.repa_config,
         )
         
         # Scale loss by accumulation steps
@@ -366,6 +422,10 @@ class Trainer:
         # Add per-layer gradient norms
         for layer_name, grad_norm_val in layer_grad_norms.items():
             metrics[f'grad_norm/{layer_name}'] = grad_norm_val
+        
+        # REPA loss logging
+        if repa_loss is not None:
+            metrics['repa_loss'] = repa_loss.item()
         
         # Every 100 steps, add weight statistics for monitoring parameter evolution
         # Note: self.step gets incremented AFTER train_step returns, so check (self.step + 1)
@@ -620,6 +680,9 @@ class ProductionTrainer(Trainer):
         # Visual debugging interval
         self.visual_debug_interval = config.validation.visual_debug_interval
         
+        # REPA config
+        self.repa_config = training.repa if training.repa.enabled else None
+        
         # Gradient accumulation state
         self.accum_steps = 0
         self.accum_loss = 0.0
@@ -685,6 +748,8 @@ class ProductionTrainer(Trainer):
                 self.writer.add_scalar('monitor/velocity_norm', metrics['velocity_norm'], step)
             if 'ema_decay' in metrics:
                 self.writer.add_scalar('train/ema_decay', metrics['ema_decay'], step)
+            if 'repa_loss' in metrics:
+                self.writer.add_scalar('train/repa_loss', metrics['repa_loss'], step)
     
     def __del__(self):
         """Cleanup: close TensorBoard writer."""
