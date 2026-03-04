@@ -467,6 +467,91 @@ for pg in trainer.optimizer_adam.param_groups:
     assert pg['lr'] == 1e-5, f"Adam LR should be 1e-5, got {pg['lr']}"
 print(f"✓ LR schedule applies to both Muon and AdamW")
 
+# ==============================================================
+# RESOLUTION SCHEDULING TESTS
+# ==============================================================
+print("\n" + "="*60)
+print("TESTING RESOLUTION SCHEDULING")
+print("="*60)
+
+from production.config_loader import ResolutionPhase, TrainingConfig
+from production.data import BucketAwareDataLoader, ValidationDataset
+
+# Test 1: ResolutionPhase config parsing
+tc = TrainingConfig(resolution_schedule=[
+    {'until_step': 100, 'scale': 0.5},
+    {'until_step': 200, 'scale': 1.0},
+])
+phases = tc.get_resolution_phases()
+assert len(phases) == 2
+assert phases[0].until_step == 100 and phases[0].scale == 0.5
+assert phases[1].until_step == 200 and phases[1].scale == 1.0
+print(f"✓ Resolution schedule config parsing")
+
+# Test 2: BucketAwareDataLoader.resolution_scale adjusts target sizes
+# Create a mock bucket dataset
+class MockBucketDS:
+    def __init__(self, target):
+        self.target_latent_size = target
+    def __iter__(self):
+        return iter([])
+
+datasets = {
+    'bucket_1024x1024': MockBucketDS((128, 128)),
+    'bucket_832x1216': MockBucketDS((152, 104)),
+}
+loader = BucketAwareDataLoader(datasets, [1.0, 1.0])
+
+# Default scale is 1.0
+assert loader.resolution_scale == 1.0
+assert datasets['bucket_1024x1024'].target_latent_size == (128, 128)
+
+# Set to 0.5
+loader.resolution_scale = 0.5
+assert datasets['bucket_1024x1024'].target_latent_size == (64, 64)
+# 152*0.5=76, 104*0.5=52 — both already even
+assert datasets['bucket_832x1216'].target_latent_size == (76, 52)
+print(f"✓ BucketAwareDataLoader.resolution_scale adjusts target sizes")
+
+# Test 3: Even-dimension enforcement
+datasets2 = {
+    'bucket_test': MockBucketDS((100, 100)),  # 100*0.5=50 (even), 100*0.3=30 (even)
+}
+loader2 = BucketAwareDataLoader(datasets2, [1.0])
+loader2.resolution_scale = 0.5
+assert datasets2['bucket_test'].target_latent_size == (50, 50)
+# 100*0.7=70 (even)
+loader2.resolution_scale = 0.7
+assert datasets2['bucket_test'].target_latent_size[0] % 2 == 0
+assert datasets2['bucket_test'].target_latent_size[1] % 2 == 0
+print(f"✓ Even dimension enforcement: {datasets2['bucket_test'].target_latent_size}")
+
+# Test 4: Resolution schedule in trainer
+trainer3 = Trainer(
+    model=test_model, dataloader=loader, device='cpu',
+    total_steps=200, warmup_steps=2, peak_lr=3e-4,
+    optimizer_config=opt_cfg_adam,
+)
+trainer3.resolution_phases = phases
+trainer3._current_resolution_scale = None
+trainer3.step = 0
+trainer3._update_resolution_schedule()
+assert loader.resolution_scale == 0.5, f"Expected 0.5, got {loader.resolution_scale}"
+trainer3.step = 100
+trainer3._update_resolution_schedule()
+assert loader.resolution_scale == 1.0, f"Expected 1.0, got {loader.resolution_scale}"
+print(f"✓ Trainer resolution schedule transitions correctly")
+
+# Test 5: Empty schedule = no-op
+trainer4 = Trainer(
+    model=test_model, dataloader=loader, device='cpu',
+    total_steps=10, warmup_steps=2, peak_lr=3e-4,
+    optimizer_config=opt_cfg_adam,
+)
+trainer4.resolution_phases = []
+trainer4._update_resolution_schedule()  # Should not error
+print(f"✓ Empty resolution schedule is a no-op")
+
 print("\n" + "="*60)
 print("ALL TESTS PASSED ✓")
 print("="*60)

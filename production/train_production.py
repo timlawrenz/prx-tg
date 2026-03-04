@@ -311,6 +311,10 @@ def main():
         print(f"Self-guidance CFG: ENABLED (scale={config.sampling.guidance_scale})")
     else:
         print(f"Dual CFG: text_scale={config.sampling.text_scale}, dino_scale={config.sampling.dino_scale}")
+    res_phases = config.training.get_resolution_phases()
+    if res_phases:
+        phase_strs = [f"{p.scale}x until step {p.until_step}" for p in res_phases]
+        print(f"Resolution schedule: {', '.join(phase_strs)}")
     
     # Create validation function if enabled
     validate_fn = None

@@ -31,6 +31,13 @@ class MuonConfig:
 
 
 @dataclass
+class ResolutionPhase:
+    """A phase in the resolution schedule."""
+    until_step: int = 0    # End step for this phase (exclusive)
+    scale: float = 1.0     # Spatial scale factor (0.5 = half resolution)
+
+
+@dataclass
 class OptimizerConfig:
     """Optimizer configuration."""
     type: str = "AdamW"            # "AdamW" or "Muon" (hybrid Muon + AdamW)
@@ -105,6 +112,12 @@ class TrainingConfig:
     gradient_checkpointing: bool = False
     mixed_precision: bool = True
     precision: Literal["float32", "bfloat16"] = "bfloat16"
+    
+    resolution_schedule: List = field(default_factory=list)  # List of {until_step, scale} dicts
+    
+    def get_resolution_phases(self) -> list:
+        """Parse resolution_schedule dicts into ResolutionPhase objects."""
+        return [ResolutionPhase(**p) for p in self.resolution_schedule] if self.resolution_schedule else []
 
 
 @dataclass
