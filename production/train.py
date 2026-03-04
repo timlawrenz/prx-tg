@@ -53,11 +53,17 @@ def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="c
     Returns:
         loss: scalar REPA alignment loss
     """
-    # When TREAD is active, index DINOv3 patches to match visible token positions
+    # When TREAD is active, index DINOv3 patches to match visible token positions.
+    # visible_idx is in [0, N_latent) but N_dino may be smaller, so filter first.
     if visible_idx is not None:
-        dino_patches = dino_patches[:, visible_idx]
+        N_dino = dino_patches.shape[1]
+        valid_mask = visible_idx < N_dino
+        valid_idx = visible_idx[valid_mask]
+        dino_patches = dino_patches[:, valid_idx]
         if dino_patches_mask is not None:
-            dino_patches_mask = dino_patches_mask[:, visible_idx]
+            dino_patches_mask = dino_patches_mask[:, valid_idx]
+        # Keep only the corresponding repa_hidden tokens
+        repa_hidden = repa_hidden[:, valid_mask]
     
     N_latent = repa_hidden.shape[1]
     N_dino = dino_patches.shape[1]
