@@ -18,6 +18,8 @@ def create_visual_debug_fn(
     num_steps=50,
     device='cuda',
     tensorboard_writer=None,
+    self_guidance=False,
+    guidance_scale=3.0,
 ):
     """Create visual debugging function for training loop.
     
@@ -79,6 +81,8 @@ def create_visual_debug_fn(
                 device=device,
                 text_scale=text_scale,
                 dino_scale=dino_scale,
+                self_guidance=self_guidance,
+                guidance_scale=guidance_scale,
             )
             
             # Decode to image (128x128 latent -> 1024x1024 image via 8x VAE upsampling)

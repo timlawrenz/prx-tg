@@ -30,14 +30,10 @@ class EulerSampler:
         device='cuda',
         text_scale=3.0,
         dino_scale=2.0,
+        self_guidance=False,
+        guidance_scale=3.0,
     ):
-        """Sample from model using Euler integration with dual CFG.
-        
-        Rectified flow sampling integrates the learned velocity field backward in time:
-        - Start at t=1 (pure noise z1)
-        - Integrate to t=0 (clean data x0)
-        - Velocity field v = z1 - x0 points from data toward noise (forward time)
-        - Integration: z_{t+dt} = z_t + v * dt with negative dt moves toward data
+        """Sample from model using Euler integration with dual CFG or self-guidance.
         
         Args:
             model: NanoDiT model
@@ -46,8 +42,10 @@ class EulerSampler:
             text_emb: (B, 77, 1024) T5 hidden states
             text_mask: (B, 77) T5 attention mask
             device: torch device
-            text_scale: CFG scale for text conditioning
-            dino_scale: CFG scale for DINO conditioning
+            text_scale: CFG scale for text conditioning (dual CFG mode)
+            dino_scale: CFG scale for DINO conditioning (dual CFG mode)
+            self_guidance: if True, use TREAD self-guidance instead of dual CFG
+            guidance_scale: self-guidance scale (self-guidance mode only)
         
         Returns:
             latents: (B, C, H, W) sampled latents
@@ -66,31 +64,34 @@ class EulerSampler:
             
             t_batch = torch.full((B,), t_curr, device=device)
             
-            # Three forward passes for dual CFG
-            # 1. Unconditional (both dropped)
-            v_uncond = model(
-                zt, t_batch, dino_emb, text_emb, text_mask,
-                cfg_drop_both=torch.ones(B, dtype=torch.bool, device=device),
-            )
-            
-            # 2. Text-only (DINO dropped)
-            v_text = model(
-                zt, t_batch, dino_emb, text_emb, text_mask,
-                cfg_drop_dino=torch.ones(B, dtype=torch.bool, device=device),
-            )
-            
-            # 3. DINO-only (text dropped)
-            v_dino = model(
-                zt, t_batch, dino_emb, text_emb, text_mask,
-                cfg_drop_text=torch.ones(B, dtype=torch.bool, device=device),
-            )
-            
-            # Dual CFG combination
-            # v = v_uncond + text_scale * (v_text - v_uncond) + dino_scale * (v_dino - v_uncond)
-            v_pred = v_uncond + text_scale * (v_text - v_uncond) + dino_scale * (v_dino - v_uncond)
+            if self_guidance:
+                # Self-guidance: 2 passes (dense vs routed conditional)
+                v_dense = model(
+                    zt, t_batch, dino_emb, text_emb, text_mask,
+                    tread_enabled=False,
+                )
+                v_routed = model(
+                    zt, t_batch, dino_emb, text_emb, text_mask,
+                    tread_enabled=True,
+                )
+                v_pred = v_routed + guidance_scale * (v_dense - v_routed)
+            else:
+                # Dual CFG: 3 passes
+                v_uncond = model(
+                    zt, t_batch, dino_emb, text_emb, text_mask,
+                    cfg_drop_both=torch.ones(B, dtype=torch.bool, device=device),
+                )
+                v_text = model(
+                    zt, t_batch, dino_emb, text_emb, text_mask,
+                    cfg_drop_dino=torch.ones(B, dtype=torch.bool, device=device),
+                )
+                v_dino = model(
+                    zt, t_batch, dino_emb, text_emb, text_mask,
+                    cfg_drop_text=torch.ones(B, dtype=torch.bool, device=device),
+                )
+                v_pred = v_uncond + text_scale * (v_text - v_uncond) + dino_scale * (v_dino - v_uncond)
             
             # Euler integration: z_{t+dt} = z_t + v * dt
-            # dt is negative, v points toward noise, so we move toward data
             zt = zt + v_pred * dt
         
         return zt

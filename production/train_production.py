@@ -300,6 +300,10 @@ def main():
     print(f"Trainable parameters: {trainable_params/1e6:.1f}M")
     if config.training.gradient_checkpointing:
         print(f"Gradient checkpointing: ENABLED (trades ~20-30% speed for 3-4x memory savings)")
+    if config.sampling.self_guidance:
+        print(f"Self-guidance CFG: ENABLED (scale={config.sampling.guidance_scale})")
+    else:
+        print(f"Dual CFG: text_scale={config.sampling.text_scale}, dino_scale={config.sampling.dino_scale}")
     
     # Create validation function if enabled
     validate_fn = None
@@ -314,6 +318,8 @@ def main():
             text_scale=config.sampling.text_scale,
             dino_scale=config.sampling.dino_scale,
             num_steps=config.sampling.num_steps,
+            self_guidance=config.sampling.self_guidance,
+            guidance_scale=config.sampling.guidance_scale,
         )
     
     # Create visual debugging function (if enabled)
@@ -331,6 +337,8 @@ def main():
             num_steps=config.sampling.num_steps,
             device=device,
             tensorboard_writer=tb_writer,
+            self_guidance=config.sampling.self_guidance,
+            guidance_scale=config.sampling.guidance_scale,
         )
     
     # Create trainer

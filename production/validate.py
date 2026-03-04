@@ -102,6 +102,8 @@ class ValidationRunner:
         text_scale=3.0,
         dino_scale=2.0,
         num_steps=50,
+        self_guidance=False,
+        guidance_scale=3.0,
     ):
         """
         Args:
@@ -124,6 +126,8 @@ class ValidationRunner:
         self.text_scale = text_scale
         self.dino_scale = dino_scale
         self.num_steps = num_steps
+        self.self_guidance = self_guidance
+        self.guidance_scale = guidance_scale
         
         # Load VAE decoder
         print("Loading VAE decoder...")
@@ -758,6 +762,8 @@ class ValidationRunner:
             num_steps=self.num_steps,
             text_scale=self.text_scale,
             dino_scale=self.dino_scale,
+            self_guidance=self.self_guidance,
+            guidance_scale=self.guidance_scale,
         )
         
         try:
@@ -766,10 +772,20 @@ class ValidationRunner:
                 'step': step,
                 'reconstruction': self.run_reconstruction_test(step, sampler),
                 'dino_swap': self.run_dino_swap_test(step, sampler),
-                'divergence': self.run_divergence_test(step, sampler),
-                'text_only': self.run_text_only_test(step, sampler),
-                'text_manip': self.run_text_manip_test(step, sampler),
             }
+            
+            if self.self_guidance:
+                # Text-only and divergence tests are not meaningful with self-guidance
+                # (can't isolate modalities with dense-vs-routed guidance)
+                print("  Skipping divergence test (not applicable with self-guidance)")
+                print("  Skipping text-only test (not applicable with self-guidance)")
+                results['divergence'] = {'skipped': True, 'reason': 'self-guidance mode'}
+                results['text_only'] = {'skipped': True, 'reason': 'self-guidance mode'}
+            else:
+                results['divergence'] = self.run_divergence_test(step, sampler)
+                results['text_only'] = self.run_text_only_test(step, sampler)
+            
+            results['text_manip'] = self.run_text_manip_test(step, sampler)
         finally:
             # Clean up sampler to prevent memory leak
             del sampler
@@ -791,7 +807,8 @@ class ValidationRunner:
         # Log to TensorBoard
         if self.tb_writer is not None:
             self.tb_writer.add_scalar('validation/reconstruction_lpips', results['reconstruction']['mean_lpips'], step)
-            self.tb_writer.add_scalar('validation/text_only_lpips', results['text_only']['mean_lpips'], step)
+            if not results['text_only'].get('skipped'):
+                self.tb_writer.add_scalar('validation/text_only_lpips', results['text_only']['mean_lpips'], step)
             self.tb_writer.add_scalar('validation/text_manip_lpips_diff', results['text_manip']['mean_lpips_difference'], step)
             self.tb_writer.add_scalar('validation/text_manip_success_rate', 
                                      results['text_manip']['num_successful'] / max(results['text_manip']['num_cases'], 1), step)
@@ -799,11 +816,19 @@ class ValidationRunner:
         # Print summary
         print(f"\n{'='*60}")
         print("VALIDATION SUMMARY")
+        if self.self_guidance:
+            print(f"  (self-guidance mode, scale={self.guidance_scale})")
         print(f"{'='*60}")
         print(f"Reconstruction LPIPS: {results['reconstruction']['mean_lpips']:.4f} (text+DINO, 25 samples)")
-        print(f"Text-only LPIPS: {results['text_only']['mean_lpips']:.4f} (text only, 20 samples)")
+        if results['text_only'].get('skipped'):
+            print(f"Text-only LPIPS: SKIPPED (self-guidance mode)")
+        else:
+            print(f"Text-only LPIPS: {results['text_only']['mean_lpips']:.4f} (text only, 20 samples)")
         print(f"DINO swap: {results['dino_swap']['num_pairs']} pairs, 3 images each (A_ref, A_swap, B_ref)")
-        print(f"CFG Divergence: {results['divergence']['num_samples']} samples (text-only vs DINO-only vs both)")
+        if results['divergence'].get('skipped'):
+            print(f"CFG Divergence: SKIPPED (self-guidance mode)")
+        else:
+            print(f"CFG Divergence: {results['divergence']['num_samples']} samples (text-only vs DINO-only vs both)")
         print(f"Text manipulation: {results['text_manip']['num_successful']}/{results['text_manip']['num_cases']} cases, "
               f"mean LPIPS diff: {results['text_manip']['mean_lpips_difference']:.4f}")
         print(f"Results saved to: {results_file}")
@@ -812,7 +837,8 @@ class ValidationRunner:
         return results
 
 
-def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=None, text_scale=3.0, dino_scale=2.0, num_steps=50):
+def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=None, text_scale=3.0, dino_scale=2.0, num_steps=50,
+                         self_guidance=False, guidance_scale=3.0):
     """Create validation function for training loop.
     
     IMPORTANT: This creates its own deterministic dataloader internally,
@@ -826,6 +852,8 @@ def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=
         shard_dir: Path to validation shards
         output_dir: Output directory for validation results
         tensorboard_writer: Optional TensorBoard SummaryWriter
+        self_guidance: Use self-guidance instead of dual CFG
+        guidance_scale: Self-guidance scale
     
     Returns:
         validation_fn(model, ema, step, device)
@@ -854,6 +882,8 @@ def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=
                 text_scale=text_scale,
                 dino_scale=dino_scale,
                 num_steps=num_steps,
+                self_guidance=self_guidance,
+                guidance_scale=guidance_scale,
             )
 
         

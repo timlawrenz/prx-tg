@@ -92,8 +92,10 @@ data:
 
 sampling:
   num_steps: 35                      # Euler integration steps
-  text_scale: 3.0                    # CFG scale for text conditioning
-  dino_scale: 2.5                    # CFG scale for DINO conditioning
+  text_scale: 3.0                    # CFG scale for text conditioning (dual CFG mode)
+  dino_scale: 2.5                    # CFG scale for DINO conditioning (dual CFG mode)
+  self_guidance: true                # Use self-guidance instead of dual CFG (pairs with TREAD)
+  guidance_scale: 3.0               # Self-guidance scale
 
 validation:
   enabled: true                      # Enable validation runs

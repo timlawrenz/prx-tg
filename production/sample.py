@@ -248,6 +248,8 @@ class ValidationSampler:
         num_steps=50,
         text_scale=3.0,
         dino_scale=2.0,
+        self_guidance=False,
+        guidance_scale=3.0,
     ):
         """
         Args:
@@ -255,8 +257,10 @@ class ValidationSampler:
             vae: VAE decoder
             device: torch device
             num_steps: number of sampling steps
-            text_scale: CFG scale for text
-            dino_scale: CFG scale for DINO
+            text_scale: CFG scale for text (dual CFG mode)
+            dino_scale: CFG scale for DINO (dual CFG mode)
+            self_guidance: use self-guidance instead of dual CFG
+            guidance_scale: self-guidance scale
         """
         self.model = model
         self.vae = vae
@@ -264,6 +268,8 @@ class ValidationSampler:
         self.sampler = EulerSampler(num_steps=num_steps)
         self.text_scale = text_scale
         self.dino_scale = dino_scale
+        self.self_guidance = self_guidance
+        self.guidance_scale = guidance_scale
     
     @torch.no_grad()
     def generate(
@@ -276,6 +282,8 @@ class ValidationSampler:
         batch_size=None,
         text_scale=None,
         dino_scale=None,
+        self_guidance=None,
+        guidance_scale=None,
     ):
         """Generate images from conditioning.
         
@@ -286,8 +294,10 @@ class ValidationSampler:
             text_mask: (B, 500) T5 attention mask
             latent_size: spatial size of latents (64 = 512x512 images)
             batch_size: override batch size (default: from embeddings)
-            text_scale: override text CFG scale (default: use sampler's text_scale)
-            dino_scale: override dino CFG scale (default: use sampler's dino_scale)
+            text_scale: override text CFG scale (dual CFG mode, default: use sampler's)
+            dino_scale: override dino CFG scale (dual CFG mode, default: use sampler's)
+            self_guidance: override self-guidance mode (default: use sampler's)
+            guidance_scale: override guidance scale (default: use sampler's)
         
         Returns:
             images: (B, 3, 512, 512) RGB images
@@ -306,23 +316,25 @@ class ValidationSampler:
         if latent_size is None:
             latent_size = getattr(self.model, 'input_size', 64)
 
-        # Use custom scales if provided, otherwise use defaults
-        cfg_text_scale = text_scale if text_scale is not None else self.text_scale
-        cfg_dino_scale = dino_scale if dino_scale is not None else self.dino_scale
+        use_self_guidance = self_guidance if self_guidance is not None else self.self_guidance
 
         # Sample latents
         shape = (batch_size, 16, latent_size, latent_size)
-        latents = self.sampler.sample(
-            self.model,
-            shape,
-            dino_emb,
-            dino_patches,
-            text_emb,
-            text_mask,
-            device=self.device,
-            text_scale=cfg_text_scale,
-            dino_scale=cfg_dino_scale,
-        )
+        if use_self_guidance:
+            latents = self.sampler.sample(
+                self.model, shape, dino_emb, dino_patches, text_emb, text_mask,
+                device=self.device,
+                self_guidance=True,
+                guidance_scale=guidance_scale if guidance_scale is not None else self.guidance_scale,
+            )
+        else:
+            cfg_text_scale = text_scale if text_scale is not None else self.text_scale
+            cfg_dino_scale = dino_scale if dino_scale is not None else self.dino_scale
+            latents = self.sampler.sample(
+                self.model, shape, dino_emb, dino_patches, text_emb, text_mask,
+                device=self.device,
+                text_scale=cfg_text_scale, dino_scale=cfg_dino_scale,
+            )
         
         # Decode to images
         images = decode_latents(self.vae, latents)

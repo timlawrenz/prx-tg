@@ -301,6 +301,73 @@ for i, gn in enumerate(grad_norms):
     print(f"    Block {i}: {gn:.6f} {status}")
 assert all(gn > 0 for gn in grad_norms), "All blocks should receive gradients"
 
+# ============================================================
+# SELF-GUIDANCE SAMPLING TEST
+# ============================================================
+print("\n" + "="*60)
+print("TESTING SELF-GUIDANCE SAMPLING")
+print("="*60)
+
+from production.sample import EulerSampler
+
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+# Create a model with TREAD for self-guidance testing
+model_sg = NanoDiT(
+    hidden_size=128, depth=4, num_heads=4,
+    in_channels=16, patch_size=2, input_size=8,
+    tread_route_start=1,
+    tread_route_end=3,
+    tread_routing_prob=0.5,
+).to(device)
+
+sampler_sg = EulerSampler(num_steps=5)
+
+# Test self-guidance sampling (2 passes: dense + routed)
+B_sg = 1
+dino_emb_sg = torch.randn(B_sg, 1024, device=device)
+dino_patches_sg = torch.randn(B_sg, 16, 1024, device=device)
+text_emb_sg = torch.randn(B_sg, 77, 1024, device=device)
+text_mask_sg = torch.ones(B_sg, 77, device=device)
+
+with torch.no_grad():
+    latents_sg = sampler_sg.sample(
+        model_sg, (B_sg, 16, 8, 8),
+        dino_emb_sg, dino_patches_sg, text_emb_sg, text_mask_sg,
+        device=device,
+        self_guidance=True,
+        guidance_scale=3.0,
+    )
+
+assert latents_sg.shape == (B_sg, 16, 8, 8), f"Self-guidance output shape wrong: {latents_sg.shape}"
+print(f"\n✓ Self-guidance sampling: output shape {latents_sg.shape}")
+
+# Test dual CFG sampling (3 passes: uncond + text + dino)
+with torch.no_grad():
+    latents_dual = sampler_sg.sample(
+        model_sg, (B_sg, 16, 8, 8),
+        dino_emb_sg, dino_patches_sg, text_emb_sg, text_mask_sg,
+        device=device,
+        self_guidance=False,
+        text_scale=3.0,
+        dino_scale=2.0,
+    )
+
+assert latents_dual.shape == (B_sg, 16, 8, 8), f"Dual CFG output shape wrong: {latents_dual.shape}"
+print(f"✓ Dual CFG sampling: output shape {latents_dual.shape}")
+
+# Test that self-guidance and dual CFG produce different results (different algorithms)
+diff = (latents_sg - latents_dual).abs().mean().item()
+assert diff > 1e-5, f"Self-guidance and dual CFG should differ, got diff={diff}"
+print(f"✓ Self-guidance vs dual CFG differ (mean abs diff: {diff:.4f})")
+
+# Test SamplingConfig has self-guidance fields
+from production.config_loader import SamplingConfig
+sc = SamplingConfig(self_guidance=True, guidance_scale=4.0)
+assert sc.self_guidance is True
+assert sc.guidance_scale == 4.0
+print(f"✓ SamplingConfig has self_guidance and guidance_scale fields")
+
 print("\n" + "="*60)
 print("ALL TESTS PASSED ✓")
 print("="*60)

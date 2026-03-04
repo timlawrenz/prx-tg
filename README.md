@@ -32,10 +32,9 @@ This project demonstrates that you don't need massive datasets (millions of imag
 - **Timestep sampling**: Logit-normal distribution (focuses on mid-diffusion)
 - **Timestep Encoding**: High-frequency 1000x scaled sinusoidal embeddings for stable flow
 - **CFG strategy**: 
-  - 10% unconditional (drop both text + DINO)
-  - 30% text-only (drop DINO, reduce over-reliance on visual conditioning)
-  - 5% DINO-only (drop text)
-  - 55% dual-conditioned (both signals)
+  - **Training dropout** (enables dual CFG fallback): 10% uncond, 30% text-only, 5% DINO-only, 55% both
+  - **Self-guidance** (default with TREAD): 2 passes — dense (all tokens) vs routed (50% tokens). Single `guidance_scale` (default 3.0). Faster and avoids corrupted unconditional baseline from stochastic routing.
+  - **Dual CFG** (fallback): 3 passes — unconditional + text-only + DINO-only. Used when `self_guidance: false` or TREAD is disabled.
 
 ### VAE: Flux.1 Latent Space
 
@@ -183,6 +182,13 @@ training:
     route_end: -1          # -1 = depth - 2
     self_guidance: true    # Use self-guidance instead of dual CFG
     guidance_scale: 3.0
+
+sampling:
+  num_steps: 35
+  text_scale: 3.0          # Dual CFG text scale (when self_guidance: false)
+  dino_scale: 2.5          # Dual CFG DINO scale (when self_guidance: false)
+  self_guidance: true      # Use self-guidance (dense vs routed) instead of dual CFG
+  guidance_scale: 3.0      # Self-guidance scale
 ```
 
 ### Optimization Techniques

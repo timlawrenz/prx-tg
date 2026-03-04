@@ -120,6 +120,8 @@ class SamplingConfig:
     num_steps: int = 50
     text_scale: float = 3.0
     dino_scale: float = 2.0
+    self_guidance: bool = False     # Use self-guidance (dense vs routed) instead of dual CFG
+    guidance_scale: float = 3.0    # Self-guidance scale
 
 
 @dataclass
