@@ -300,6 +300,13 @@ def main():
     print(f"Trainable parameters: {trainable_params/1e6:.1f}M")
     if config.training.gradient_checkpointing:
         print(f"Gradient checkpointing: ENABLED (trades ~20-30% speed for 3-4x memory savings)")
+    opt_type = config.training.optimizer.type
+    if opt_type == 'Muon':
+        n2d = sum(p.numel() for p in model.parameters() if p.requires_grad and p.ndim == 2)
+        n_other = trainable_params - n2d
+        print(f"Optimizer: Muon (hybrid) — {n2d/1e6:.1f}M params Muon, {n_other/1e6:.3f}M params AdamW")
+    else:
+        print(f"Optimizer: {opt_type}")
     if config.sampling.self_guidance:
         print(f"Self-guidance CFG: ENABLED (scale={config.sampling.guidance_scale})")
     else:

@@ -310,6 +310,7 @@ class Trainer:
         checkpoint_every=1000,
         log_every=50,
         checkpoint_dir='checkpoints',
+        optimizer_config=None,
     ):
         """
         Args:
@@ -328,6 +329,7 @@ class Trainer:
             checkpoint_every: checkpoint save frequency
             log_every: logging frequency
             checkpoint_dir: directory for saving checkpoints
+            optimizer_config: OptimizerConfig object (if None, uses AdamW defaults)
         """
         self.model = model.to(device)
         self.dataloader = dataloader
@@ -351,14 +353,21 @@ class Trainer:
             'p_dino_patches_only': 0.1,
         }
         
-        # Optimizer
-        self.optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=peak_lr,
-            betas=(0.9, 0.95),
-            weight_decay=weight_decay,
-            eps=1e-8,
-        )
+        # Optimizer setup
+        self.optimizer_type = getattr(optimizer_config, 'type', 'AdamW') if optimizer_config else 'AdamW'
+        self.optimizer_muon = None
+        self.optimizer_adam = None
+        
+        if self.optimizer_type == 'Muon':
+            self._create_muon_optimizer(model, optimizer_config, peak_lr, weight_decay)
+        else:
+            self.optimizer_adam = torch.optim.AdamW(
+                model.parameters(),
+                lr=peak_lr,
+                betas=tuple(optimizer_config.betas) if optimizer_config else (0.9, 0.95),
+                weight_decay=weight_decay,
+                eps=optimizer_config.eps if optimizer_config else 1e-8,
+            )
         
         # EMA
         self.ema = EMAModel(model, decay=ema_decay, warmup_steps=warmup_steps)
@@ -375,6 +384,64 @@ class Trainer:
         
         # Logging
         self.log_file = self.checkpoint_dir.parent / 'training_log.jsonl'
+    
+    def _create_muon_optimizer(self, model, optimizer_config, peak_lr, weight_decay):
+        """Create hybrid Muon (2D params) + AdamW (non-2D params) optimizer."""
+        muon_params = []
+        adam_params = []
+        for p in model.parameters():
+            if not p.requires_grad:
+                continue
+            if p.ndim == 2:
+                muon_params.append(p)
+            else:
+                adam_params.append(p)
+        
+        muon_cfg = optimizer_config.muon
+        self.optimizer_muon = torch.optim.Muon(
+            muon_params,
+            lr=peak_lr,
+            weight_decay=weight_decay,
+            momentum=muon_cfg.momentum,
+            nesterov=muon_cfg.nesterov,
+            ns_steps=muon_cfg.ns_steps,
+            adjust_lr_fn=muon_cfg.adjust_lr_fn,
+        )
+        
+        if adam_params:
+            self.optimizer_adam = torch.optim.AdamW(
+                adam_params,
+                lr=peak_lr,
+                betas=tuple(optimizer_config.betas),
+                weight_decay=weight_decay,
+                eps=optimizer_config.eps,
+            )
+        
+        self._muon_param_count = sum(p.numel() for p in muon_params)
+        self._adam_param_count = sum(p.numel() for p in adam_params)
+    
+    def _step_optimizers(self):
+        """Step all active optimizers."""
+        if self.optimizer_muon is not None:
+            self.optimizer_muon.step()
+        if self.optimizer_adam is not None:
+            self.optimizer_adam.step()
+    
+    def _zero_grad_optimizers(self):
+        """Zero gradients on all active optimizers."""
+        if self.optimizer_muon is not None:
+            self.optimizer_muon.zero_grad()
+        if self.optimizer_adam is not None:
+            self.optimizer_adam.zero_grad()
+    
+    def _set_lr_optimizers(self, lr):
+        """Set learning rate on all active optimizers."""
+        if self.optimizer_muon is not None:
+            for pg in self.optimizer_muon.param_groups:
+                pg['lr'] = lr
+        if self.optimizer_adam is not None:
+            for pg in self.optimizer_adam.param_groups:
+                pg['lr'] = lr
     
     def train_step(self, batch):
         """Execute one training step.
@@ -441,12 +508,10 @@ class Trainer:
             # Gradient clipping
             grad_norm = clip_grad_norm_(self.model.parameters(), self.grad_clip).item()
             
-            # Apply LR to optimizer
-            for param_group in self.optimizer.param_groups:
-                param_group['lr'] = lr
-            
-            self.optimizer.step()
-            self.optimizer.zero_grad()
+            # Apply LR and step all optimizers
+            self._set_lr_optimizers(lr)
+            self._step_optimizers()
+            self._zero_grad_optimizers()
             
             # EMA update (only when optimizer steps)
             self.ema.update()
@@ -521,14 +586,22 @@ class Trainer:
             'step': self.step,
             'epoch': self.epoch,
             'model': self.model.state_dict(),
-            'optimizer': self.optimizer.state_dict(),
             'ema': self.ema.state_dict(),
+            'optimizer_type': self.optimizer_type,
             'rng_state': {
                 'python': random.getstate(),
                 'numpy': np.random.get_state(),
                 'torch': torch.get_rng_state(),
             }
         }
+        
+        # Save optimizer state(s)
+        if self.optimizer_type == 'Muon':
+            checkpoint['optimizer_muon'] = self.optimizer_muon.state_dict()
+            if self.optimizer_adam is not None:
+                checkpoint['optimizer_adam'] = self.optimizer_adam.state_dict()
+        else:
+            checkpoint['optimizer'] = self.optimizer_adam.state_dict()
         
         # Save CUDA RNG state if available
         if torch.cuda.is_available():
@@ -543,10 +616,24 @@ class Trainer:
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         
         self.model.load_state_dict(checkpoint['model'])
-        self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.ema.load_state_dict(checkpoint['ema'])
         self.step = checkpoint['step']
         self.epoch = checkpoint['epoch']
+        
+        # Load optimizer state(s) with format detection
+        saved_type = checkpoint.get('optimizer_type', 'AdamW')
+        if saved_type == self.optimizer_type:
+            # Same optimizer type — load directly
+            if self.optimizer_type == 'Muon':
+                self.optimizer_muon.load_state_dict(checkpoint['optimizer_muon'])
+                if self.optimizer_adam is not None and 'optimizer_adam' in checkpoint:
+                    self.optimizer_adam.load_state_dict(checkpoint['optimizer_adam'])
+            else:
+                self.optimizer_adam.load_state_dict(checkpoint.get('optimizer', checkpoint.get('optimizer_adam')))
+        else:
+            # Optimizer type changed — skip state, will start fresh
+            print(f"  WARNING: Checkpoint has {saved_type} optimizer but current config uses {self.optimizer_type}")
+            print(f"  Optimizer state will start fresh (model weights and EMA loaded OK)")
         
         # Restore RNG states if available (older checkpoints may not have them)
         if 'rng_state' in checkpoint:
@@ -700,6 +787,7 @@ class ProductionTrainer(Trainer):
             checkpoint_every=checkpoint_cfg.save_every,
             log_every=logging_cfg.log_every,
             checkpoint_dir=checkpoint_cfg.output_dir,
+            optimizer_config=training.optimizer,
         )
         
         # Store additional config for production features

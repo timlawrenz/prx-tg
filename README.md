@@ -170,6 +170,13 @@ training:
   warmup_steps: 500
   mixed_precision: bfloat16
   gradient_checkpointing: true  # Saves ~3-4× memory
+  optimizer:
+    type: Muon             # Hybrid Muon + AdamW (or "AdamW" for pure AdamW)
+    muon:
+      momentum: 0.95
+      nesterov: true
+      ns_steps: 5
+      adjust_lr_fn: match_rms_adamw
   repa:
     enabled: true
     weight: 0.5           # REPA loss weight
@@ -201,6 +208,7 @@ sampling:
 6. **EMA**: Exponential moving average of weights (decay=0.9999) with 500-step warmup
 7. **REPA (REPresentation Alignment)**: Auxiliary loss aligning transformer hidden states with DINOv3 patch features at the middle block, improving convergence and representation quality (weight=0.5, cosine similarity)
 8. **TREAD (Token Routing)**: Randomly routes 50% of latent tokens past middle blocks (1→depth-2), effectively halving compute for 16 of 18 blocks. Parameter-free — adds zero new weights. Pairs with self-guidance sampling (2 passes instead of 3-pass dual CFG)
+9. **Muon Optimizer**: Hybrid Muon + AdamW — all 2D weight matrices (~237M params) use Muon's Newton-Schulz orthogonalization for geometry-aware updates; non-2D params (convs, biases, ~0.1M) stay on AdamW. Uses `adjust_lr_fn="match_rms_adamw"` so both optimizers share the same LR schedule.
 
 ### Data Augmentation
 
@@ -291,6 +299,7 @@ Quick 4-image generation every 100 steps:
 - ✅ **Memory Optimized**: FlashAttention (SDPA) and Gradient Checkpointing enable training at 1024px on 24GB GPUs.
 - ✅ **REPA Alignment**: Auxiliary loss aligns hidden states with DINOv3 teacher features for faster convergence.
 - ✅ **TREAD Token Routing**: Routes 50% of tokens past middle blocks for ~2× throughput, with self-guidance sampling.
+- ✅ **Muon Optimizer**: Hybrid Muon + AdamW for geometry-aware weight updates with Newton-Schulz orthogonalization.
 - 🚧 In progress: Training on 15k image subset, scaling to 86k.
 
 ### Known Limitations
@@ -385,11 +394,9 @@ See full environment in `.venv/` (not committed).
 
 See [docs/prx-part3-analysis.md](docs/prx-part3-analysis.md) for a detailed analysis of techniques from Photoroom's PRX Part 3.
 
-1. **Muon Optimizer**: Replace AdamW with Muon for 2D parameters (easy A/B test).
+1. **Larger Dataset**: Expand dataset size towards 86k target.
 
-2. **TREAD Token Routing**: Skip 50% of tokens through middle blocks for ~2× throughput.
-
-3. **Larger Dataset**: Expand dataset size towards 86k target.
+2. **Latent REPA**: Replace DINOv3 teacher alignment with self-supervised latent alignment (future exploration).
 
 ## License
 

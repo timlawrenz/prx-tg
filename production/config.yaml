@@ -17,12 +17,17 @@ training:
   grad_accumulation_steps: 256 # Effective batch
   
   optimizer:
-    type: "AdamW"
-    lr: 3.0e-4                 # Peak learning rate (from-scratch training)
-    min_lr: 1.0e-6             # Minimum LR after cosine decay
-    betas: [0.9, 0.95]         # Beta values (0.95 faster than standard 0.999)
-    weight_decay: 0.03         # Standard regularization
+    type: "Muon"                   # "Muon" (hybrid Muon+AdamW) or "AdamW" (all params)
+    lr: 3.0e-4                     # Peak learning rate (shared by both optimizers)
+    min_lr: 1.0e-6                 # Minimum LR after cosine decay
+    betas: [0.9, 0.95]             # AdamW beta values (for non-2D params)
+    weight_decay: 0.03             # Decoupled weight decay (both optimizers)
     eps: 1.0e-8
+    muon:
+      momentum: 0.95               # Muon momentum factor
+      nesterov: true               # Nesterov momentum
+      ns_steps: 5                  # Newton-Schulz orthogonalization steps
+      adjust_lr_fn: "match_rms_adamw"  # Scale updates to match AdamW RMS (reuses same LR)
   
   grad_clip: 1.0               # Gradient clipping norm
   ema_decay: 0.9999            # Target EMA decay
