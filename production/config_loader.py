@@ -22,14 +22,24 @@ class ModelConfig:
 
 
 @dataclass
+class MuonConfig:
+    """Muon optimizer configuration (for 2D weight matrices)."""
+    momentum: float = 0.95
+    nesterov: bool = True
+    ns_steps: int = 5
+    adjust_lr_fn: str = "match_rms_adamw"  # Matches AdamW RMS, reuses same LR
+
+
+@dataclass
 class OptimizerConfig:
     """Optimizer configuration."""
-    type: str = "AdamW"
+    type: str = "AdamW"            # "AdamW" or "Muon" (hybrid Muon + AdamW)
     lr: float = 3e-4
     min_lr: float = 1e-6
     betas: List[float] = field(default_factory=lambda: [0.9, 0.95])
     weight_decay: float = 0.03
     eps: float = 1e-8
+    muon: MuonConfig = field(default_factory=MuonConfig)
 
 
 @dataclass

@@ -368,6 +368,105 @@ assert sc.self_guidance is True
 assert sc.guidance_scale == 4.0
 print(f"✓ SamplingConfig has self_guidance and guidance_scale fields")
 
+# ==============================================================
+# MUON OPTIMIZER TESTS
+# ==============================================================
+print("\n" + "="*60)
+print("TESTING MUON OPTIMIZER")
+print("="*60)
+
+from production.config_loader import OptimizerConfig, MuonConfig
+
+# Test 1: Parameter split (2D → Muon, non-2D → AdamW)
+test_model = NanoDiT(
+    input_size=32, patch_size=2, in_channels=16,
+    hidden_size=128, depth=4, num_heads=4, mlp_ratio=4.0,
+)
+muon_params = [p for p in test_model.parameters() if p.requires_grad and p.ndim == 2]
+adam_params = [p for p in test_model.parameters() if p.requires_grad and p.ndim != 2]
+n_muon = sum(p.numel() for p in muon_params)
+n_adam = sum(p.numel() for p in adam_params)
+assert n_muon > 0, "Should have 2D params for Muon"
+assert n_adam > 0, "Should have non-2D params for AdamW"
+# All 4D convs and 1D biases go to AdamW
+for p in adam_params:
+    assert p.ndim != 2, f"Non-2D group should not have 2D param (ndim={p.ndim})"
+print(f"✓ Param split: {n_muon/1e6:.2f}M Muon (2D), {n_adam/1e6:.4f}M AdamW (non-2D)")
+
+# Test 2: Create Muon optimizer via Trainer (hybrid mode)
+from production.train import Trainer
+opt_cfg = OptimizerConfig(
+    type='Muon', lr=3e-4, min_lr=1e-6, betas=[0.9, 0.95],
+    weight_decay=0.03, eps=1e-8, muon=MuonConfig(),
+)
+# Minimal dataloader stub
+class FakeLoader:
+    def __iter__(self):
+        return iter([])
+trainer = Trainer(
+    model=test_model, dataloader=FakeLoader(), device='cpu',
+    total_steps=10, warmup_steps=2, peak_lr=3e-4,
+    optimizer_config=opt_cfg,
+)
+assert trainer.optimizer_muon is not None, "Muon optimizer should be created"
+assert trainer.optimizer_adam is not None, "AdamW optimizer should be created"
+assert trainer.optimizer_type == 'Muon'
+print(f"✓ Muon hybrid optimizer created: Muon + AdamW")
+
+# Test 3: Both optimizers step and update weights
+test_model.zero_grad()
+dummy_x0 = torch.randn(1, 16, 16, 16)
+dummy_dino = torch.randn(1, 1024)
+dummy_patches = torch.randn(1, 64, 1024)
+dummy_text = torch.randn(1, 10, 1024)
+dummy_mask = torch.ones(1, 10, dtype=torch.bool)
+w_before = {n: p.clone() for n, p in test_model.named_parameters() if p.requires_grad}
+
+loss = flow_matching_loss(
+    test_model, dummy_x0, dummy_dino, dummy_patches, dummy_text, dummy_mask,
+    {'p_uncond': 0.0, 'p_text_only': 0.0, 'p_dino_cls_only': 0.0, 'p_dino_patches_only': 0.0},
+)
+loss.backward()
+trainer._step_optimizers()
+
+changed_2d = 0
+changed_other = 0
+for n, p in test_model.named_parameters():
+    if not p.requires_grad:
+        continue
+    if not torch.equal(p.data, w_before[n]):
+        if p.ndim == 2:
+            changed_2d += 1
+        else:
+            changed_other += 1
+assert changed_2d > 0, "2D params should update via Muon"
+assert changed_other > 0, "Non-2D params should update via AdamW"
+print(f"✓ Both optimizers update weights: {changed_2d} 2D params, {changed_other} non-2D params changed")
+
+# Test 4: AdamW fallback (type="AdamW" still works)
+test_model2 = NanoDiT(
+    input_size=32, patch_size=2, in_channels=16,
+    hidden_size=128, depth=4, num_heads=4, mlp_ratio=4.0,
+)
+opt_cfg_adam = OptimizerConfig(type='AdamW')
+trainer2 = Trainer(
+    model=test_model2, dataloader=FakeLoader(), device='cpu',
+    total_steps=10, warmup_steps=2, peak_lr=3e-4,
+    optimizer_config=opt_cfg_adam,
+)
+assert trainer2.optimizer_muon is None, "Muon should be None in AdamW mode"
+assert trainer2.optimizer_adam is not None, "AdamW should be created"
+assert trainer2.optimizer_type == 'AdamW'
+print(f"✓ AdamW fallback works correctly")
+
+# Test 5: LR schedule applies to both optimizers
+trainer._set_lr_optimizers(1e-5)
+for pg in trainer.optimizer_muon.param_groups:
+    assert pg['lr'] == 1e-5, f"Muon LR should be 1e-5, got {pg['lr']}"
+for pg in trainer.optimizer_adam.param_groups:
+    assert pg['lr'] == 1e-5, f"Adam LR should be 1e-5, got {pg['lr']}"
+print(f"✓ LR schedule applies to both Muon and AdamW")
+
 print("\n" + "="*60)
 print("ALL TESTS PASSED ✓")
 print("="*60)
