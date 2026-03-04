@@ -51,6 +51,15 @@ class CFGDropoutConfig:
 
 
 @dataclass
+class REPAConfig:
+    """REPA (REPresentation Alignment) configuration."""
+    enabled: bool = False
+    weight: float = 0.5
+    block_index: int = -1  # -1 means depth // 2
+    loss_type: Literal["cosine", "mse"] = "cosine"
+
+
+@dataclass
 class TrainingConfig:
     """Training loop configuration."""
     total_steps: int = 50000
@@ -65,6 +74,7 @@ class TrainingConfig:
     ema_warmup_steps: int = 5000
     
     cfg_dropout: CFGDropoutConfig = field(default_factory=CFGDropoutConfig)
+    repa: REPAConfig = field(default_factory=REPAConfig)
     
     timestep_sampling: Literal["uniform", "logit_normal"] = "logit_normal"
     logit_normal_loc: float = 0.0
