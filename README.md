@@ -171,6 +171,11 @@ training:
   warmup_steps: 500
   mixed_precision: bfloat16
   gradient_checkpointing: true  # Saves ~3-4× memory
+  repa:
+    enabled: true
+    weight: 0.5           # REPA loss weight
+    block_index: -1        # -1 = depth // 2 (block 9)
+    loss_type: cosine      # Cosine similarity alignment
 ```
 
 ### Optimization Techniques
@@ -181,6 +186,7 @@ training:
 4. **Gradient Checkpointing**: Trade 20-30% speed for 3-4× memory savings
 5. **Bucket-aware Batching**: Sample from aspect ratio buckets proportionally
 6. **EMA**: Exponential moving average of weights (decay=0.9999) with 500-step warmup
+7. **REPA (REPresentation Alignment)**: Auxiliary loss aligning transformer hidden states with DINOv3 patch features at the middle block, improving convergence and representation quality (weight=0.5, cosine similarity)
 
 ### Data Augmentation
 
@@ -236,7 +242,8 @@ This loads the model and EMA weights, runs the full validation suite (Reconstruc
 ### TensorBoard Metrics
 
 - **Training**:
-  - Loss (flow matching MSE)
+  - Loss (flow matching MSE + REPA alignment)
+  - REPA loss (cosine alignment with DINOv3 patches)
   - Gradient norm
   - Velocity norm (RMS of predicted velocity vectors, should be ~1.0)
   - Learning rate
@@ -268,6 +275,7 @@ Quick 4-image generation every 100 steps:
 - ✅ **Integrated DINOv3 Patches**: Model now uses ~4000 spatial conditioning tokens per image for precise layout.
 - ✅ **Fixed Timestep Scaling**: Anchored flow matching with 1000x scaled temporal embeddings.
 - ✅ **Memory Optimized**: FlashAttention (SDPA) and Gradient Checkpointing enable training at 1024px on 24GB GPUs.
+- ✅ **REPA Alignment**: Auxiliary loss aligns hidden states with DINOv3 teacher features for faster convergence.
 - 🚧 In progress: Training on 15k image subset, scaling to 86k.
 
 ### Known Limitations
@@ -360,25 +368,13 @@ See full environment in `.venv/` (not committed).
 
 ## Future Work
 
-1. **Larger Dataset**: Expand dataset size towards 86k target.
-   - Better generalization
-   - More diverse compositions
+See [docs/prx-part3-analysis.md](docs/prx-part3-analysis.md) for a detailed analysis of techniques from Photoroom's PRX Part 3.
 
-2. **Caption Augmentation**: Implement left/right swapping for flipped images
-   - Requires NLP caption rewriting
-   - More coherent flip augmentation
+1. **Muon Optimizer**: Replace AdamW with Muon for 2D parameters (easy A/B test).
 
-3. **Multi-GPU Training**: Scale to multiple GPUs
-   - Faster iteration
-   - Larger effective batch sizes
+2. **TREAD Token Routing**: Skip 50% of tokens through middle blocks for ~2× throughput.
 
-4. **Multi-GPU Training**: Scale to multiple GPUs
-   - Faster iteration
-   - Larger effective batch sizes
-
-5. **Latent Consistency Models**: Distill to few-step sampler
-   - 1-4 step inference instead of 25
-   - Better for production deployment
+3. **Larger Dataset**: Expand dataset size towards 86k target.
 
 ## License
 
