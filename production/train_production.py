@@ -353,6 +353,7 @@ def main():
             tensorboard_writer=tb_writer,
             self_guidance=config.sampling.self_guidance,
             guidance_scale=config.sampling.guidance_scale,
+            get_resolution_scale=lambda: getattr(dataloader, 'resolution_scale', 1.0),
         )
     
     # Create trainer
