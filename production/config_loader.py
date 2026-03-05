@@ -19,6 +19,9 @@ class ModelConfig:
     mlp_ratio: float = 4.0
     in_channels: int = 16
     input_size: int = 64
+    prediction_type: Literal["v_prediction", "x_prediction"] = "v_prediction"
+    t_clamp_min: float = 0.05       # Minimum t for x→v conversion (avoids div-by-zero)
+    bottleneck_size: int = 0        # PatchEmbed bottleneck (0 = disabled)
 
 
 @dataclass

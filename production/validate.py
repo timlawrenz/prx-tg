@@ -104,6 +104,7 @@ class ValidationRunner:
         num_steps=50,
         self_guidance=False,
         guidance_scale=3.0,
+        prediction_type="v_prediction",
     ):
         """
         Args:
@@ -114,6 +115,7 @@ class ValidationRunner:
             output_dir: directory for validation outputs
             lpips_net: LPIPS network ('alex' or 'vgg')
             tensorboard_writer: Optional TensorBoard SummaryWriter
+            prediction_type: "v_prediction" or "x_prediction"
         """
         self.model = model
         self.ema = ema
@@ -121,6 +123,7 @@ class ValidationRunner:
         self.device = device
         self.output_dir = Path(output_dir)
         self.tb_writer = tensorboard_writer
+        self.prediction_type = prediction_type
 
         # Sampling CFG scales for validation
         self.text_scale = text_scale
@@ -129,9 +132,13 @@ class ValidationRunner:
         self.self_guidance = self_guidance
         self.guidance_scale = guidance_scale
         
-        # Load VAE decoder
-        print("Loading VAE decoder...")
-        self.vae = load_vae_decoder(device=device)
+        # Load VAE decoder (not needed for pixel-space)
+        if prediction_type == "x_prediction":
+            print("Pixel-space mode: skipping VAE decoder load")
+            self.vae = None
+        else:
+            print("Loading VAE decoder...")
+            self.vae = load_vae_decoder(device=device)
         
         # Load LPIPS metric
         print(f"Loading LPIPS metric ({lpips_net})...")
@@ -223,8 +230,11 @@ class ValidationRunner:
             # Generate images
             gen_images = sampler.generate(dino_emb, dino_patches, text_emb, text_mask)
             
-            # Decode ground truth latents for comparison
-            gt_images = sampler.vae.decode(gt_latents.half().to(self.device)).sample
+            # Decode ground truth for comparison
+            if self.prediction_type == "x_prediction":
+                gt_images = gt_latents.to(self.device) * 2 - 1  # [0,1] → [-1,1]
+            else:
+                gt_images = sampler.vae.decode(gt_latents.half().to(self.device)).sample
             
             # Compute LPIPS
             for j in range(len(batch_indices)):
@@ -504,8 +514,11 @@ class ValidationRunner:
                 text_scale=3.0,  # Normal text guidance
             )
             
-            # Decode ground truth latents for comparison
-            gt_images = sampler.vae.decode(gt_latents.half().to(self.device)).sample
+            # Decode ground truth for comparison
+            if self.prediction_type == "x_prediction":
+                gt_images = gt_latents.to(self.device) * 2 - 1  # [0,1] → [-1,1]
+            else:
+                gt_images = sampler.vae.decode(gt_latents.half().to(self.device)).sample
             
             # Compute LPIPS
             for j in range(len(batch_indices)):
@@ -764,6 +777,7 @@ class ValidationRunner:
             dino_scale=self.dino_scale,
             self_guidance=self.self_guidance,
             guidance_scale=self.guidance_scale,
+            prediction_type=self.prediction_type,
         )
         
         try:
@@ -838,7 +852,7 @@ class ValidationRunner:
 
 
 def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=None, text_scale=3.0, dino_scale=2.0, num_steps=50,
-                         self_guidance=False, guidance_scale=3.0):
+                         self_guidance=False, guidance_scale=3.0, prediction_type="v_prediction"):
     """Create validation function for training loop.
     
     IMPORTANT: This creates its own deterministic dataloader internally,
@@ -854,12 +868,14 @@ def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=
         tensorboard_writer: Optional TensorBoard SummaryWriter
         self_guidance: Use self-guidance instead of dual CFG
         guidance_scale: Self-guidance scale
+        prediction_type: "v_prediction" or "x_prediction"
     
     Returns:
         validation_fn(model, ema, step, device)
     """
     from .data import get_deterministic_validation_dataloader
     
+    pixel_space = prediction_type == "x_prediction"
     runner = None
     val_dataloader = None
     
@@ -873,6 +889,7 @@ def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=
                 shard_dir=shard_dir,
                 batch_size=1,  # Process one at a time for validation
                 target_latent_size=getattr(model, 'input_size', 64),
+                pixel_space=pixel_space,
             )
         
         if runner is None:
@@ -884,6 +901,7 @@ def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=
                 num_steps=num_steps,
                 self_guidance=self_guidance,
                 guidance_scale=guidance_scale,
+                prediction_type=prediction_type,
             )
 
         

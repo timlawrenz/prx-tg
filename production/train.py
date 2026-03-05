@@ -176,34 +176,34 @@ def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="c
     return per_token_loss.mean()
 
 
-def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0):
+def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05):
     """Compute flow matching loss with mutually exclusive CFG dropout.
     
-    CFG dropout uses categorical sampling to ensure exactly one of:
-    - 70% both conditionings present
-    - 10% both dropped (unconditional)
-    - 10% text dropped (DINO-only)
-    - 10% DINO dropped (text-only)
+    Supports two prediction modes:
+    - v_prediction: model predicts velocity v = z1 - x0 (original)
+    - x_prediction: model predicts clean data x0, converted to v-space for MSE
+      with t clamped >= t_clamp_min (Li & He 2025)
     
     Args:
         model: NanoDiT model
-        x0: (B, C, H, W) clean latents (data at t=0)
+        x0: (B, C, H, W) clean data (latents or pixels at t=0)
         dino_emb: (B, 1024) DINOv3 CLS embeddings
         dino_patches: (B, num_patches, 1024) DINOv3 spatial patches
-        text_emb: (B, seq_len, 1024) T5 hidden states (seq_len=500 for full captions)
+        text_emb: (B, seq_len, 1024) T5 hidden states
         text_mask: (B, seq_len) T5 attention mask
-        cfg_probs: dict with p_drop_both, p_drop_text, p_drop_dino
-        dino_patches_mask: (B, num_patches) mask for padding in batched patches
-        return_v_pred: bool, if True return (loss, v_pred) for monitoring
-        repa_config: optional REPAConfig; when enabled, adds alignment loss
-        tread_config: optional TREADConfig; when enabled, activates token routing
+        cfg_probs: dict with CFG dropout probabilities
+        dino_patches_mask: (B, num_patches) mask for padding
+        return_v_pred: bool, if True return (loss, v_pred, repa_loss, lpips_loss)
+        repa_config: optional REPAConfig
+        tread_config: optional TREADConfig
         perceptual_module: optional PerceptualLossModule for LPIPS loss
         perceptual_config: optional PerceptualLossConfig
         micro_step: current micro-step (for every-N gating)
+        prediction_type: "v_prediction" or "x_prediction"
+        t_clamp_min: minimum t for x→v conversion (avoids div-by-zero)
     
     Returns:
         loss: scalar tensor, or (loss, v_pred, repa_loss, lpips_loss) if return_v_pred=True
-        If repa_config is enabled, the returned loss includes the weighted REPA loss.
     """
     B = x0.shape[0]
     device = x0.device
@@ -272,8 +272,19 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     else:
         v_pred = model_output
     
-    # MSE loss
-    loss = F.mse_loss(v_pred, v_target)
+    # Compute MSE loss based on prediction type
+    if prediction_type == "x_prediction":
+        # Model predicts x0; convert both prediction and target to v-space
+        # v = (zt - x0) / max(t, t_clamp_min)  — clamp avoids div-by-zero
+        t_clamped = t.clamp(min=t_clamp_min).view(B, 1, 1, 1)
+        # v_pred is actually x0_pred from model; convert to v-space
+        x0_pred = v_pred  # model output is x0 in x-prediction mode
+        v_pred_converted = (zt - x0_pred) / t_clamped
+        v_target_converted = (zt - x0) / t_clamped
+        loss = F.mse_loss(v_pred_converted, v_target_converted)
+    else:
+        # Standard v-prediction: MSE on velocity directly
+        loss = F.mse_loss(v_pred, v_target)
     
     # REPA alignment loss
     repa_loss = None
@@ -293,8 +304,13 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
         and micro_step % perceptual_config.every_n_microsteps == 0
     )
     if use_perceptual:
-        # Reconstruct predicted clean latent: x0_hat = zt - t * v_pred
-        x0_hat = zt - t_expanded * v_pred
+        if prediction_type == "x_prediction":
+            # In x-prediction, model output IS x0_pred — use directly for perceptual loss
+            # (pixel-space: no VAE decode needed, but PerceptualLossModule handles that)
+            x0_hat = v_pred  # x0_pred from model
+        else:
+            # Reconstruct predicted clean latent: x0_hat = zt - t * v_pred
+            x0_hat = zt - t_expanded * v_pred
         lpips_loss = perceptual_module.compute(x0, x0_hat, perceptual_config.crop_size)
         loss = loss + perceptual_config.lpips_weight * lpips_loss
     
@@ -597,6 +613,8 @@ class Trainer:
             perceptual_module=getattr(self, 'perceptual_module', None),
             perceptual_config=getattr(self, 'perceptual_config', None),
             micro_step=getattr(self, 'micro_step', 0),
+            prediction_type=getattr(self, 'prediction_type', 'v_prediction'),
+            t_clamp_min=getattr(self, 't_clamp_min', 0.05),
         )
         
         # Scale loss by accumulation steps
@@ -958,6 +976,10 @@ class ProductionTrainer(Trainer):
         else:
             self.perceptual_module = None
             self.perceptual_config = None
+        
+        # Prediction type (v_prediction or x_prediction)
+        self.prediction_type = config.model.prediction_type
+        self.t_clamp_min = config.model.t_clamp_min
         
         # Gradient accumulation state
         self.accum_steps = 0

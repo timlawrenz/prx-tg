@@ -206,6 +206,7 @@ class ValidationDataset:
         target_latent_size=64,
         shard_files=None,
         deterministic=False,
+        pixel_space=False,
     ):
         """
         Args:
@@ -215,12 +216,14 @@ class ValidationDataset:
             flip_prob: Probability of horizontal flip augmentation
             target_latent_size: Target spatial size for VAE latents (64 = 512x512 image)
             deterministic: If True, set seeds for reproducible sample ordering
+            pixel_space: If True, load image.npy (RGB) instead of vae.npy (VAE latents)
         """
         self.shard_dir = Path(shard_dir)
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.flip_prob = flip_prob
         self.target_latent_size = target_latent_size
+        self.pixel_space = pixel_space
         
         # Set seeds for deterministic behavior
         if deterministic:
@@ -245,7 +248,7 @@ class ValidationDataset:
         """Process a raw WebDataset sample into model inputs.
         
         Args:
-            sample: dict with keys: __key__, json, dinov3.npy, dinov3_patches.npy, vae.npy, t5h.npy, t5m.npy
+            sample: dict with keys: __key__, json, dinov3.npy, dinov3_patches.npy, vae.npy/image.npy, t5h.npy, t5m.npy
         
         Returns:
             dict with keys: vae_latent, dino_embedding, dinov3_patches, t5_hidden, t5_mask, caption, image_id
@@ -258,29 +261,28 @@ class ValidationDataset:
         # Load embeddings (webdataset already decoded .npy files to numpy arrays)
         dino_emb = sample['dinov3.npy']  # (1024,)
         dino_patches = sample['dinov3_patches.npy']  # (num_patches, 1024) - variable length!
-        vae_latent = sample['vae.npy']  # (16, H, W)
         t5_hidden = sample['t5h.npy']  # (512, 1024) - T5-XXL supports 512 tokens
         t5_mask = sample['t5m.npy']  # (512,)
         
-        # Horizontal flip augmentation DISABLED
-        # Flipping requires flipping DINOv3 patches spatially, which needs:
-        # 1. Knowledge of patch grid dimensions (varies by bucket)
-        # 2. Reshaping patches to 2D, flipping, reshaping back
-        # Since patches are critical for spatial learning, we disable flipping
-        # to avoid training with misaligned spatial conditioning.
-        
-        # Resize VAE latent to target size (training may keep native bucket resolution)
-        if self.target_latent_size is None:
-            vae_latent = torch.from_numpy(vae_latent)
+        # Load image data: pixel-space RGB or VAE latents
+        if self.pixel_space:
+            image_data = sample['image.npy']  # (3, H, W) float16, range [0, 1]
         else:
-            vae_latent = resize_vae_latent(vae_latent, self.target_latent_size)
+            image_data = sample['vae.npy']  # (16, H, W)
         
-        # Normalize VAE latent (if enabled)
-        vae_latent = normalize_vae_latent(vae_latent)
+        # Resize to target size (works for both latents and pixel images)
+        if self.target_latent_size is None:
+            image_data = torch.from_numpy(image_data)
+        else:
+            image_data = resize_vae_latent(image_data, self.target_latent_size)
+        
+        # Normalize VAE latents (skip for pixel-space — already [0, 1])
+        if not self.pixel_space:
+            image_data = normalize_vae_latent(image_data)
         
         # Convert to tensors
         return {
-            'vae_latent': vae_latent.float(),  # (16, H, W)
+            'vae_latent': image_data.float(),  # (C, H, W) — 16ch latent or 3ch RGB
             'dino_embedding': torch.from_numpy(dino_emb).float(),  # (1024,)
             'dinov3_patches': torch.from_numpy(dino_patches).float(),  # (num_patches, 1024) - VARIABLE!
             't5_hidden': torch.from_numpy(t5_hidden).float(),  # (512, 1024)
@@ -389,6 +391,7 @@ def get_deterministic_validation_dataloader(
     shard_dir='data/shards/validation',
     batch_size=1,
     target_latent_size=64,
+    pixel_space=False,
 ):
     """Create deterministic validation dataloader for consistent testing.
     
@@ -398,13 +401,11 @@ def get_deterministic_validation_dataloader(
     - Does NOT repeat (finite, single pass)
     - Sets seeds for reproducible sample selection
     
-    Use this for validation tests where you need consistent sample indices
-    across different training steps (reconstruction LPIPS, DINO swap, etc.)
-    
     Args:
         shard_dir: Path to validation shards
         batch_size: Number of samples per batch (default 1 for validation)
-        target_latent_size: Target spatial size for VAE latents
+        target_latent_size: Target spatial size for VAE latents (or pixel size)
+        pixel_space: If True, load image.npy instead of vae.npy
     
     Returns:
         iterable dataloader yielding batches
@@ -416,6 +417,7 @@ def get_deterministic_validation_dataloader(
         flip_prob=0.0,   # CRITICAL: no augmentation for consistency
         target_latent_size=target_latent_size,
         deterministic=True,  # CRITICAL: set seeds for reproducible sampling
+        pixel_space=pixel_space,
     )
     return dataset
 
@@ -423,12 +425,13 @@ def get_deterministic_validation_dataloader(
 class BucketAwareDataLoader:
     """Sample whole batches from a single aspect-ratio bucket."""
 
-    def __init__(self, bucket_datasets, bucket_weights):
+    def __init__(self, bucket_datasets, bucket_weights, pixel_space=False):
         self.bucket_datasets = bucket_datasets  # dict[name -> ValidationDataset]
         self.bucket_names = list(bucket_datasets.keys())
         self.bucket_weights = bucket_weights
         self._logged = set()
         self._resolution_scale = 1.0
+        self._pixel_space = pixel_space
         # Store original (full-res) target sizes per bucket
         self._base_target_sizes = {
             name: ds.target_latent_size for name, ds in bucket_datasets.items()
@@ -444,15 +447,16 @@ class BucketAwareDataLoader:
         if scale == self._resolution_scale:
             return
         self._resolution_scale = scale
+        # Align to patch_size grid: 32 for pixel-space, 2 for latent-space
+        align = 32 if self._pixel_space else 2
         for name, ds in self.bucket_datasets.items():
             base = self._base_target_sizes[name]
             if isinstance(base, tuple):
-                # Ensure even dims for patch_size=2
-                h = max(2, (int(base[0] * scale) // 2) * 2)
-                w = max(2, (int(base[1] * scale) // 2) * 2)
+                h = max(align, (int(base[0] * scale) // align) * align)
+                w = max(align, (int(base[1] * scale) // align) * align)
                 ds.target_latent_size = (h, w)
             else:
-                ds.target_latent_size = max(2, (int(base * scale) // 2) * 2)
+                ds.target_latent_size = max(align, (int(base * scale) // align) * align)
         self._logged.clear()  # Re-log shapes at new resolution
 
     def __iter__(self):
@@ -496,12 +500,22 @@ def _bucket_target_latent_size(bucket_name: str) -> tuple[int, int]:
     return (h_px // 8, w_px // 8)
 
 
+def _bucket_target_pixel_size(bucket_name: str) -> tuple[int, int]:
+    """Get target pixel dimensions (H, W) from bucket name."""
+    m = re.search(r"(\d+)x(\d+)$", bucket_name)
+    if not m:
+        raise ValueError(f"Invalid bucket name (expected ..._<W>x<H>): {bucket_name}")
+    w_px, h_px = int(m.group(1)), int(m.group(2))
+    return (h_px, w_px)
+
+
 def get_production_dataloader(config, device='cuda'):
     """Create production dataloader from config (bucket-aware, per-bucket target sizes)."""
     from .config_loader import Config
 
     data_cfg = config.data
     training_cfg = config.training
+    pixel_space = getattr(config.model, 'prediction_type', 'v_prediction') == 'x_prediction'
 
     shard_dir = Path(data_cfg.shard_base_dir)
 
@@ -511,6 +525,8 @@ def get_production_dataloader(config, device='cuda'):
     print(f"  Flip prob: {data_cfg.horizontal_flip_prob}")
     print(f"  Bucket-aware batching: ENABLED")
     print(f"  Bucket sampling: {data_cfg.bucket_sampling}")
+    if pixel_space:
+        print(f"  Pixel-space mode: ENABLED (loading image.npy)")
 
     bucket_datasets = {}
     bucket_weights = []
@@ -522,13 +538,16 @@ def get_production_dataloader(config, device='cuda'):
             print(f"  warning: skipping bucket with no shards: {bucket_name}")
             continue
 
+        target_size = _bucket_target_pixel_size(bucket_name) if pixel_space else _bucket_target_latent_size(bucket_name)
+
         bucket_datasets[bucket_name] = ValidationDataset(
             shard_dir=str(shard_dir / bucket_name),
             shard_files=shard_files,
             batch_size=training_cfg.batch_size,
             shuffle=True,
             flip_prob=data_cfg.horizontal_flip_prob,
-            target_latent_size=_bucket_target_latent_size(bucket_name),
+            target_latent_size=target_size,
+            pixel_space=pixel_space,
         )
         bucket_weights.append(len(shard_files))
 
@@ -538,7 +557,7 @@ def get_production_dataloader(config, device='cuda'):
     if data_cfg.bucket_sampling == 'uniform':
         bucket_weights = [1.0 for _ in bucket_weights]
 
-    return BucketAwareDataLoader(bucket_datasets, bucket_weights)
+    return BucketAwareDataLoader(bucket_datasets, bucket_weights, pixel_space=pixel_space)
 
 
 if __name__ == "__main__":

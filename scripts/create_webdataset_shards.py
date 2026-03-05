@@ -90,6 +90,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--overwrite", action="store_true", help="Overwrite existing shard tar files")
     p.add_argument("--dry-run", action="store_true", help="Do not write shards; just report what would happen")
     p.add_argument(
+        "--include-images",
+        action="store_true",
+        help="Include resized RGB images as image.npy (for pixel-space training)",
+    )
+    p.add_argument(
+        "--image-dir",
+        default=None,
+        help="Override base directory for source images (default: use image_path from JSONL as-is)",
+    )
+    p.add_argument(
         "--progress-every",
         type=int,
         default=500,
@@ -104,6 +114,8 @@ def iter_ready_records(
     counters: Counters,
     allowed_buckets: set[str] | None,
     progress_every: int,
+    include_images: bool = False,
+    image_dir: str | None = None,
 ):
     dino_dir = derived_dir / "dinov3"
     dino_patches_dir = derived_dir / "dinov3_patches"
@@ -159,7 +171,7 @@ def iter_ready_records(
                     f"skipped_incomplete={counters.skipped_incomplete}"
                 )
 
-            yield {
+            record_data = {
                 "record": obj,
                 "image_id": image_id,
                 "bucket": bucket,
@@ -169,6 +181,22 @@ def iter_ready_records(
                 "t5_path": t5_path,
                 "t5_mask": mask,
             }
+
+            if include_images:
+                image_path_str = obj.get("image_path", "")
+                if image_dir:
+                    # Override directory: use image_dir + filename from image_path
+                    fname = Path(image_path_str).name if image_path_str else f"{image_id}.jpg"
+                    img_path = Path(image_dir) / fname
+                else:
+                    img_path = Path(image_path_str)
+                if not img_path.is_file():
+                    counters.skipped_incomplete += 1
+                    counters.ready_records -= 1
+                    continue
+                record_data["image_path"] = img_path
+
+            yield record_data
 
 
 def add_bytes(tf: tarfile.TarFile, arcname: str, data: bytes):
@@ -186,6 +214,54 @@ def add_file(tf: tarfile.TarFile, arcname: str, path: Path):
         tf.addfile(ti, f)
 
 
+def load_bucketed_image_as_npy(image_path: Path, bucket: str) -> bytes | None:
+    """Load image, resize-to-cover + center-crop to bucket dims, return as float16 npy bytes."""
+    import math
+    import numpy as np
+
+    try:
+        from PIL import Image
+    except ImportError:
+        eprint("error: Pillow is required for --include-images (pip install Pillow)")
+        return None
+
+    parts = bucket.split("x")
+    if len(parts) != 2:
+        return None
+    bucket_w, bucket_h = int(parts[0]), int(parts[1])
+
+    try:
+        with Image.open(image_path) as im:
+            img = im.convert("RGB")
+    except Exception as e:
+        eprint(f"warning: failed to load {image_path}: {e}")
+        return None
+
+    w, h = img.size
+    if w <= 0 or h <= 0:
+        return None
+
+    # Resize-to-cover
+    scale = max(bucket_w / w, bucket_h / h)
+    new_w = int(math.ceil(w * scale))
+    new_h = int(math.ceil(h * scale))
+    if (new_w, new_h) != (w, h):
+        img = img.resize((new_w, new_h), resample=Image.BICUBIC)
+
+    # Center crop
+    left = max(0, (new_w - bucket_w) // 2)
+    top = max(0, (new_h - bucket_h) // 2)
+    img = img.crop((left, top, left + bucket_w, top + bucket_h))
+
+    # Convert to float16 numpy: (3, H, W), range [0, 1]
+    arr = np.array(img, dtype=np.float32) / 255.0
+    arr = arr.transpose(2, 0, 1).astype(np.float16)  # (3, H, W)
+
+    buf = io.BytesIO()
+    np.save(buf, arr)
+    return buf.getvalue()
+
+
 def write_shards(
     output_dir: Path,
     bucket: str,
@@ -194,6 +270,7 @@ def write_shards(
     overwrite: bool,
     dry_run: bool,
     counters: Counters,
+    include_images: bool = False,
 ):
     bucket_dir = output_dir / f"bucket_{bucket}"
     if not dry_run:
@@ -244,6 +321,12 @@ def write_shards(
                 except Exception as e:
                     raise RuntimeError(f"Failed writing mask for {image_id}: {e}")
 
+                # 4) Optional RGB image as .npy (for pixel-space training)
+                if include_images and "image_path" in s:
+                    img_bytes = load_bucketed_image_as_npy(s["image_path"], bucket)
+                    if img_bytes:
+                        add_bytes(tf, f"{image_id}.image.npy", img_bytes)
+
         counters.written_shards += 1
         counters.written_samples += len(chunk)
         shard_idx += 1
@@ -271,7 +354,8 @@ def main(argv: list[str]) -> int:
     counters = Counters()
 
     ready = list(
-        iter_ready_records(jsonl_path, derived_dir, counters, allowed_buckets=allowed_buckets, progress_every=args.progress_every)
+        iter_ready_records(jsonl_path, derived_dir, counters, allowed_buckets=allowed_buckets, progress_every=args.progress_every,
+                           include_images=args.include_images, image_dir=args.image_dir)
     )
 
     if args.shuffle:
@@ -301,6 +385,7 @@ def main(argv: list[str]) -> int:
             overwrite=args.overwrite,
             dry_run=args.dry_run,
             counters=counters,
+            include_images=args.include_images,
         )
 
     eprint(

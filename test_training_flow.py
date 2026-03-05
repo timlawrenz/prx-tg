@@ -612,5 +612,106 @@ assert torch.allclose(x0_hat_test, x0_test, atol=1e-5), "x0_hat should match x0 
 print(f"✓ x0_hat reconstruction: zt - t*v_target ≈ x0 (max diff: {(x0_hat_test - x0_test).abs().max():.2e})")
 
 print("\n" + "="*60)
+print("TESTING X-PREDICTION / PIXEL-SPACE")
+print("="*60)
+
+# Test 1: X-prediction loss math
+# When prediction_type='x_prediction', model output is treated as x0_pred
+# Loss converts to v-space: v = (zt - x0) / max(t, 0.05)
+B_xp = 1
+x0_xp = torch.randn(B_xp, 3, 32, 32)  # pixel-space: 3 channels
+z1_xp = torch.randn(B_xp, 3, 32, 32)
+t_xp = torch.tensor([0.3])
+
+# Create noised sample
+t_exp = t_xp.view(B_xp, 1, 1, 1)
+zt_xp = (1 - t_exp) * x0_xp + t_exp * z1_xp
+
+# X-prediction v-space conversion
+t_clamped = t_xp.clamp(min=0.05).view(B_xp, 1, 1, 1)
+v_pred_from_x0 = (zt_xp - x0_xp) / t_clamped
+v_target_from_x0 = (zt_xp - x0_xp) / t_clamped
+# If x0_pred == x0, loss should be zero
+loss_xp = F.mse_loss(v_pred_from_x0, v_target_from_x0)
+assert loss_xp.item() < 1e-10, f"Perfect x0 prediction should give zero v-space loss, got {loss_xp.item()}"
+print(f"✓ X-prediction: perfect x0_pred gives zero v-space loss ({loss_xp.item():.2e})")
+
+# Test 2: t clamping at small t
+t_small = torch.tensor([0.01])
+t_clamped_small = t_small.clamp(min=0.05)
+assert abs(t_clamped_small.item() - 0.05) < 1e-6, f"t=0.01 should be clamped to 0.05, got {t_clamped_small.item()}"
+print(f"✓ X-prediction: t=0.01 correctly clamped to {t_clamped_small.item()}")
+
+# Test 3: PatchEmbed with bottleneck for pixel-space
+from production.model import PatchEmbed
+pe_pixel = PatchEmbed(
+    patch_size=32, in_channels=3,
+    hidden_size=384, bottleneck_size=256
+)
+pixel_input = torch.randn(1, 3, 1024, 1024)
+pe_out = pe_pixel(pixel_input)
+expected_tokens = (1024 // 32) ** 2  # 32x32 = 1024 tokens
+assert pe_out.shape == (1, expected_tokens, 384), f"Expected (1, {expected_tokens}, 384), got {pe_out.shape}"
+print(f"✓ PatchEmbed pixel-space: (1, 3, 1024, 1024) → {tuple(pe_out.shape)} ({expected_tokens} tokens)")
+
+# Test 4: PatchEmbed without bottleneck (latent-space unchanged)
+pe_latent = PatchEmbed(
+    patch_size=2, in_channels=16,
+    hidden_size=384, bottleneck_size=0
+)
+latent_input = torch.randn(1, 16, 128, 128)
+pe_lat_out = pe_latent(latent_input)
+expected_lat_tokens = (128 // 2) ** 2  # 64x64 = 4096 tokens
+assert pe_lat_out.shape == (1, expected_lat_tokens, 384), f"Expected (1, {expected_lat_tokens}, 384), got {pe_lat_out.shape}"
+print(f"✓ PatchEmbed latent-space: (1, 16, 128, 128) → {tuple(pe_lat_out.shape)} ({expected_lat_tokens} tokens)")
+
+# Test 5: flow_matching_loss with x_prediction
+model_xp = NanoDiT(
+    input_size=32, patch_size=2, in_channels=3,
+    hidden_size=128, depth=4, num_heads=4, mlp_ratio=4.0,
+)
+x0_fm = torch.randn(1, 3, 32, 32)
+dino_emb_fm = torch.randn(1, 1024)
+dino_patches_fm = torch.randn(1, 4, 1024)
+text_emb_fm = torch.randn(1, 10, 1024)
+text_mask_fm = torch.ones(1, 10)
+cfg = {'p_uncond': 0.0, 'p_text_only': 0.0, 'p_dino_cls_only': 0.0, 'p_dino_patches_only': 0.0}
+
+loss_xp, v_pred_xp, repa_xp, lpips_xp = flow_matching_loss(
+    model_xp, x0_fm, dino_emb_fm, dino_patches_fm, text_emb_fm, text_mask_fm,
+    cfg, return_v_pred=True, prediction_type="x_prediction", t_clamp_min=0.05,
+)
+assert loss_xp.item() > 0, "X-prediction loss should be positive"
+assert v_pred_xp.shape == x0_fm.shape, f"v_pred shape mismatch: {v_pred_xp.shape} vs {x0_fm.shape}"
+print(f"✓ flow_matching_loss with x_prediction: loss={loss_xp.item():.4f}, v_pred shape={tuple(v_pred_xp.shape)}")
+
+# Test 6: flow_matching_loss backward compatibility (v_prediction)
+loss_vp, v_pred_vp, repa_vp, lpips_vp = flow_matching_loss(
+    model_xp, x0_fm, dino_emb_fm, dino_patches_fm, text_emb_fm, text_mask_fm,
+    cfg, return_v_pred=True, prediction_type="v_prediction",
+)
+assert loss_vp.item() > 0, "V-prediction loss should be positive"
+print(f"✓ flow_matching_loss with v_prediction: loss={loss_vp.item():.4f} (backward compatible)")
+
+# Test 7: Euler sampler with x_prediction
+from production.sample import EulerSampler
+sampler_xp = EulerSampler(num_steps=5)
+with torch.no_grad():
+    out_xp = sampler_xp.sample(
+        model_xp, (1, 3, 32, 32), dino_emb_fm, dino_patches_fm, text_emb_fm, text_mask_fm,
+        device='cpu', prediction_type="x_prediction",
+    )
+assert out_xp.shape == (1, 3, 32, 32), f"Expected (1, 3, 32, 32), got {out_xp.shape}"
+print(f"✓ EulerSampler with x_prediction: output shape {tuple(out_xp.shape)}")
+
+# Test 8: Config prediction_type defaults
+from production.config_loader import ModelConfig
+mc = ModelConfig()
+assert mc.prediction_type == "v_prediction", f"Default prediction_type should be v_prediction, got {mc.prediction_type}"
+assert mc.t_clamp_min == 0.05, f"Default t_clamp_min should be 0.05, got {mc.t_clamp_min}"
+assert mc.bottleneck_size == 0, f"Default bottleneck_size should be 0, got {mc.bottleneck_size}"
+print(f"✓ ModelConfig defaults: prediction_type={mc.prediction_type}, t_clamp_min={mc.t_clamp_min}, bottleneck_size={mc.bottleneck_size}")
+
+print("\n" + "="*60)
 print("ALL TESTS PASSED ✓")
 print("="*60)

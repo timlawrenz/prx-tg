@@ -33,20 +33,19 @@ class EulerSampler:
         dino_scale=2.0,
         self_guidance=False,
         guidance_scale=3.0,
+        prediction_type="v_prediction",
     ):
         """Sample from model using Euler integration with dual CFG or self-guidance.
         
-        Rectified flow sampling integrates the learned velocity field backward in time:
-        - Start at t=1 (pure noise z1)
-        - Integrate to t=0 (clean data x0)
-        - Velocity field v = z1 - x0 points from data toward noise (forward time)
-        - Integration: z_{t+dt} = z_t + v * dt with negative dt moves toward data
+        Supports:
+        - v_prediction: model outputs velocity v, integrate directly
+        - x_prediction: model outputs x0, derive velocity v = (zt - x0) / t
         
         Args:
             model: NanoDiT model
             shape: (B, C, H, W) output shape
             dino_emb: (B, 1024) DINOv3 CLS embeddings
-            dino_patches: (B, num_patches, 1024) DINOv3 spatial patches (variable length!)
+            dino_patches: (B, num_patches, 1024) DINOv3 spatial patches
             text_emb: (B, 500, 1024) T5 hidden states
             text_mask: (B, 500) T5 attention mask
             device: torch device
@@ -54,9 +53,10 @@ class EulerSampler:
             dino_scale: CFG scale for DINO conditioning (dual CFG mode)
             self_guidance: if True, use TREAD self-guidance instead of dual CFG
             guidance_scale: self-guidance scale (self-guidance mode only)
+            prediction_type: "v_prediction" or "x_prediction"
         
         Returns:
-            latents: (B, C, H, W) sampled latents
+            output: (B, C, H, W) sampled data (latents or pixels)
         """
         B = shape[0]
         
@@ -117,9 +117,17 @@ class EulerSampler:
                 # Dual CFG combination
                 v_pred = v_uncond + text_scale * (v_text - v_uncond) + dino_scale * (v_dino - v_uncond)
             
+            # Derive velocity for Euler integration
+            if prediction_type == "x_prediction":
+                # Model outputs x0_pred; derive velocity: v = (zt - x0) / t
+                t_val = t_curr.clamp(min=0.05)
+                v_pred_euler = (zt - v_pred) / t_val
+            else:
+                v_pred_euler = v_pred
+            
             # Euler integration: z_{t+dt} = z_t + v * dt
             # dt is negative, v points toward noise, so we move toward data
-            zt = zt + v_pred * dt
+            zt = zt + v_pred_euler * dt
         
         return zt
 
@@ -250,17 +258,19 @@ class ValidationSampler:
         dino_scale=2.0,
         self_guidance=False,
         guidance_scale=3.0,
+        prediction_type="v_prediction",
     ):
         """
         Args:
             model: NanoDiT model
-            vae: VAE decoder
+            vae: VAE decoder (can be None for pixel-space)
             device: torch device
             num_steps: number of sampling steps
             text_scale: CFG scale for text (dual CFG mode)
             dino_scale: CFG scale for DINO (dual CFG mode)
             self_guidance: use self-guidance instead of dual CFG
             guidance_scale: self-guidance scale
+            prediction_type: "v_prediction" or "x_prediction"
         """
         self.model = model
         self.vae = vae
@@ -270,6 +280,7 @@ class ValidationSampler:
         self.dino_scale = dino_scale
         self.self_guidance = self_guidance
         self.guidance_scale = guidance_scale
+        self.prediction_type = prediction_type
     
     @torch.no_grad()
     def generate(
@@ -317,27 +328,43 @@ class ValidationSampler:
             latent_size = getattr(self.model, 'input_size', 64)
 
         use_self_guidance = self_guidance if self_guidance is not None else self.self_guidance
+        
+        # Determine shape based on prediction type
+        pixel_space = self.prediction_type == "x_prediction"
+        in_channels = 3 if pixel_space else 16
+        if pixel_space:
+            # For pixel-space, latent_size is the pixel dimension (e.g., 1024)
+            # If it looks like a latent size (small), scale up
+            spatial_size = latent_size if latent_size > 64 else latent_size * 8
+        else:
+            spatial_size = latent_size
 
-        # Sample latents
-        shape = (batch_size, 16, latent_size, latent_size)
+        # Sample
+        shape = (batch_size, in_channels, spatial_size, spatial_size)
         if use_self_guidance:
-            latents = self.sampler.sample(
+            output = self.sampler.sample(
                 self.model, shape, dino_emb, dino_patches, text_emb, text_mask,
                 device=self.device,
                 self_guidance=True,
                 guidance_scale=guidance_scale if guidance_scale is not None else self.guidance_scale,
+                prediction_type=self.prediction_type,
             )
         else:
             cfg_text_scale = text_scale if text_scale is not None else self.text_scale
             cfg_dino_scale = dino_scale if dino_scale is not None else self.dino_scale
-            latents = self.sampler.sample(
+            output = self.sampler.sample(
                 self.model, shape, dino_emb, dino_patches, text_emb, text_mask,
                 device=self.device,
                 text_scale=cfg_text_scale, dino_scale=cfg_dino_scale,
+                prediction_type=self.prediction_type,
             )
         
-        # Decode to images
-        images = decode_latents(self.vae, latents)
+        if pixel_space:
+            # Output is already RGB [0,1] — clamp and return
+            images = output.clamp(0, 1)
+        else:
+            # Decode latents to images via VAE
+            images = decode_latents(self.vae, output)
         
         return images
 
