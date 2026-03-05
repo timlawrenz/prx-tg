@@ -226,6 +226,38 @@ def save_vae_latent(latent: np.ndarray, image_id: str, output_dir: Path):
     save_npy(latent, npy_path, np.float16)
 
 
+def save_pixel_image(image_path: Path, image_id: str, output_dir: Path, aspect_bucket: str) -> bool:
+    """Save bucketed RGB crop as pixel .npy file for pixel-space training.
+    
+    Loads the original image, resizes to cover the bucket dimensions,
+    center-crops to exact bucket size, and saves as (3, H, W) float16 [0, 1].
+    
+    Returns True on success, False on failure.
+    """
+    import numpy as np
+
+    dims = parse_bucket_dims(aspect_bucket)
+    if not dims:
+        eprint(f"warning: invalid aspect_bucket '{aspect_bucket}' for {image_id}")
+        return False
+
+    bucket_w, bucket_h = dims
+
+    try:
+        img = load_bucketed_image(image_path, bucket_w, bucket_h)
+    except Exception as e:
+        eprint(f"warning: failed to load image for pixel save {image_path}: {e}")
+        return False
+
+    # Convert to (3, H, W) float16 [0, 1]
+    arr = np.array(img, dtype=np.float32) / 255.0
+    arr = arr.transpose(2, 0, 1)  # (H, W, 3) → (3, H, W)
+
+    npy_path = output_dir / f"{image_id}.npy"
+    save_npy(arr, npy_path, np.float16)
+    return True
+
+
 def save_t5_hidden(hidden: np.ndarray, image_id: str, output_dir: Path):
     """Save T5 hidden states to .npy file."""
     npy_path = output_dir / f"{image_id}.npy"
@@ -888,6 +920,35 @@ def needs_t5_hidden(record: dict, t5_dir: Path) -> bool:
     return not npy_path.exists()
 
 
+def needs_pixel_image(record: dict, images_dir: Path) -> bool:
+    """Check if pixel image .npy is missing OR stale for the record's aspect_bucket."""
+    import numpy as np
+
+    image_path = Path(record["image_path"])
+    image_id = compute_image_id(image_path)
+    npy_path = images_dir / f"{image_id}.npy"
+
+    if not npy_path.exists():
+        return True
+
+    dims = parse_bucket_dims(record.get("aspect_bucket"))
+    if not dims:
+        return True
+
+    bw, bh = dims
+    expected = (3, bh, bw)
+
+    try:
+        arr = np.load(npy_path, mmap_mode="r")
+        if arr.shape != expected:
+            return True
+        if arr.dtype != np.float16:
+            return True
+        return False
+    except Exception:
+        return True
+
+
 def needs_migration(record: dict) -> bool:
     """Check if record needs migration to Stage 2 format."""
     return record.get("format_version") != 2
@@ -951,11 +1012,13 @@ def verify_stage2_data(output_path: Path, base_dir: Path) -> dict:
     dinov3_dir = base_dir / "dinov3"
     vae_dir = base_dir / "vae_latents"
     t5_dir = base_dir / "t5_hidden"
+    images_dir = base_dir / "images"
     
     results = {
         "dinov3": {"valid": 0, "invalid": 0, "missing": 0},
         "vae": {"valid": 0, "invalid": 0, "missing": 0},
         "t5": {"valid": 0, "invalid": 0, "missing": 0},
+        "image": {"valid": 0, "invalid": 0, "missing": 0},
     }
     
     if not output_path.exists():
@@ -1034,6 +1097,40 @@ def verify_stage2_data(output_path: Path, base_dir: Path) -> dict:
             except Exception as e:
                 results["t5"]["invalid"] += 1
                 eprint(f"  corrupt T5 for {image_id}: {e}")
+        
+        # Check pixel image
+        image_npy_path = images_dir / f"{image_id}.npy"
+        if not image_npy_path.exists():
+            results["image"]["missing"] += 1
+        else:
+            try:
+                arr = np.load(image_npy_path)
+                expected = None
+                dims = parse_bucket_dims(record.get("aspect_bucket"))
+                if dims:
+                    bw, bh = dims
+                    expected = (3, bh, bw)
+
+                is_valid = (
+                    arr.ndim == 3
+                    and arr.shape[0] == 3
+                    and arr.dtype == np.float16
+                    and (expected is None or arr.shape == expected)
+                )
+
+                if is_valid:
+                    results["image"]["valid"] += 1
+                else:
+                    results["image"]["invalid"] += 1
+                    if expected is not None:
+                        eprint(
+                            f"  invalid image for {image_id}: shape={arr.shape}, dtype={arr.dtype}, expected_shape={expected}"
+                        )
+                    else:
+                        eprint(f"  invalid image for {image_id}: shape={arr.shape}, dtype={arr.dtype}")
+            except Exception as e:
+                results["image"]["invalid"] += 1
+                eprint(f"  corrupt image for {image_id}: {e}")
     
     return results
 
@@ -1161,9 +1258,9 @@ def parse_args(argv):
     p.add_argument(
         "--pass",
         dest="pass_filter",
-        choices=["all", "dinov3", "vae", "t5", "migrate"],
+        choices=["all", "dinov3", "vae", "t5", "image", "migrate"],
         default="all",
-        help="Run specific pass: all (default), dinov3 (extract only), vae (encode VAE latents), t5 (encode T5 hidden), migrate (JSONL format only)",
+        help="Run specific pass: all (default), dinov3, vae, t5, image (pixel-space .npy), migrate",
     )
     p.add_argument(
         "--progress-every",
@@ -1255,11 +1352,13 @@ def main(argv):
     dinov3_patches_dir = base_dir / "dinov3_patches"
     vae_dir = base_dir / "vae_latents"
     t5_dir = base_dir / "t5_hidden"
+    images_dir = base_dir / "images"
     
     dinov3_dir.mkdir(parents=True, exist_ok=True)
     dinov3_patches_dir.mkdir(parents=True, exist_ok=True)
     vae_dir.mkdir(parents=True, exist_ok=True)
     t5_dir.mkdir(parents=True, exist_ok=True)
+    images_dir.mkdir(parents=True, exist_ok=True)
 
     # Verification mode
     if args.verify:
@@ -1280,6 +1379,11 @@ def main(argv):
         eprint(f"  valid: {results['t5']['valid']}")
         eprint(f"  invalid: {results['t5']['invalid']}")
         eprint(f"  missing: {results['t5']['missing']}")
+        
+        eprint("\nPixel images:")
+        eprint(f"  valid: {results['image']['valid']}")
+        eprint(f"  invalid: {results['image']['invalid']}")
+        eprint(f"  missing: {results['image']['missing']}")
         
         return 0
 
@@ -1347,7 +1451,7 @@ def main(argv):
             temp_path.unlink()
         
         import shutil
-        for npy_dir in [dinov3_dir, vae_dir, t5_dir]:
+        for npy_dir in [dinov3_dir, vae_dir, t5_dir, images_dir]:
             if npy_dir.exists():
                 eprint(f"--no-resume: deleting {npy_dir}")
                 shutil.rmtree(npy_dir)
@@ -1378,6 +1482,7 @@ def main(argv):
     run_dinov3 = args.pass_filter in ["all", "dinov3"]
     run_vae = args.pass_filter in ["all", "vae"]
     run_t5 = args.pass_filter in ["all", "t5"]
+    run_image = args.pass_filter in ["all", "image"]
     run_migrate = args.pass_filter in ["all", "migrate"]
 
     # Load models conditionally based on pass
@@ -1548,6 +1653,7 @@ def main(argv):
             needs_dino_patches_disk = run_dinov3 and needs_dinov3_patches_on_disk(record, dinov3_patches_dir)
             needs_vae_gen = run_vae and needs_vae_latent(record, vae_dir)
             needs_t5_gen = run_t5 and needs_t5_hidden(record, t5_dir)
+            needs_image_gen = run_image and needs_pixel_image(record, images_dir)
             needs_format_migration = run_migrate and needs_migration(record)
             needs_t5_mask = needs_field(record, "t5_attention_mask")  # Check for missing/truncated masks
 
@@ -1561,6 +1667,7 @@ def main(argv):
                 and not needs_dino_patches_disk  # Also check patches
                 and not needs_vae_gen
                 and not needs_t5_gen
+                and not needs_image_gen
                 and not needs_format_migration
                 and not needs_t5_mask  # Also check t5_attention_mask is valid
             )
@@ -1677,6 +1784,20 @@ def main(argv):
                         eprint(f"warning: T5 encoding failed for {image_id}")
                 else:
                     eprint(f"warning: no caption for {image_id}, skipping T5 encoding")
+
+            # Handle image pass (pixel-space training data)
+            if run_image and needs_image_gen:
+                ensure_bucket_info(record, img_path)
+                aspect_bucket = record.get("aspect_bucket")
+                if aspect_bucket:
+                    if args.verbose:
+                        eprint(f"verbose: saving pixel image for {image_id} (bucket {aspect_bucket})...")
+                    if save_pixel_image(img_path, image_id, images_dir, aspect_bucket):
+                        enriched += 1
+                    else:
+                        eprint(f"warning: pixel image save failed for {image_id}")
+                else:
+                    eprint(f"warning: no aspect_bucket for {image_id}, skipping pixel image")
 
             # Handle migration pass
             if run_migrate and needs_format_migration:
