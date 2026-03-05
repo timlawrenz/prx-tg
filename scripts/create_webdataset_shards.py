@@ -90,9 +90,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--overwrite", action="store_true", help="Overwrite existing shard tar files")
     p.add_argument("--dry-run", action="store_true", help="Do not write shards; just report what would happen")
     p.add_argument(
-        "--include-images",
+        "--no-images",
         action="store_true",
-        help="Include pre-generated pixel images (from images/*.npy) as image.npy in shards",
+        help="Exclude pixel images (images/*.npy) from shards",
     )
     p.add_argument(
         "--progress-every",
@@ -293,7 +293,7 @@ def main(argv: list[str]) -> int:
 
     ready = list(
         iter_ready_records(jsonl_path, derived_dir, counters, allowed_buckets=allowed_buckets, progress_every=args.progress_every,
-                           include_images=args.include_images)
+                           include_images=not args.no_images)
     )
 
     if args.shuffle:
@@ -323,7 +323,7 @@ def main(argv: list[str]) -> int:
             overwrite=args.overwrite,
             dry_run=args.dry_run,
             counters=counters,
-            include_images=args.include_images,
+            include_images=not args.no_images,
         )
 
     eprint(
