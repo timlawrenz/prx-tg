@@ -20,6 +20,7 @@ def create_visual_debug_fn(
     tensorboard_writer=None,
     self_guidance=False,
     guidance_scale=3.0,
+    get_resolution_scale=None,
 ):
     """Create visual debugging function for training loop.
     
@@ -32,6 +33,9 @@ def create_visual_debug_fn(
         num_steps: Number of sampling steps
         device: Device to run on
         tensorboard_writer: Optional TensorBoard SummaryWriter for logging
+        self_guidance: Use self-guidance CFG
+        guidance_scale: Self-guidance scale
+        get_resolution_scale: Callable returning current resolution scale (default 1.0)
     
     Returns:
         debug_fn: Function that takes (model, step) and generates images
@@ -52,6 +56,11 @@ def create_visual_debug_fn(
         """Generate visual debug images at current training step."""
         model.eval()
         
+        # Query current resolution scale
+        scale = get_resolution_scale() if get_resolution_scale is not None else 1.0
+        base_latent_size = 128  # Full resolution: 1024px / 8 = 128
+        latent_size = max(2, (int(base_latent_size * scale) // 2) * 2)
+        
         # Create step directory
         step_dir = output_path / f"step{step:07d}"
         step_dir.mkdir(exist_ok=True)
@@ -69,8 +78,8 @@ def create_visual_debug_fn(
             text_mask = sample['text_mask'].unsqueeze(0)  # (1, 500)
             caption = sample['caption']
             
-            # Sample latents
-            latent_shape = (1, 16, 128, 128)  # 1024x1024 target resolution
+            # Sample latents at current training resolution
+            latent_shape = (1, 16, latent_size, latent_size)
             latents = sampler.sample(
                 model=model,
                 shape=latent_shape,
@@ -85,7 +94,7 @@ def create_visual_debug_fn(
                 guidance_scale=guidance_scale,
             )
             
-            # Decode to image (128x128 latent -> 1024x1024 image via 8x VAE upsampling)
+            # Decode to image (latent → pixel via 8x VAE upsampling)
             images = decode_latents(vae, latents)
             img_tensor = images[0]  # (3, 1024, 1024) in [-1, 1]
             
