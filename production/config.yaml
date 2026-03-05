@@ -73,6 +73,8 @@ training:
   # Each phase specifies a spatial scale factor for VAE latents (0.5 = half res, 4x fewer tokens)
   # Omit or leave empty for full resolution throughout
   resolution_schedule:
+    - until_step: 1000
+      scale: 0.25
     - until_step: 3000               # First 3000 steps at half resolution
       scale: 0.5
     - until_step: 6000               # Remaining steps at full resolution

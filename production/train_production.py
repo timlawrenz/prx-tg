@@ -292,6 +292,7 @@ def main():
         tread_route_start=tread_route_start,
         tread_route_end=tread_route_end,
         tread_routing_prob=tread_routing_prob,
+        bottleneck_size=config.model.bottleneck_size,
     ).to(device)
     
     total_params = sum(p.numel() for p in model.parameters())
@@ -334,6 +335,7 @@ def main():
             num_steps=config.sampling.num_steps,
             self_guidance=config.sampling.self_guidance,
             guidance_scale=config.sampling.guidance_scale,
+            prediction_type=config.model.prediction_type,
         )
     
     # Create visual debugging function (if enabled)
@@ -354,6 +356,7 @@ def main():
             self_guidance=config.sampling.self_guidance,
             guidance_scale=config.sampling.guidance_scale,
             get_resolution_scale=lambda: getattr(dataloader, 'resolution_scale', 1.0),
+            prediction_type=config.model.prediction_type,
         )
     
     # Create trainer

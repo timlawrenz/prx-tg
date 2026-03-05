@@ -21,6 +21,7 @@ def create_visual_debug_fn(
     self_guidance=False,
     guidance_scale=3.0,
     get_resolution_scale=None,
+    prediction_type="v_prediction",
 ):
     """Create visual debugging function for training loop.
     
@@ -36,12 +37,15 @@ def create_visual_debug_fn(
         self_guidance: Use self-guidance CFG
         guidance_scale: Self-guidance scale
         get_resolution_scale: Callable returning current resolution scale (default 1.0)
+        prediction_type: "v_prediction" or "x_prediction"
     
     Returns:
         debug_fn: Function that takes (model, step) and generates images
     """
-    # Load VAE decoder
-    vae = load_vae_decoder(device=device)
+    pixel_space = prediction_type == "x_prediction"
+    
+    # Load VAE decoder (not needed for pixel-space)
+    vae = None if pixel_space else load_vae_decoder(device=device)
     sampler = EulerSampler(num_steps=num_steps)
     
     # Create output directory
@@ -58,8 +62,14 @@ def create_visual_debug_fn(
         
         # Query current resolution scale
         scale = get_resolution_scale() if get_resolution_scale is not None else 1.0
-        base_latent_size = 128  # Full resolution: 1024px / 8 = 128
-        latent_size = max(2, (int(base_latent_size * scale) // 2) * 2)
+        if pixel_space:
+            base_size = 1024  # Full resolution pixel dimension
+            spatial_size = max(32, (int(base_size * scale) // 32) * 32)  # Align to patch_size=32
+            in_channels = 3
+        else:
+            base_size = 128  # Full resolution: 1024px / 8 = 128
+            spatial_size = max(2, (int(base_size * scale) // 2) * 2)
+            in_channels = 16
         
         # Create step directory
         step_dir = output_path / f"step{step:07d}"
@@ -78,11 +88,11 @@ def create_visual_debug_fn(
             text_mask = sample['text_mask'].unsqueeze(0)  # (1, 500)
             caption = sample['caption']
             
-            # Sample latents at current training resolution
-            latent_shape = (1, 16, latent_size, latent_size)
-            latents = sampler.sample(
+            # Sample at current training resolution
+            sample_shape = (1, in_channels, spatial_size, spatial_size)
+            output = sampler.sample(
                 model=model,
-                shape=latent_shape,
+                shape=sample_shape,
                 dino_emb=dino_emb,
                 dino_patches=dino_patches,
                 text_emb=text_emb,
@@ -92,11 +102,16 @@ def create_visual_debug_fn(
                 dino_scale=dino_scale,
                 self_guidance=self_guidance,
                 guidance_scale=guidance_scale,
+                prediction_type=prediction_type,
             )
             
-            # Decode to image (latent → pixel via 8x VAE upsampling)
-            images = decode_latents(vae, latents)
-            img_tensor = images[0]  # (3, 1024, 1024) in [-1, 1]
+            if pixel_space:
+                # Output is RGB [0,1] — convert to [-1, 1] for tensor_to_pil compatibility
+                img_tensor = output[0].clamp(0, 1) * 2 - 1
+            else:
+                # Decode latents to image (latent → pixel via 8x VAE upsampling)
+                images = decode_latents(vae, output)
+                img_tensor = images[0]  # (3, H, W) in [-1, 1]
             
             # Save individual image to disk
             pil_img = tensor_to_pil(img_tensor)

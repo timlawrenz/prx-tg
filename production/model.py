@@ -53,18 +53,26 @@ class TimestepEmbedder(nn.Module):
 
 
 class PatchEmbed(nn.Module):
-    """Embed VAE latents into patches."""
+    """Embed image patches (VAE latents or raw pixels) into hidden dimension."""
     
-    def __init__(self, patch_size=2, in_channels=16, hidden_size=384):
+    def __init__(self, patch_size=2, in_channels=16, hidden_size=384, bottleneck_size=0):
         super().__init__()
         self.patch_size = patch_size
-        self.proj = nn.Conv2d(in_channels, hidden_size, kernel_size=patch_size, stride=patch_size)
+        self.bottleneck_size = bottleneck_size
+        if bottleneck_size > 0:
+            self.proj = nn.Conv2d(in_channels, bottleneck_size, kernel_size=patch_size, stride=patch_size)
+            self.expand = nn.Linear(bottleneck_size, hidden_size)
+        else:
+            self.proj = nn.Conv2d(in_channels, hidden_size, kernel_size=patch_size, stride=patch_size)
+            self.expand = None
 
     def forward(self, x):
-        # x: (B, 16, H, W)
-        x = self.proj(x)  # (B, hidden_size, H/patch_size, W/patch_size)
+        # x: (B, C, H, W)
+        x = self.proj(x)  # (B, bottleneck or hidden_size, H/ps, W/ps)
         B, C, H, W = x.shape
-        x = x.flatten(2).transpose(1, 2)  # (B, H*W, hidden_size)
+        x = x.flatten(2).transpose(1, 2)  # (B, H*W, C)
+        if self.expand is not None:
+            x = self.expand(x)  # (B, H*W, hidden_size)
         return x
 
 
@@ -295,6 +303,7 @@ class NanoDiT(nn.Module):
         tread_route_start=None,
         tread_route_end=None,
         tread_routing_prob=0.5,
+        bottleneck_size=0,
     ):
         super().__init__()
         self.input_size = input_size  # For backward compatibility, but not used
@@ -310,7 +319,7 @@ class NanoDiT(nn.Module):
         self.tread_enabled = tread_route_start is not None and tread_route_end is not None
         
         # Patch embedding
-        self.x_embedder = PatchEmbed(patch_size, in_channels, hidden_size)
+        self.x_embedder = PatchEmbed(patch_size, in_channels, hidden_size, bottleneck_size=bottleneck_size)
         
         # NOTE: Positional embedding is now generated dynamically in forward()
         # to support variable aspect ratios from bucketed training
@@ -376,6 +385,9 @@ class NanoDiT(nn.Module):
         w = self.x_embedder.proj.weight.data
         nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
         nn.init.constant_(self.x_embedder.proj.bias, 0)
+        if self.x_embedder.expand is not None:
+            nn.init.xavier_uniform_(self.x_embedder.expand.weight)
+            nn.init.constant_(self.x_embedder.expand.bias, 0)
         
         # Keep final_proj normally initialized (xavier from _basic_init)
         # DO NOT zero-init - that would kill all gradients!
