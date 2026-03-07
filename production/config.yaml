@@ -73,7 +73,7 @@ training:
   # Each phase specifies a spatial scale factor for VAE latents (0.5 = half res, 4x fewer tokens)
   # Omit or leave empty for full resolution throughout
   resolution_schedule:
-    - until_step: 1000
+    - until_step: 250
       scale: 0.25
     - until_step: 3000               # First 3000 steps at half resolution
       scale: 0.5
@@ -90,7 +90,7 @@ training:
     crop_size: 32                    # Latent crop size (32 → 256px decoded)
 
 data:
-  shard_base_dir: "data/shards/new4k"      # Base directory for WebDataset shards
+  shard_base_dir: "data/shards/new1k"      # Base directory for WebDataset shards
   
   # Aspect ratio buckets to read (each bucket is a subdirectory with tar files)
   buckets:
