@@ -2,7 +2,7 @@
 # your platform-specific instructions, then install the remaining deps here.
 
 # Core dependencies for dataset generation
-transformers==4.50.0  # For DINOv3, T5 models
+transformers>=4.54.0  # DINOv3 support added in 4.54; also for T5 models
 pillow==10.4.0
 accelerate==0.34.2
 safetensors==0.4.5
