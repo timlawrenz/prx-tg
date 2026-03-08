@@ -261,10 +261,9 @@ def save_pixel_image(image_path: Path, image_id: str, output_dir: Path, aspect_b
 
 
 def load_pose_model(device: str):
-    """Load RTMPose3D model for whole-body keypoint detection."""
-    from rtmpose3d import RTMPose3DInference
-    model = RTMPose3DInference(model_size='l', device=device)
-    return model
+    """Load DWPose whole-body detector (ONNX, no mmpose deps)."""
+    from scripts.dwpose_onnx import DWPoseDetector
+    return DWPoseDetector(device=device)
 
 
 def compute_pose_keypoints(
@@ -296,8 +295,8 @@ def compute_pose_keypoints(
 
         results = pose_model(img_arr, single_person=True)
 
-        kpts_2d = results["keypoints_2d"]   # (1, 133, 2)
-        scores = results["scores"]          # (1, 133)
+        kpts_2d = results[0]   # (N, 133, 2)
+        scores = results[1]    # (N, 133)
 
         if kpts_2d.shape[0] == 0:
             # No person detected — return zeros
@@ -1637,7 +1636,7 @@ def main(argv):
 
     if run_pose:
         if args.verbose:
-            eprint("verbose: loading RTMPose3D model...")
+            eprint("verbose: loading DWPose ONNX model...")
         pose_model = load_pose_model(device)
 
     # Counters for progress tracking (4 types)
