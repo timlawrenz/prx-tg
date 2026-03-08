@@ -27,6 +27,8 @@ T5_MODEL_ID = "t5-large"
 FLUX_VAE_MODEL_ID = "black-forest-labs/FLUX.1-dev"
 SDXL_VAE_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"  # Lighter alternative
 
+NUM_POSE_KEYPOINTS = 133  # COCO-WholeBody: 17 body + 6 feet + 68 face + 42 hands
+
 # Aspect ratio buckets at 1024px equivalent area (all dims divisible by 64)
 ASPECT_BUCKETS = [
     (1024, 1024),  # Square, ratio 1.0
@@ -256,6 +258,70 @@ def save_pixel_image(image_path: Path, image_id: str, output_dir: Path, aspect_b
     npy_path = output_dir / f"{image_id}.npy"
     save_npy(arr, npy_path, np.float16)
     return True
+
+
+def load_pose_model(device: str):
+    """Load RTMPose3D model for whole-body keypoint detection."""
+    from rtmpose3d import RTMPose3DInference
+    model = RTMPose3DInference(model_size='l', device=device)
+    return model
+
+
+def compute_pose_keypoints(
+    image_path: Path, pose_model, aspect_bucket: str | None = None
+) -> np.ndarray | None:
+    """Extract DWPose/RTMPose whole-body keypoints, normalized to [-1, 1] for the bucket.
+
+    Returns (133, 3) float32 array: [x_norm, y_norm, confidence] per joint.
+    Coordinates are normalized relative to bucket dimensions so the model
+    learns scale-invariant geometry across aspect ratio buckets.
+
+    Uses single_person=True (largest bbox) since dataset is single-person.
+    """
+    import numpy as np
+    from PIL import Image
+
+    try:
+        dims = parse_bucket_dims(aspect_bucket) if aspect_bucket else None
+
+        if dims:
+            bucket_w, bucket_h = dims
+            img = load_bucketed_image(image_path, bucket_w, bucket_h)
+        else:
+            with Image.open(image_path) as im:
+                img = im.convert("RGB")
+            bucket_w, bucket_h = img.size
+
+        img_arr = np.array(img)
+
+        results = pose_model(img_arr, single_person=True)
+
+        kpts_2d = results["keypoints_2d"]   # (1, 133, 2)
+        scores = results["scores"]          # (1, 133)
+
+        if kpts_2d.shape[0] == 0:
+            # No person detected — return zeros
+            return np.zeros((NUM_POSE_KEYPOINTS, 3), dtype=np.float32)
+
+        kpts = kpts_2d[0]    # (133, 2) pixel coords
+        confs = scores[0]    # (133,)
+
+        # Normalize to [-1, 1] relative to bucket dims
+        x_norm = (2.0 * kpts[:, 0] / bucket_w) - 1.0
+        y_norm = (2.0 * kpts[:, 1] / bucket_h) - 1.0
+
+        pose = np.stack([x_norm, y_norm, confs], axis=-1)  # (133, 3)
+        return pose.astype(np.float32)
+
+    except Exception as e:
+        eprint(f"warning: pose extraction failed for {image_path}: {e}")
+        return None
+
+
+def save_pose_keypoints(pose: np.ndarray, image_id: str, output_dir: Path):
+    """Save pose keypoints to .npy file."""
+    npy_path = output_dir / f"{image_id}.npy"
+    save_npy(pose, npy_path, np.float16)
 
 
 def save_t5_hidden(hidden: np.ndarray, image_id: str, output_dir: Path):
@@ -949,6 +1015,28 @@ def needs_pixel_image(record: dict, images_dir: Path) -> bool:
         return True
 
 
+def needs_pose_keypoints(record: dict, pose_dir: Path) -> bool:
+    """Check if pose keypoints .npy is missing or has wrong shape."""
+    import numpy as np
+
+    image_path = Path(record["image_path"])
+    image_id = compute_image_id(image_path)
+    npy_path = pose_dir / f"{image_id}.npy"
+
+    if not npy_path.exists():
+        return True
+
+    try:
+        arr = np.load(npy_path, mmap_mode="r")
+        if arr.shape != (NUM_POSE_KEYPOINTS, 3):
+            return True
+        if arr.dtype != np.float16:
+            return True
+        return False
+    except Exception:
+        return True
+
+
 def needs_migration(record: dict) -> bool:
     """Check if record needs migration to Stage 2 format."""
     return record.get("format_version") != 2
@@ -1013,12 +1101,14 @@ def verify_stage2_data(output_path: Path, base_dir: Path) -> dict:
     vae_dir = base_dir / "vae_latents"
     t5_dir = base_dir / "t5_hidden"
     images_dir = base_dir / "images"
+    pose_dir = base_dir / "pose"
     
     results = {
         "dinov3": {"valid": 0, "invalid": 0, "missing": 0},
         "vae": {"valid": 0, "invalid": 0, "missing": 0},
         "t5": {"valid": 0, "invalid": 0, "missing": 0},
         "image": {"valid": 0, "invalid": 0, "missing": 0},
+        "pose": {"valid": 0, "invalid": 0, "missing": 0},
     }
     
     if not output_path.exists():
@@ -1131,6 +1221,22 @@ def verify_stage2_data(output_path: Path, base_dir: Path) -> dict:
             except Exception as e:
                 results["image"]["invalid"] += 1
                 eprint(f"  corrupt image for {image_id}: {e}")
+        
+        # Check pose keypoints
+        pose_path = pose_dir / f"{image_id}.npy"
+        if not pose_path.exists():
+            results["pose"]["missing"] += 1
+        else:
+            try:
+                arr = np.load(pose_path)
+                if arr.shape == (NUM_POSE_KEYPOINTS, 3) and arr.dtype == np.float16:
+                    results["pose"]["valid"] += 1
+                else:
+                    results["pose"]["invalid"] += 1
+                    eprint(f"  invalid pose for {image_id}: shape={arr.shape}, dtype={arr.dtype}")
+            except Exception as e:
+                results["pose"]["invalid"] += 1
+                eprint(f"  corrupt pose for {image_id}: {e}")
     
     return results
 
@@ -1258,9 +1364,9 @@ def parse_args(argv):
     p.add_argument(
         "--pass",
         dest="pass_filter",
-        choices=["all", "dinov3", "vae", "t5", "image", "migrate"],
+        choices=["all", "dinov3", "vae", "t5", "image", "pose", "migrate"],
         default="all",
-        help="Run specific pass: all (default), dinov3, vae, t5, image (pixel-space .npy), migrate",
+        help="Run specific pass: all (default), dinov3, vae, t5, image (pixel-space .npy), pose (DWPose keypoints), migrate",
     )
     p.add_argument(
         "--progress-every",
@@ -1353,12 +1459,14 @@ def main(argv):
     vae_dir = base_dir / "vae_latents"
     t5_dir = base_dir / "t5_hidden"
     images_dir = base_dir / "images"
+    pose_dir = base_dir / "pose"
     
     dinov3_dir.mkdir(parents=True, exist_ok=True)
     dinov3_patches_dir.mkdir(parents=True, exist_ok=True)
     vae_dir.mkdir(parents=True, exist_ok=True)
     t5_dir.mkdir(parents=True, exist_ok=True)
     images_dir.mkdir(parents=True, exist_ok=True)
+    pose_dir.mkdir(parents=True, exist_ok=True)
 
     # Verification mode
     if args.verify:
@@ -1384,6 +1492,11 @@ def main(argv):
         eprint(f"  valid: {results['image']['valid']}")
         eprint(f"  invalid: {results['image']['invalid']}")
         eprint(f"  missing: {results['image']['missing']}")
+        
+        eprint("\nPose keypoints:")
+        eprint(f"  valid: {results['pose']['valid']}")
+        eprint(f"  invalid: {results['pose']['invalid']}")
+        eprint(f"  missing: {results['pose']['missing']}")
         
         return 0
 
@@ -1451,7 +1564,7 @@ def main(argv):
             temp_path.unlink()
         
         import shutil
-        for npy_dir in [dinov3_dir, vae_dir, t5_dir, images_dir]:
+        for npy_dir in [dinov3_dir, vae_dir, t5_dir, images_dir, pose_dir]:
             if npy_dir.exists():
                 eprint(f"--no-resume: deleting {npy_dir}")
                 shutil.rmtree(npy_dir)
@@ -1483,6 +1596,7 @@ def main(argv):
     run_vae = args.pass_filter in ["all", "vae"]
     run_t5 = args.pass_filter in ["all", "t5"]
     run_image = args.pass_filter in ["all", "image"]
+    run_pose = args.pass_filter in ["all", "pose"]
     run_migrate = args.pass_filter in ["all", "migrate"]
 
     # Load models conditionally based on pass
@@ -1491,6 +1605,7 @@ def main(argv):
     dino = None
     caption_pipe = None
     vae_encoder = None
+    pose_model = None
 
     if run_dinov3 or run_migrate:
         # Need tokenizer for T5 attention mask
@@ -1519,6 +1634,11 @@ def main(argv):
         t5_encoder = t5_encoder.to(device)
         if not t5_tokenizer:
             t5_tokenizer = load_t5_tokenizer(T5_MODEL_ID)
+
+    if run_pose:
+        if args.verbose:
+            eprint("verbose: loading RTMPose3D model...")
+        pose_model = load_pose_model(device)
 
     # Counters for progress tracking (4 types)
     migrated = 0  # Stage 1 → Stage 2 with all embeddings
@@ -1654,6 +1774,7 @@ def main(argv):
             needs_vae_gen = run_vae and needs_vae_latent(record, vae_dir)
             needs_t5_gen = run_t5 and needs_t5_hidden(record, t5_dir)
             needs_image_gen = run_image and needs_pixel_image(record, images_dir)
+            needs_pose_gen = run_pose and needs_pose_keypoints(record, pose_dir)
             needs_format_migration = run_migrate and needs_migration(record)
             needs_t5_mask = needs_field(record, "t5_attention_mask")  # Check for missing/truncated masks
 
@@ -1668,6 +1789,7 @@ def main(argv):
                 and not needs_vae_gen
                 and not needs_t5_gen
                 and not needs_image_gen
+                and not needs_pose_gen
                 and not needs_format_migration
                 and not needs_t5_mask  # Also check t5_attention_mask is valid
             )
@@ -1798,6 +1920,22 @@ def main(argv):
                         eprint(f"warning: pixel image save failed for {image_id}")
                 else:
                     eprint(f"warning: no aspect_bucket for {image_id}, skipping pixel image")
+
+            # Handle pose pass (DWPose whole-body keypoints)
+            if run_pose and needs_pose_gen:
+                ensure_bucket_info(record, img_path)
+                aspect_bucket = record.get("aspect_bucket")
+                if aspect_bucket:
+                    if args.verbose:
+                        eprint(f"verbose: extracting pose keypoints for {image_id} (bucket {aspect_bucket})...")
+                    pose = compute_pose_keypoints(img_path, pose_model, aspect_bucket)
+                    if pose is not None:
+                        save_pose_keypoints(pose, image_id, pose_dir)
+                        enriched += 1
+                    else:
+                        eprint(f"warning: pose extraction failed for {image_id}")
+                else:
+                    eprint(f"warning: no aspect_bucket for {image_id}, skipping pose extraction")
 
             # Handle migration pass
             if run_migrate and needs_format_migration:
