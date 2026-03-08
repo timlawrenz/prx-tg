@@ -262,7 +262,11 @@ def save_pixel_image(image_path: Path, image_id: str, output_dir: Path, aspect_b
 
 def load_pose_model(device: str):
     """Load DWPose whole-body detector (ONNX, no mmpose deps)."""
-    from scripts.dwpose_onnx import DWPoseDetector
+    import importlib, sys
+    scripts_dir = str(Path(__file__).resolve().parent)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    DWPoseDetector = importlib.import_module("dwpose_onnx").DWPoseDetector
     return DWPoseDetector(device=device)
 
 
