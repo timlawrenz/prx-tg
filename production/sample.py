@@ -325,7 +325,7 @@ class ValidationSampler:
         text_mask = text_mask.to(self.device)
         
         if latent_size is None:
-            latent_size = getattr(self.model, 'input_size', 64)
+            latent_size = getattr(self.model, 'input_size', 128)
 
         use_self_guidance = self_guidance if self_guidance is not None else self.self_guidance
         

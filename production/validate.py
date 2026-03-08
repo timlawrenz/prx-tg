@@ -2,6 +2,7 @@
 
 import json
 import torch
+import torch.nn.functional as F
 from pathlib import Path
 from tqdm import tqdm
 import lpips
@@ -105,6 +106,7 @@ class ValidationRunner:
         self_guidance=False,
         guidance_scale=3.0,
         prediction_type="v_prediction",
+        get_resolution_scale=None,
     ):
         """
         Args:
@@ -116,6 +118,7 @@ class ValidationRunner:
             lpips_net: LPIPS network ('alex' or 'vgg')
             tensorboard_writer: Optional TensorBoard SummaryWriter
             prediction_type: "v_prediction" or "x_prediction"
+            get_resolution_scale: Optional callback returning current resolution scale (0.0-1.0)
         """
         self.model = model
         self.ema = ema
@@ -124,6 +127,7 @@ class ValidationRunner:
         self.output_dir = Path(output_dir)
         self.tb_writer = tensorboard_writer
         self.prediction_type = prediction_type
+        self.get_resolution_scale = get_resolution_scale
 
         # Sampling CFG scales for validation
         self.text_scale = text_scale
@@ -190,12 +194,28 @@ class ValidationRunner:
         print(f"Loaded {len(samples)} validation samples")
         return samples
     
-    def run_reconstruction_test(self, step, sampler):
+    def _get_latent_size(self):
+        """Compute latent size from current resolution scale.
+        
+        Returns the latent spatial size that matches the current training
+        resolution, so validation generates at the same resolution the model
+        was trained at.
+        """
+        base_size = getattr(self.model, 'input_size', 128)
+        if self.get_resolution_scale is not None:
+            scale = self.get_resolution_scale()
+            latent_size = max(2, (int(base_size * scale) // 2) * 2)
+        else:
+            latent_size = base_size
+        return latent_size
+    
+    def run_reconstruction_test(self, step, sampler, latent_size=None):
         """Test 1: Generate from original caption + DINO, measure LPIPS.
         
         Args:
             step: current training step
             sampler: ValidationSampler instance
+            latent_size: spatial size for generation (respects resolution schedule)
         
         Returns:
             dict with lpips_scores and mean_lpips
@@ -227,8 +247,18 @@ class ValidationRunner:
             gt_latents = torch.stack([s['vae_latent'] for s in batch_samples])
             image_ids = [s['image_id'] for s in batch_samples]
             
-            # Generate images
-            gen_images = sampler.generate(dino_emb, dino_patches, text_emb, text_mask)
+            # Generate images at current training resolution
+            gen_images = sampler.generate(dino_emb, dino_patches, text_emb, text_mask,
+                                          latent_size=latent_size)
+            
+            # Resize GT latents to match generation resolution before decoding
+            if latent_size is not None:
+                gt_h, gt_w = gt_latents.shape[2], gt_latents.shape[3]
+                if gt_h != latent_size or gt_w != latent_size:
+                    gt_latents = F.interpolate(
+                        gt_latents, size=(latent_size, latent_size),
+                        mode='bilinear', align_corners=False
+                    )
             
             # Decode ground truth for comparison
             if self.prediction_type == "x_prediction":
@@ -268,7 +298,7 @@ class ValidationRunner:
             'num_samples': len(lpips_scores),
         }
     
-    def run_dino_swap_test(self, step, sampler):
+    def run_dino_swap_test(self, step, sampler, latent_size=None):
         """Test 2: Swap DINO embeddings, keep original captions.
         
         For each pair (A, B):
@@ -283,6 +313,7 @@ class ValidationRunner:
         Args:
             step: current training step
             sampler: ValidationSampler instance
+            latent_size: spatial size for generation (respects resolution schedule)
         
         Returns:
             dict with test results
@@ -304,7 +335,8 @@ class ValidationRunner:
                 sample_a['dino_embedding'].unsqueeze(0),
                 sample_a['dinov3_patches'].unsqueeze(0),
                 sample_a['t5_hidden'].unsqueeze(0),
-                sample_a['t5_mask'].unsqueeze(0)
+                sample_a['t5_mask'].unsqueeze(0),
+                latent_size=latent_size,
             )[0]  # (3, H, W)
             
             # 2. Swapped: A's caption + B's DINO (swap CLS + patches together)
@@ -312,7 +344,8 @@ class ValidationRunner:
                 sample_b['dino_embedding'].unsqueeze(0),
                 sample_b['dinov3_patches'].unsqueeze(0),
                 sample_a['t5_hidden'].unsqueeze(0),
-                sample_a['t5_mask'].unsqueeze(0)
+                sample_a['t5_mask'].unsqueeze(0),
+                latent_size=latent_size,
             )[0]  # (3, H, W)
             
             # 3. Reference: B's caption + B's DINO
@@ -320,7 +353,8 @@ class ValidationRunner:
                 sample_b['dino_embedding'].unsqueeze(0),
                 sample_b['dinov3_patches'].unsqueeze(0),
                 sample_b['t5_hidden'].unsqueeze(0),
-                sample_b['t5_mask'].unsqueeze(0)
+                sample_b['t5_mask'].unsqueeze(0),
+                latent_size=latent_size,
             )[0]  # (3, H, W)
             
             # Create collage: [A_ref | A_swap | B_ref]
@@ -359,7 +393,7 @@ class ValidationRunner:
             'results': results,
         }
     
-    def run_divergence_test(self, step, sampler):
+    def run_divergence_test(self, step, sampler, latent_size=None):
         """Test 2b: CFG Divergence Test - prove text and DINO are independent.
         
         From the-plan.md Part E.2:
@@ -372,6 +406,7 @@ class ValidationRunner:
         Args:
             step: current training step
             sampler: ValidationSampler instance
+            latent_size: spatial size for generation (respects resolution schedule)
         
         Returns:
             dict with test results
@@ -399,6 +434,7 @@ class ValidationRunner:
                 sample['dinov3_patches'].unsqueeze(0),
                 sample['t5_hidden'].unsqueeze(0),
                 sample['t5_mask'].unsqueeze(0),
+                latent_size=latent_size,
                 text_scale=4.0,
                 dino_scale=0.0,
             )[0]  # (3, H, W)
@@ -412,6 +448,7 @@ class ValidationRunner:
                 sample['dinov3_patches'].unsqueeze(0),
                 sample['t5_hidden'].unsqueeze(0),
                 sample['t5_mask'].unsqueeze(0),
+                latent_size=latent_size,
                 text_scale=0.0,
                 dino_scale=2.0,
             )[0]  # (3, H, W)
@@ -425,6 +462,7 @@ class ValidationRunner:
                 sample['dinov3_patches'].unsqueeze(0),
                 sample['t5_hidden'].unsqueeze(0),
                 sample['t5_mask'].unsqueeze(0),
+                latent_size=latent_size,
             )[0]  # (3, H, W)
             
             # Create collage: [text-only | DINO-only | both]
@@ -459,7 +497,7 @@ class ValidationRunner:
             'results': results,
         }
     
-    def run_text_only_test(self, step, sampler):
+    def run_text_only_test(self, step, sampler, latent_size=None):
         """Test 2c: Generate from text ONLY (no DINO guidance).
         
         Simulates pure text-to-image generation for future use cases.
@@ -471,6 +509,7 @@ class ValidationRunner:
         Args:
             step: current training step
             sampler: ValidationSampler instance
+            latent_size: spatial size for generation (respects resolution schedule)
         
         Returns:
             dict with lpips_scores and mean_lpips
@@ -511,10 +550,20 @@ class ValidationRunner:
                 dino_patches,
                 text_emb, 
                 text_mask,
+                latent_size=latent_size,
                 self_guidance=False,
                 dino_scale=0.0,  # Zero DINO influence
                 text_scale=3.0,  # Normal text guidance
             )
+            
+            # Resize GT latents to match generation resolution before decoding
+            if latent_size is not None:
+                gt_h, gt_w = gt_latents.shape[2], gt_latents.shape[3]
+                if gt_h != latent_size or gt_w != latent_size:
+                    gt_latents = F.interpolate(
+                        gt_latents, size=(latent_size, latent_size),
+                        mode='bilinear', align_corners=False
+                    )
             
             # Decode ground truth for comparison
             if self.prediction_type == "x_prediction":
@@ -611,7 +660,7 @@ class ValidationRunner:
         
         return hidden_states, attention_mask
     
-    def run_text_manip_test(self, step, sampler):
+    def run_text_manip_test(self, step, sampler, latent_size=None):
         """Test 3: Modify caption, keep DINO embedding.
         
         Dynamically finds text to replace from a list of common patterns.
@@ -619,6 +668,7 @@ class ValidationRunner:
         Args:
             step: current training step
             sampler: ValidationSampler instance
+            latent_size: spatial size for generation (respects resolution schedule)
         
         Returns:
             dict with test results and LPIPS comparison scores
@@ -668,13 +718,15 @@ class ValidationRunner:
             # Generate with original caption
             text_emb_orig = sample['t5_hidden'].unsqueeze(0)
             text_mask_orig = sample['t5_mask'].unsqueeze(0)
-            gen_orig = sampler.generate(dino_emb, dino_patches, text_emb_orig, text_mask_orig)[0]  # (3, H, W)
+            gen_orig = sampler.generate(dino_emb, dino_patches, text_emb_orig, text_mask_orig,
+                                        latent_size=latent_size)[0]  # (3, H, W)
             
             # Re-encode modified caption with T5
             text_emb_mod, text_mask_mod = self.encode_caption(modified_caption)
             
             # Generate with modified caption
-            gen_mod = sampler.generate(dino_emb, dino_patches, text_emb_mod, text_mask_mod)[0]  # (3, H, W)
+            gen_mod = sampler.generate(dino_emb, dino_patches, text_emb_mod, text_mask_mod,
+                                       latent_size=latent_size)[0]  # (3, H, W)
             
             # Compute LPIPS between original and modified generations
             lpips_val = self.lpips_fn(gen_orig.unsqueeze(0), gen_mod.unsqueeze(0)).item()
@@ -753,8 +805,15 @@ class ValidationRunner:
         Returns:
             dict with all validation results
         """
+        # Compute latent size from resolution schedule
+        latent_size = self._get_latent_size()
+        base_size = getattr(self.model, 'input_size', 128)
+        scale = latent_size / base_size if base_size > 0 else 1.0
+        
         print(f"\n{'='*60}")
         print(f"VALIDATION AT STEP {step}")
+        if latent_size != base_size:
+            print(f"  Resolution scale: {scale:.2f}x ({latent_size}×{latent_size} latent → {latent_size*8}px)")
         print(f"{'='*60}\n")
         
         # Free up memory before validation
@@ -786,8 +845,10 @@ class ValidationRunner:
             # Run tests
             results = {
                 'step': step,
-                'reconstruction': self.run_reconstruction_test(step, sampler),
-                'dino_swap': self.run_dino_swap_test(step, sampler),
+                'latent_size': latent_size,
+                'resolution_scale': scale,
+                'reconstruction': self.run_reconstruction_test(step, sampler, latent_size=latent_size),
+                'dino_swap': self.run_dino_swap_test(step, sampler, latent_size=latent_size),
             }
             
             if self.self_guidance:
@@ -795,12 +856,12 @@ class ValidationRunner:
                 print("  Skipping divergence test (not applicable with self-guidance)")
                 results['divergence'] = {'skipped': True, 'reason': 'self-guidance mode'}
             else:
-                results['divergence'] = self.run_divergence_test(step, sampler)
+                results['divergence'] = self.run_divergence_test(step, sampler, latent_size=latent_size)
             
             # Text-only test always runs (uses dual-CFG path regardless of guidance mode)
-            results['text_only'] = self.run_text_only_test(step, sampler)
+            results['text_only'] = self.run_text_only_test(step, sampler, latent_size=latent_size)
             
-            results['text_manip'] = self.run_text_manip_test(step, sampler)
+            results['text_manip'] = self.run_text_manip_test(step, sampler, latent_size=latent_size)
         finally:
             # Clean up sampler to prevent memory leak
             del sampler
@@ -833,6 +894,8 @@ class ValidationRunner:
         print("VALIDATION SUMMARY")
         if self.self_guidance:
             print(f"  (self-guidance mode, scale={self.guidance_scale})")
+        if latent_size != base_size:
+            print(f"  (resolution: {scale:.2f}x, {latent_size*8}px)")
         print(f"{'='*60}")
         print(f"Reconstruction LPIPS: {results['reconstruction']['mean_lpips']:.4f} (text+DINO, 25 samples)")
         if results['text_only'].get('skipped'):
@@ -853,7 +916,8 @@ class ValidationRunner:
 
 
 def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=None, text_scale=3.0, dino_scale=2.0, num_steps=50,
-                         self_guidance=False, guidance_scale=3.0, prediction_type="v_prediction"):
+                         self_guidance=False, guidance_scale=3.0, prediction_type="v_prediction",
+                         get_resolution_scale=None):
     """Create validation function for training loop.
     
     IMPORTANT: This creates its own deterministic dataloader internally,
@@ -870,6 +934,7 @@ def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=
         self_guidance: Use self-guidance instead of dual CFG
         guidance_scale: Self-guidance scale
         prediction_type: "v_prediction" or "x_prediction"
+        get_resolution_scale: Optional callback returning current resolution scale (0.0-1.0)
     
     Returns:
         validation_fn(model, ema, step, device)
@@ -884,12 +949,13 @@ def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=
         nonlocal runner, val_dataloader
         
         # Create deterministic validation dataloader (first call only)
+        # Always load at full resolution; tests resize dynamically per resolution schedule
         if val_dataloader is None:
             print(f"Creating deterministic validation dataloader from {shard_dir}...")
             val_dataloader = get_deterministic_validation_dataloader(
                 shard_dir=shard_dir,
                 batch_size=1,  # Process one at a time for validation
-                target_latent_size=getattr(model, 'input_size', 64),
+                target_latent_size=getattr(model, 'input_size', 128),
                 pixel_space=pixel_space,
             )
         
@@ -903,8 +969,8 @@ def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=
                 self_guidance=self_guidance,
                 guidance_scale=guidance_scale,
                 prediction_type=prediction_type,
+                get_resolution_scale=get_resolution_scale,
             )
-
         
         runner.run_validation(step)
     

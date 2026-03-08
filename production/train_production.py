@@ -336,6 +336,7 @@ def main():
             self_guidance=config.sampling.self_guidance,
             guidance_scale=config.sampling.guidance_scale,
             prediction_type=config.model.prediction_type,
+            get_resolution_scale=lambda: getattr(dataloader, 'resolution_scale', 1.0),
         )
     
     # Create visual debugging function (if enabled)
