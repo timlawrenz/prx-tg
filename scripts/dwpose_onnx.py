@@ -268,8 +268,9 @@ class DWPoseDetector:
         det_path = _download_model("yolox_l.onnx")
         pose_path = _download_model("dw-ll_ucoco_384.onnx")
 
+        device_str = str(device)
         providers = ["CPUExecutionProvider"]
-        if "cuda" in device or "rocm" in device:
+        if "cuda" in device_str or "rocm" in device_str:
             # ROCm uses the same provider name as CUDA in onnxruntime
             if ort.get_available_providers():
                 gpu_providers = [p for p in ort.get_available_providers()
