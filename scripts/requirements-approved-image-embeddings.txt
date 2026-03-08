@@ -10,3 +10,6 @@ diffusers==0.30.3  # Pinned to avoid torchao logger bug in 0.36.0+
 
 # For Ollama API (caption generation)
 requests
+
+# For DWPose whole-body keypoint extraction (133 keypoints)
+rtmpose3d @ git+https://github.com/mutedeparture/rtmpose3d.git
