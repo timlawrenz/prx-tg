@@ -505,11 +505,13 @@ class ValidationRunner:
             image_ids = [s['image_id'] for s in batch_samples]
             
             # Generate images with TEXT ONLY (dino_scale=0.0 disables DINO CLS + patches)
+            # Force dual-CFG path even in self-guidance mode
             gen_images = sampler.generate(
                 dino_emb,
                 dino_patches,
                 text_emb, 
                 text_mask,
+                self_guidance=False,
                 dino_scale=0.0,  # Zero DINO influence
                 text_scale=3.0,  # Normal text guidance
             )
@@ -789,15 +791,14 @@ class ValidationRunner:
             }
             
             if self.self_guidance:
-                # Text-only and divergence tests are not meaningful with self-guidance
-                # (can't isolate modalities with dense-vs-routed guidance)
+                # Divergence test is not meaningful with self-guidance
                 print("  Skipping divergence test (not applicable with self-guidance)")
-                print("  Skipping text-only test (not applicable with self-guidance)")
                 results['divergence'] = {'skipped': True, 'reason': 'self-guidance mode'}
-                results['text_only'] = {'skipped': True, 'reason': 'self-guidance mode'}
             else:
                 results['divergence'] = self.run_divergence_test(step, sampler)
-                results['text_only'] = self.run_text_only_test(step, sampler)
+            
+            # Text-only test always runs (uses dual-CFG path regardless of guidance mode)
+            results['text_only'] = self.run_text_only_test(step, sampler)
             
             results['text_manip'] = self.run_text_manip_test(step, sampler)
         finally:
