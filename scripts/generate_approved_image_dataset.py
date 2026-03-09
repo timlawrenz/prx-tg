@@ -24,8 +24,7 @@ CAPTION_PROMPT = (
 DINO_MODEL_ID = "facebook/dinov3-vitl16-pretrain-lvd1689m"
 GEMMA_MODEL_ID = "google/gemma-3-27b-it"
 T5_MODEL_ID = "t5-large"
-FLUX_VAE_MODEL_ID = "black-forest-labs/FLUX.1-dev"
-SDXL_VAE_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"  # Lighter alternative
+
 
 NUM_POSE_KEYPOINTS = 133  # COCO-WholeBody: 17 body + 6 feet + 68 face + 42 hands
 
@@ -220,12 +219,6 @@ def extract_dinov3_patches_to_npy(record: dict, output_dir: Path) -> bool:
     except Exception as e:
         eprint(f"warning: failed to extract DINOv3 patches for {image_id}: {e}")
         return False
-
-
-def save_vae_latent(latent: np.ndarray, image_id: str, output_dir: Path):
-    """Save VAE latent to .npy file."""
-    npy_path = output_dir / f"{image_id}.npy"
-    save_npy(latent, npy_path, np.float16)
 
 
 def save_pixel_image(image_path: Path, image_id: str, output_dir: Path, aspect_bucket: str) -> bool:
@@ -633,109 +626,6 @@ def ensure_bucket_info(record: dict, image_path: Path) -> bool:
     return changed
 
 
-def load_flux_vae(device, compile_encoder: bool = False):
-    """Load Flux VAE encoder component only.
-    
-    Args:
-        device: torch device to load model on
-        compile_encoder: If True, compile encoder with torch.compile for 20-30% speedup
-                        WARNING: torch.compile causes memory corruption after ~100-200 images
-                        ("Expected curr_block->next == nullptr" error). Disabled by default.
-    
-    Returns:
-        VAE model with optimized encoder (if compile_encoder=True)
-    """
-    try:
-        from diffusers import AutoencoderKL
-        import torch
-        
-        eprint(f"loading Flux VAE from {FLUX_VAE_MODEL_ID}...")
-        # Load VAE component only (subfolder="vae")
-        # Use bfloat16 for faster computation on modern GPUs (RTX 3090+)
-        vae = AutoencoderKL.from_pretrained(
-            FLUX_VAE_MODEL_ID,
-            subfolder="vae",
-            torch_dtype=torch.bfloat16
-        )
-        vae.eval()
-        vae = vae.to(device)
-        
-        # DISABLED BY DEFAULT: torch.compile causes memory allocator corruption
-        # after processing many images in a single run
-        if compile_encoder and hasattr(torch, 'compile'):
-            eprint("  WARNING: torch.compile is unstable for long-running VAE encoding")
-            eprint("  compiling VAE encoder with torch.compile (first run will be slow)...")
-            vae.encoder = torch.compile(vae.encoder, mode="reduce-overhead")
-            eprint("  ✓ VAE encoder compiled")
-        
-        return vae
-    except Exception as e:
-        eprint(f"error: failed to load Flux VAE: {e}")
-        raise
-
-
-def preprocess_vae_input(image):
-    """Prepare PIL image for VAE encoding."""
-    import torch
-    from torchvision import transforms
-
-    # VAE expects [-1, 1] range
-    tfm = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize([0.5], [0.5])  # Rescale [0,1] to [-1,1]
-    ])
-
-    return tfm(image).unsqueeze(0)  # (1, 3, H, W)
-
-
-def encode_vae_latent(image_path: Path, vae_encoder, aspect_bucket: str | None = None) -> np.ndarray | None:
-    """Encode bucketed crop to VAE latent space; returns (16, H//8, W//8) float16."""
-    try:
-        import torch
-        import numpy as np
-        from PIL import Image
-
-        expected_shape = None
-        dims = parse_bucket_dims(aspect_bucket) if aspect_bucket else None
-        if dims:
-            bucket_w, bucket_h = dims
-            img = load_bucketed_image(image_path, bucket_w, bucket_h)
-            expected_shape = (16, bucket_h // 8, bucket_w // 8)
-        else:
-            with Image.open(image_path) as im:
-                img = im.convert("RGB")
-            w, h = img.size
-            expected_shape = (16, h // 8, w // 8)
-
-        tensor = preprocess_vae_input(img)
-
-        device = next(vae_encoder.parameters()).device
-        dtype = next(vae_encoder.parameters()).dtype  # Match model dtype (bfloat16)
-        tensor = tensor.to(device, dtype=dtype)
-
-        with torch.no_grad():
-            latent_dist = vae_encoder.encode(tensor)
-            latent = latent_dist.latent_dist.sample()
-
-        latent_fp16 = latent.squeeze(0).to(torch.float16).cpu()
-        result = latent_fp16.numpy().astype(np.float16)
-
-        if expected_shape and result.shape != expected_shape:
-            eprint(
-                f"warning: VAE latent shape mismatch for {image_path}: got {result.shape}, expected {expected_shape}"
-            )
-            return None
-
-        return result
-
-    except Exception as e:
-        import traceback
-        eprint(f"warning: VAE encoding failed for {image_path}:")
-        eprint(f"  Error: {type(e).__name__}: {e}")
-        eprint(f"  Traceback: {traceback.format_exc()}")
-        return None
-
-
 def load_t5_encoder():
     """Load full T5-Large encoder model."""
     from transformers import T5EncoderModel
@@ -951,36 +841,6 @@ def needs_dinov3_cls_on_disk(record: dict, dinov3_dir: Path) -> bool:
     return not npy_path.exists()
 
 
-def needs_vae_latent(record: dict, vae_dir: Path) -> bool:
-    """Check if VAE latent is missing OR stale for the record's aspect_bucket."""
-    import numpy as np
-
-    image_path = Path(record["image_path"])
-    image_id = compute_image_id(image_path)
-    npy_path = vae_dir / f"{image_id}.npy"
-
-    if not npy_path.exists():
-        return True
-
-    dims = parse_bucket_dims(record.get("aspect_bucket"))
-    # If we can't validate bucket consistency, force regeneration (true-native contract)
-    if not dims:
-        return True
-
-    bw, bh = dims
-    expected = (16, bh // 8, bw // 8)
-
-    try:
-        arr = np.load(npy_path, mmap_mode="r")
-        if arr.shape != expected:
-            return True
-        if arr.dtype != np.float16:
-            return True
-        return False
-    except Exception:
-        return True
-
-
 def needs_t5_hidden(record: dict, t5_dir: Path) -> bool:
     """Check if T5 hidden state .npy file is missing."""
     image_path = Path(record["image_path"])
@@ -1101,14 +961,12 @@ def verify_stage2_data(output_path: Path, base_dir: Path) -> dict:
     import numpy as np
     
     dinov3_dir = base_dir / "dinov3"
-    vae_dir = base_dir / "vae_latents"
     t5_dir = base_dir / "t5_hidden"
     images_dir = base_dir / "images"
     pose_dir = base_dir / "pose"
     
     results = {
         "dinov3": {"valid": 0, "invalid": 0, "missing": 0},
-        "vae": {"valid": 0, "invalid": 0, "missing": 0},
         "t5": {"valid": 0, "invalid": 0, "missing": 0},
         "image": {"valid": 0, "invalid": 0, "missing": 0},
         "pose": {"valid": 0, "invalid": 0, "missing": 0},
@@ -1140,40 +998,6 @@ def verify_stage2_data(output_path: Path, base_dir: Path) -> dict:
             except Exception as e:
                 results["dinov3"]["invalid"] += 1
                 eprint(f"  corrupt DINOv3 for {image_id}: {e}")
-        
-        # Check VAE
-        vae_path = vae_dir / f"{image_id}.npy"
-        if not vae_path.exists():
-            results["vae"]["missing"] += 1
-        else:
-            try:
-                arr = np.load(vae_path)
-                expected = None
-                dims = parse_bucket_dims(record.get("aspect_bucket"))
-                if dims:
-                    bw, bh = dims
-                    expected = (16, bh // 8, bw // 8)
-
-                is_valid = (
-                    arr.ndim == 3
-                    and arr.shape[0] == 16
-                    and arr.dtype == np.float16
-                    and (expected is None or arr.shape == expected)
-                )
-
-                if is_valid:
-                    results["vae"]["valid"] += 1
-                else:
-                    results["vae"]["invalid"] += 1
-                    if expected is not None:
-                        eprint(
-                            f"  invalid VAE for {image_id}: shape={arr.shape}, dtype={arr.dtype}, expected_shape={expected}"
-                        )
-                    else:
-                        eprint(f"  invalid VAE for {image_id}: shape={arr.shape}, dtype={arr.dtype}")
-            except Exception as e:
-                results["vae"]["invalid"] += 1
-                eprint(f"  corrupt VAE for {image_id}: {e}")
         
         # Check T5
         t5_path = t5_dir / f"{image_id}.npy"
@@ -1335,7 +1159,7 @@ def analyze_aspect_buckets(input_dir: Path, output_path: Path, num_buckets: int,
 
 def parse_args(argv):
     p = argparse.ArgumentParser(
-        description="Generate/enrich Stage 2 dataset: JSONL metadata + external .npy embeddings (DINOv3, VAE, T5)"
+        description="Generate/enrich Stage 2 dataset: JSONL metadata + external .npy embeddings (DINOv3, T5, pixel images, DWPose)"
     )
     p.add_argument("--input-dir", default="data/approved", help="Directory of approved images")
     p.add_argument(
@@ -1346,7 +1170,7 @@ def parse_args(argv):
     p.add_argument(
         "--output-base-dir",
         default="data/derived",
-        help="Base directory for .npy embedding files (creates dinov3/, vae_latents/, t5_hidden/ subdirs)",
+        help="Base directory for .npy embedding files (creates dinov3/, t5_hidden/, images/, pose/ subdirs)",
     )
     p.add_argument("--limit", type=int, default=0, help="Process at most N images (0=all)")
     p.add_argument(
@@ -1367,9 +1191,9 @@ def parse_args(argv):
     p.add_argument(
         "--pass",
         dest="pass_filter",
-        choices=["all", "dinov3", "vae", "t5", "image", "pose", "migrate"],
+        choices=["all", "dinov3", "t5", "image", "pose", "migrate"],
         default="all",
-        help="Run specific pass: all (default), dinov3, vae, t5, image (pixel-space .npy), pose (DWPose keypoints), migrate",
+        help="Run specific pass: all (default), dinov3, t5, image (pixel-space .npy), pose (DWPose keypoints), migrate",
     )
     p.add_argument(
         "--progress-every",
@@ -1459,14 +1283,12 @@ def main(argv):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     dinov3_dir = base_dir / "dinov3"
     dinov3_patches_dir = base_dir / "dinov3_patches"
-    vae_dir = base_dir / "vae_latents"
     t5_dir = base_dir / "t5_hidden"
     images_dir = base_dir / "images"
     pose_dir = base_dir / "pose"
     
     dinov3_dir.mkdir(parents=True, exist_ok=True)
     dinov3_patches_dir.mkdir(parents=True, exist_ok=True)
-    vae_dir.mkdir(parents=True, exist_ok=True)
     t5_dir.mkdir(parents=True, exist_ok=True)
     images_dir.mkdir(parents=True, exist_ok=True)
     pose_dir.mkdir(parents=True, exist_ok=True)
@@ -1480,11 +1302,6 @@ def main(argv):
         eprint(f"  valid: {results['dinov3']['valid']}")
         eprint(f"  invalid: {results['dinov3']['invalid']}")
         eprint(f"  missing: {results['dinov3']['missing']}")
-        
-        eprint("\nVAE latents:")
-        eprint(f"  valid: {results['vae']['valid']}")
-        eprint(f"  invalid: {results['vae']['invalid']}")
-        eprint(f"  missing: {results['vae']['missing']}")
         
         eprint("\nT5 hidden states:")
         eprint(f"  valid: {results['t5']['valid']}")
@@ -1567,7 +1384,7 @@ def main(argv):
             temp_path.unlink()
         
         import shutil
-        for npy_dir in [dinov3_dir, vae_dir, t5_dir, images_dir, pose_dir]:
+        for npy_dir in [dinov3_dir, t5_dir, images_dir, pose_dir]:
             if npy_dir.exists():
                 eprint(f"--no-resume: deleting {npy_dir}")
                 shutil.rmtree(npy_dir)
@@ -1596,7 +1413,6 @@ def main(argv):
 
     # Determine which passes to run
     run_dinov3 = args.pass_filter in ["all", "dinov3"]
-    run_vae = args.pass_filter in ["all", "vae"]
     run_t5 = args.pass_filter in ["all", "t5"]
     run_image = args.pass_filter in ["all", "image"]
     run_pose = args.pass_filter in ["all", "pose"]
@@ -1607,7 +1423,6 @@ def main(argv):
     t5_encoder = None
     dino = None
     caption_pipe = None
-    vae_encoder = None
     pose_model = None
 
     if run_dinov3 or run_migrate:
@@ -1624,11 +1439,6 @@ def main(argv):
         if args.verbose:
             eprint("verbose: loading caption model...")
         caption_pipe = load_caption_pipeline(device, args.caption_model)
-
-    if run_vae:
-        if args.verbose:
-            eprint("verbose: loading Flux VAE...")
-        vae_encoder = load_flux_vae(device, compile_encoder=False)  # Disabled: causes memory corruption
 
     if run_t5:
         if args.verbose:
@@ -1774,7 +1584,6 @@ def main(argv):
             # Check what's needed
             needs_dino_extract = run_dinov3 and needs_dinov3_extraction(record, dinov3_dir)
             needs_dino_patches_disk = run_dinov3 and needs_dinov3_patches_on_disk(record, dinov3_patches_dir)
-            needs_vae_gen = run_vae and needs_vae_latent(record, vae_dir)
             needs_t5_gen = run_t5 and needs_t5_hidden(record, t5_dir)
             needs_image_gen = run_image and needs_pixel_image(record, images_dir)
             needs_pose_gen = run_pose and needs_pose_keypoints(record, pose_dir)
@@ -1789,7 +1598,6 @@ def main(argv):
                 record.get("format_version") == 2
                 and not needs_dino_extract
                 and not needs_dino_patches_disk  # Also check patches
-                and not needs_vae_gen
                 and not needs_t5_gen
                 and not needs_image_gen
                 and not needs_pose_gen
@@ -1865,34 +1673,10 @@ def main(argv):
                         extract_dinov3_patches_to_npy(record, dinov3_patches_dir)
                     extracted += 1
 
-            # Flush any pending batch before VAE/T5 passes
+            # Flush any pending batch before T5 pass
             # This ensures captions are generated before T5 encoding attempts
-            if batch_buffer and (run_vae or run_t5):
+            if batch_buffer and run_t5:
                 flush_batch()
-
-            # Handle VAE pass
-            if run_vae and needs_vae_gen:
-                if args.verbose:
-                    eprint(f"verbose: encoding VAE latent for {image_id}...")
-
-                meta_changed = ensure_bucket_info(record, img_path)
-                latent = encode_vae_latent(img_path, vae_encoder, record.get("aspect_bucket"))
-                if latent is not None:
-                    save_vae_latent(latent, image_id, vae_dir)
-                    enriched += 1
-                else:
-                    eprint(f"warning: VAE encoding failed for {image_id}")
-
-                # Persist metadata updates (for --pass vae runs)
-                if meta_changed and not run_dinov3 and not run_migrate:
-                    temp_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-                    temp_file.flush()
-                    records_written_this_session += 1
-
-                # Clear CUDA cache to prevent memory accumulation
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
 
             # Handle T5 pass
             if run_t5 and needs_t5_gen:
