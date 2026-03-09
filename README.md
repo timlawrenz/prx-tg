@@ -10,38 +10,41 @@ This project demonstrates that you don't need massive datasets (millions of imag
 2. **Consumer Hardware**: Run entirely on consumer-grade GPUs (RTX 4090, etc.)
 3. **Pre-computed Embeddings**: Avoid expensive forward passes during training by pre-computing all conditioning signals
 4. **Flow Matching**: Use modern rectified flow formulation for stable, efficient training
-5. **Dual Conditioning**: Combine text (T5) and visual (DINOv3) embeddings for better control
+5. **Quad Conditioning**: Combine text (T5), visual (DINOv3), and pose (DWPose) signals for precise control
 
 ## Architecture
 
 ### Model: NanoDiT (Diffusion Transformer)
 
-- **Current (baseline)**: 384 hidden, 12 layers, 6 heads (~90M parameters)
-- **Target (production)**: 768 hidden, 18 layers, 12 heads (~400M parameters)
-- **Patch-based**: 2×2 patches in latent space for high detail
-- **Triple conditioning**: 
-  - Text via T5-XXL embeddings (4096-dim)
+- **Production**: 768 hidden, 18 layers, 12 heads (~400M parameters)
+- **Patch-based**: 2×2 patches in pixel space for high detail
+- **Pixel-space training**: Model predicts x0 (RGB pixels) directly — no VAE encoder/decoder
+- **Quad conditioning**: 
+  - Text via T5-Large embeddings (1024-dim, 512 tokens)
   - Visual style via DINOv3 CLS token (1024-dim)
   - Spatial layout via DINOv3 patch embeddings (~4000 tokens × 1024-dim)
+  - Pose via DWPose whole-body keypoints (133 joints × 3-dim [x, y, confidence])
 - **Dynamic positional encoding**: Supports variable aspect ratios
 
 ### Training: Rectified Flow Matching
 
 - **Algorithm**: Flow matching (continuous-time diffusion)
-- **Loss**: MSE between predicted and target velocity vectors
+- **Prediction type**: x_prediction (model outputs x0 directly)
+- **Loss**: MSE between predicted and target pixels
 - **Timestep sampling**: Logit-normal distribution (focuses on mid-diffusion)
 - **Timestep Encoding**: High-frequency 1000x scaled sinusoidal embeddings for stable flow
 - **CFG strategy**: 
-  - **Training dropout** (enables dual CFG fallback): 10% uncond, 30% text-only, 5% DINO-only, 55% both
-  - **Self-guidance** (default with TREAD): 2 passes — dense (all tokens) vs routed (50% tokens). Single `guidance_scale` (default 3.0). Faster and avoids corrupted unconditional baseline from stochastic routing.
-  - **Dual CFG** (fallback): 3 passes — unconditional + text-only + DINO-only. Used when `self_guidance: false` or TREAD is disabled.
+  - **Training dropout** (7 mutually exclusive categories): 10% uncond, 25% text-only, 5% DINO-CLS-only, 5% DINO-patches-only, 10% drop-pose, 5% pose-only, 40% all present
+  - **Self-guidance** (default with TREAD): 2 passes — dense (all tokens) vs routed (50% tokens). Single `guidance_scale` (default 3.0)
+  - **Dual CFG** (fallback): 3 passes — unconditional + text-only + DINO-only
 
-### VAE: Flux.1 Latent Space
+### Pose Conditioning: DWPose
 
-- Pre-trained VAE from Black Forest Labs
-- 16 channels, 8× spatial compression
-- All training happens in latent space (no pixel-level operations)
-- **Normalization**: Dataset-specific mean/std calibration (computed per shard collection)
+- **133 whole-body keypoints**: 17 body + 6 feet + 68 face + 42 hands (COCO-WholeBody format)
+- **Projection**: MLP (3→768→768 with GELU) + learned per-joint type embeddings
+- **Confidence masking**: Joints below threshold (0.05) replaced with learned [NULL_POSE] token
+- **CFG dropout**: Dedicated pose dropout categories (independent of text/DINO dropout)
+- **Cross-attention**: Pose tokens appended to DINO patches in conditioning sequence
 
 ## Dataset
 
@@ -82,27 +85,31 @@ Dense, objective image descriptions generated using Google Gemma3:27b:
 
 All embeddings are pre-computed and stored to avoid expensive forward passes during training:
 
-##### T5-XXL Text Embeddings
-- **Model**: Google T5-XXL (11B parameters)
-- **Output**: 512 tokens × 4096 dimensions (fp16)
-- **Storage**: `data/derived/t5/*.npy` (~4.2 MB per image)
+##### T5-Large Text Embeddings
+- **Model**: Google T5-Large
+- **Output**: 512 tokens × 1024 dimensions (fp16)
+- **Storage**: `data/derived/t5/*.npy` (~1 MB per image)
 - Caption → T5 encoder → fixed-length sequence embeddings
 
 ##### DINOv3 Visual Embeddings
-- **Model**: Facebook DINOv3-ViT-L/14 (304M parameters)
+- **Model**: Facebook DINOv3-ViT-L/16 (304M parameters)
 - **CLS token**: Single 1024-dim global feature vector
   - Captures color palette, style, composition
   - **Storage**: `data/derived/dinov3/*.npy` (~4 KB per image)
-- **Patch embeddings** (196 spatial patches, 14×14 grid):
-  - 196 × 1024 dimensions for spatial conditioning
+- **Patch embeddings** (variable spatial patches):
+  - ~4000 × 1024 dimensions for spatial conditioning
   - **Storage**: `data/derived/dinov3_patches/*.npy` (~0.78 MB per image)
-  - *Currently extracted but not used in training* (future spatial conditioning)
 
-##### Flux VAE Latents
-- **Model**: Black Forest Labs Flux.1 VAE
-- **Output**: 16 channels × H/8 × W/8 (fp16)
-- **Storage**: `data/derived/vae/*.npy` (varies by bucket)
-- Original pixels are never stored - training operates purely on latents
+##### Pixel Images
+- **Format**: RGB float16, range [0, 1]
+- **Output**: 3 channels × H × W (bucket-specific dimensions)
+- **Storage**: `data/derived/image/*.npy` (varies by bucket)
+
+##### DWPose Keypoints
+- **Model**: DWPose (ONNX) — YOLOx-L detector + DW-LL pose estimator
+- **Output**: 133 joints × 3 dimensions [x_norm, y_norm, confidence] (float16)
+- **Normalization**: x_norm = (2x/W) - 1, y_norm = (2y/H) - 1 (relative to bucket)
+- **Storage**: `data/derived/pose/*.npy` (~1.6 KB per image)
 
 #### 4. **WebDataset Sharding**
 
@@ -118,20 +125,23 @@ data/shards/10000/
 ```
 
 Each shard contains:
-- `{image_id}.vae_latent.npy` - VAE latents
-- `{image_id}.dinov3.npy` - DINO CLS token
-- `{image_id}.t5_hidden.npy` - T5 text embeddings
-- `{image_id}.t5_attention_mask.npy` - T5 attention mask
+- `{image_id}.image.npy` - RGB pixel data (3, H, W)
+- `{image_id}.dinov3.npy` - DINOv3 CLS token
+- `{image_id}.dinov3_patches.npy` - DINOv3 spatial patches
+- `{image_id}.t5h.npy` - T5 text embeddings
+- `{image_id}.t5m.npy` - T5 attention mask
+- `{image_id}.pose.npy` - DWPose keypoints (133, 3)
 - `{image_id}.json` - Metadata (bucket, dimensions, caption)
 
 ### Storage Requirements
 
 **Per image**:
-- VAE latent: ~300-500 KB (depends on bucket)
-- T5 embeddings: ~4.2 MB
+- Pixel data: ~6 MB (depends on bucket)
+- T5 embeddings: ~1 MB
 - DINOv3 CLS: ~4 KB
-- DINOv3 patches: ~0.78 MB (optional)
-- **Total**: ~5-6 MB per image
+- DINOv3 patches: ~0.78 MB
+- DWPose keypoints: ~1.6 KB
+- **Total**: ~8 MB per image
 
 **Full dataset**:
 - Embeddings + original images
@@ -161,6 +171,8 @@ model:
   depth: 18
   num_heads: 12
   patch_size: 2
+  in_channels: 3              # RGB pixels
+  prediction_type: x_prediction  # Pixel-space
 
 training:
   total_steps: 6000     # Optimizer steps (accumulated)
@@ -177,6 +189,13 @@ training:
       nesterov: true
       ns_steps: 5
       adjust_lr_fn: match_rms_adamw
+  cfg_dropout:
+    p_uncond: 0.10
+    p_text_only: 0.25
+    p_dino_cls_only: 0.05
+    p_dino_patches_only: 0.05
+    p_drop_pose: 0.10
+    p_pose_only: 0.05
   resolution_schedule:             # Train at lower res first (optional)
     - until_step: 3000
       scale: 0.5                   # Half resolution (4× fewer tokens)
@@ -188,24 +207,10 @@ training:
     block_index: -1        # -1 = depth // 2 (block 9)
     loss_type: cosine      # Cosine similarity alignment
   tread:
-    enabled: false         # Token routing for throughput
+    enabled: true          # Token routing for throughput
     routing_probability: 0.5
-    route_start: 1
-    route_end: -1          # -1 = depth - 2
     self_guidance: true    # Use self-guidance instead of dual CFG
     guidance_scale: 3.0
-  perceptual:
-    enabled: false         # LPIPS perceptual loss on decoded crops
-    lpips_weight: 0.1      # Loss weight
-    every_n_microsteps: 4  # Compute every N micro-steps
-    crop_size: 32          # Latent crop (32 → 256px decoded)
-
-sampling:
-  num_steps: 35
-  text_scale: 3.0          # Dual CFG text scale (when self_guidance: false)
-  dino_scale: 2.5          # Dual CFG DINO scale (when self_guidance: false)
-  self_guidance: true      # Use self-guidance (dense vs routed) instead of dual CFG
-  guidance_scale: 3.0      # Self-guidance scale
 ```
 
 ### Optimization Techniques
@@ -219,12 +224,12 @@ sampling:
 7. **REPA (REPresentation Alignment)**: Auxiliary loss aligning transformer hidden states with DINOv3 patch features at the middle block, improving convergence and representation quality (weight=0.5, cosine similarity)
 8. **TREAD (Token Routing)**: Randomly routes 50% of latent tokens past middle blocks (1→depth-2), effectively halving compute for 16 of 18 blocks. Parameter-free — adds zero new weights. Pairs with self-guidance sampling (2 passes instead of 3-pass dual CFG)
 9. **Muon Optimizer**: Hybrid Muon + AdamW — all 2D weight matrices (~237M params) use Muon's Newton-Schulz orthogonalization for geometry-aware updates; non-2D params (convs, biases, ~0.1M) stay on AdamW. Uses `adjust_lr_fn="match_rms_adamw"` so both optimizers share the same LR schedule.
-10. **Resolution Scheduling**: Train at lower resolution first (e.g., 0.5× spatial scale = 4× fewer tokens), then transition to full resolution. Configurable multi-phase schedule with automatic even-dimension enforcement for patch_size=2.
-11. **Perceptual Loss (LPIPS)**: Periodic LPIPS loss on VAE-decoded latent crops. Reconstructs predicted x0 from velocity prediction, decodes a random spatial crop via frozen VAE decoder, and computes perceptual similarity. Computed every N micro-steps to amortize cost (~325 MB overhead).
+10. **Resolution Scheduling**: Train at lower resolution first (e.g., 0.5× spatial scale = 4× fewer tokens), then transition to full resolution.
+11. **DWPose Conditioning**: Whole-body pose keypoints with dedicated CFG dropout, confidence masking, and learned [NULL_POSE] embeddings.
 
 ### Data Augmentation
 
-- **Horizontal flip**: 50% probability (applied to VAE latents)
+- **Horizontal flip**: 50% probability (applied to pixel images)
 - **Note**: T5 embeddings are NOT flipped (known limitation - would require caption rewriting)
 
 ## Validation
@@ -307,15 +312,15 @@ Quick 4-image generation every 100 steps:
 ## Current Status
 
 ### Production Training (768 hidden, 18 layers)
-- ✅ **Integrated DINOv3 Patches**: Model now uses ~4000 spatial conditioning tokens per image for precise layout.
-- ✅ **Fixed Timestep Scaling**: Anchored flow matching with 1000x scaled temporal embeddings.
-- ✅ **Memory Optimized**: FlashAttention (SDPA) and Gradient Checkpointing enable training at 1024px on 24GB GPUs.
-- ✅ **REPA Alignment**: Auxiliary loss aligns hidden states with DINOv3 teacher features for faster convergence.
-- ✅ **TREAD Token Routing**: Routes 50% of tokens past middle blocks for ~2× throughput, with self-guidance sampling.
-- ✅ **Muon Optimizer**: Hybrid Muon + AdamW for geometry-aware weight updates with Newton-Schulz orthogonalization.
-- ✅ **Resolution Scheduling**: Multi-phase training at lower resolution first for faster convergence.
-- ✅ **Perceptual Loss (LPIPS)**: Pixel-space LPIPS on VAE-decoded latent crops for quality signal beyond MSE.
-- 🚧 In progress: Training on 15k image subset, scaling to 86k.
+- ✅ **Pixel-Space Training**: Direct RGB prediction (x_prediction) — no VAE encoder/decoder needed
+- ✅ **Quad Conditioning**: Text (T5-Large) + DINOv3 CLS + DINOv3 patches + DWPose keypoints
+- ✅ **DWPose Integration**: 133 whole-body keypoints with confidence masking, dedicated CFG dropout, learned [NULL_POSE] embeddings
+- ✅ **Memory Optimized**: FlashAttention (SDPA) and Gradient Checkpointing enable training at 1024px on 24GB GPUs
+- ✅ **REPA Alignment**: Auxiliary loss aligns hidden states with DINOv3 teacher features for faster convergence
+- ✅ **TREAD Token Routing**: Routes 50% of tokens past middle blocks for ~2× throughput, with self-guidance sampling
+- ✅ **Muon Optimizer**: Hybrid Muon + AdamW for geometry-aware weight updates
+- ✅ **Resolution Scheduling**: Multi-phase training at lower resolution first for faster convergence
+- 🚧 In progress: Training on curated dataset, scaling to 70k images
 
 ### Known Limitations
 
@@ -323,8 +328,7 @@ Quick 4-image generation every 100 steps:
    - Left/right mentions in captions don't swap with image
    - Would require NLP caption rewriting (future work)
 
-2. **Training Data Size**: Dataset is growing towards 86k images.
-   - Currently training on high-quality 15k subset.
+2. **Training Data Size**: Preparing 70k image dataset.
 
 ## Repository Structure
 
@@ -357,17 +361,18 @@ prx-tg/
 ### 1. Data Preparation
 
 ```bash
-# Generate all embeddings and create shards
-python scripts/generate_approved_image_dataset.py \
+# Generate all embeddings
+python -m scripts.generate_approved_image_dataset \
   --device cuda \
   --pass-filter all \
   --verbose
 
 # This will:
-# - Caption images with Florence-2
-# - Extract T5 text embeddings
-# - Extract DINOv3 visual embeddings
-# - Encode VAE latents
+# - Caption images with Gemma3:27b
+# - Extract T5-Large text embeddings
+# - Extract DINOv3 visual embeddings (CLS + patches)
+# - Extract DWPose keypoints (133 whole-body joints)
+# - Save bucketed RGB pixel images
 # - Create WebDataset shards
 ```
 
@@ -409,7 +414,7 @@ See full environment in `.venv/` (not committed).
 
 See [docs/prx-part3-analysis.md](docs/prx-part3-analysis.md) for a detailed analysis of techniques from Photoroom's PRX Part 3.
 
-1. **Larger Dataset**: Expand dataset size towards 86k target.
+1. **Larger Dataset**: Expand dataset size towards 70k target.
 
 2. **Latent REPA**: Replace DINOv3 teacher alignment with self-supervised latent alignment (future exploration).
 
@@ -419,9 +424,9 @@ See [docs/prx-part3-analysis.md](docs/prx-part3-analysis.md) for a detailed anal
 
 ## Acknowledgments
 
-- **Flux VAE**: Black Forest Labs (Flux.1-dev)
-- **T5-XXL**: Google (text encoder)
+- **T5-Large**: Google (text encoder)
 - **DINOv3**: Facebook AI Research (visual encoder)
+- **DWPose**: Open-source whole-body pose estimation (ONNX)
 - **Gemma3:27b**: Google (caption generation)
 - **Flow Matching**: Inspired by Stable Diffusion 3 and Flux.1 training methodology
 
