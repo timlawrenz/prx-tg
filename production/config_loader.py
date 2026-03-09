@@ -101,8 +101,8 @@ class PerceptualLossConfig:
     """Perceptual loss (LPIPS) configuration."""
     enabled: bool = False
     lpips_weight: float = 0.1       # PRX article uses 0.1
-    every_n_microsteps: int = 4     # Compute every N micro-steps to amortize VAE decode cost
-    crop_size: int = 32             # Latent crop size (32 → 256px decoded via VAE)
+    every_n_microsteps: int = 4     # Compute every N micro-steps to amortize cost
+    crop_size: int = 256            # Pixel crop size for LPIPS comparison
 
 
 @dataclass
@@ -207,7 +207,6 @@ class LoggingConfig:
 @dataclass
 class PathConfig:
     """Path configuration."""
-    vae_path: str = "models/vae.safetensors"
     t5_path: str = "models/t5xxl_fp16.safetensors"
 
 
