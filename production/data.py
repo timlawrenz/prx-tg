@@ -10,11 +10,8 @@ import numpy as np
 import webdataset as wds
 
 
-# Flux VAE latent normalization (computed from dataset statistics)
-# These are automatically computed at training startup if not already cached
-FLUX_LATENT_MEAN = -0.036260
-FLUX_LATENT_STD = 2.968345
-USE_LATENT_NORMALIZATION = True # Enable after verifying compatibility
+# VAE latent normalization — disabled (pixel-space mode, no VAE latents)
+USE_LATENT_NORMALIZATION = False
 
 
 def compute_latent_stats(shard_dir, num_samples=1000):
@@ -248,10 +245,10 @@ class ValidationDataset:
         """Process a raw WebDataset sample into model inputs.
         
         Args:
-            sample: dict with keys: __key__, json, dinov3.npy, dinov3_patches.npy, vae.npy/image.npy, t5h.npy, t5m.npy, pose.npy
+            sample: dict with keys: __key__, json, dinov3.npy, dinov3_patches.npy, image.npy, t5h.npy, t5m.npy, pose.npy
         
         Returns:
-            dict with keys: vae_latent, dino_embedding, dinov3_patches, t5_hidden, t5_mask, pose_keypoints, caption, image_id
+            dict with keys: image_data, dino_embedding, dinov3_patches, t5_hidden, t5_mask, pose_keypoints, caption, image_id
         """
         # Parse metadata (webdataset already decoded JSON)
         metadata = sample['json']
@@ -265,25 +262,18 @@ class ValidationDataset:
         t5_mask = sample['t5m.npy']  # (512,)
         pose_kpts = sample['pose.npy']  # (133, 3) — [x_norm, y_norm, confidence] per joint
         
-        # Load image data: pixel-space RGB or VAE latents
-        if self.pixel_space:
-            image_data = sample['image.npy']  # (3, H, W) float16, range [0, 1]
-        else:
-            image_data = sample['vae.npy']  # (16, H, W)
+        # Load pixel-space RGB image
+        image_data = sample['image.npy']  # (3, H, W) float16, range [0, 1]
         
-        # Resize to target size (works for both latents and pixel images)
+        # Resize to target size if specified
         if self.target_latent_size is None:
             image_data = torch.from_numpy(image_data)
         else:
             image_data = resize_vae_latent(image_data, self.target_latent_size)
         
-        # Normalize VAE latents (skip for pixel-space — already [0, 1])
-        if not self.pixel_space:
-            image_data = normalize_vae_latent(image_data)
-        
         # Convert to tensors
         return {
-            'vae_latent': image_data.float(),  # (C, H, W) — 16ch latent or 3ch RGB
+            'image_data': image_data.float(),  # (3, H, W) RGB [0, 1]
             'dino_embedding': torch.from_numpy(dino_emb).float(),  # (1024,)
             'dinov3_patches': torch.from_numpy(dino_patches).float(),  # (num_patches, 1024) - VARIABLE!
             't5_hidden': torch.from_numpy(t5_hidden).float(),  # (512, 1024)
@@ -321,7 +311,7 @@ class ValidationDataset:
             padded_patches.append(padded)
             
         return {
-            'vae_latent': torch.stack([s['vae_latent'] for s in batch]),
+            'image_data': torch.stack([s['image_data'] for s in batch]),
             'dino_embedding': torch.stack([s['dino_embedding'] for s in batch]),
             'dinov3_patches': torch.stack(padded_patches),  # (B, max_patches, 1024)
             'dinov3_patches_mask': torch.stack(patch_masks), # (B, max_patches)
@@ -484,7 +474,7 @@ class BucketAwareDataLoader:
                     continue
             if bucket not in self._logged:
                 self._logged.add(bucket)
-                print(f"  Bucket {bucket}: batch vae_latent {tuple(batch['vae_latent'].shape)}")
+                print(f"  Bucket {bucket}: batch image_data {tuple(batch['image_data'].shape)}")
             batch['bucket'] = bucket
             yield batch
 
@@ -577,7 +567,7 @@ if __name__ == "__main__":
     batch = next(iter(dataloader))
     
     print(f"Batch keys: {batch.keys()}")
-    print(f"VAE latent shape: {batch['vae_latent'].shape}")
+    print(f"Image data shape: {batch['image_data'].shape}")
     print(f"DINO embedding shape: {batch['dino_embedding'].shape}")
     print(f"T5 hidden shape: {batch['t5_hidden'].shape}")
     print(f"T5 mask shape: {batch['t5_mask'].shape}")
