@@ -55,7 +55,7 @@ class TimestepEmbedder(nn.Module):
 class PatchEmbed(nn.Module):
     """Embed image patches (VAE latents or raw pixels) into hidden dimension."""
     
-    def __init__(self, patch_size=2, in_channels=16, hidden_size=384, bottleneck_size=0):
+    def __init__(self, patch_size=16, in_channels=3, hidden_size=384, bottleneck_size=0):
         super().__init__()
         self.patch_size = patch_size
         self.bottleneck_size = bottleneck_size
@@ -288,9 +288,9 @@ class NanoDiT(nn.Module):
     
     def __init__(
         self,
-        input_size=64,  # Latent spatial size (64x64 for 512x512 images) - IGNORED for dynamic pos embed
-        patch_size=2,
-        in_channels=16,  # Flux VAE latent channels
+        input_size=64,  # Latent spatial size - IGNORED for dynamic pos embed
+        patch_size=16,
+        in_channels=3,  # RGB pixel channels
         hidden_size=384,
         depth=12,
         num_heads=6,

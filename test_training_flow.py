@@ -569,7 +569,7 @@ pcfg = PerceptualLossConfig()
 assert pcfg.enabled == False
 assert pcfg.lpips_weight == 0.1
 assert pcfg.every_n_microsteps == 4
-assert pcfg.crop_size == 32
+assert pcfg.crop_size == 256
 print(f"✓ PerceptualLossConfig defaults correct")
 
 # Test 2: every_n gating in flow_matching_loss
@@ -707,7 +707,7 @@ print(f"✓ EulerSampler with x_prediction: output shape {tuple(out_xp.shape)}")
 # Test 8: Config prediction_type defaults
 from production.config_loader import ModelConfig
 mc = ModelConfig()
-assert mc.prediction_type == "v_prediction", f"Default prediction_type should be v_prediction, got {mc.prediction_type}"
+assert mc.prediction_type == "x_prediction", f"Default prediction_type should be x_prediction, got {mc.prediction_type}"
 assert mc.t_clamp_min == 0.05, f"Default t_clamp_min should be 0.05, got {mc.t_clamp_min}"
 assert mc.bottleneck_size == 0, f"Default bottleneck_size should be 0, got {mc.bottleneck_size}"
 print(f"✓ ModelConfig defaults: prediction_type={mc.prediction_type}, t_clamp_min={mc.t_clamp_min}, bottleneck_size={mc.bottleneck_size}")
