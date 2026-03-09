@@ -175,12 +175,12 @@ class ValidationRunner:
         
         while sample_count <= max_idx:
             batch = next(data_iter)
-            batch_size = batch['vae_latent'].shape[0]
+            batch_size = batch['image_data'].shape[0]
             
             for i in range(batch_size):
                 if sample_count <= max_idx:
                     samples.append({
-                        'vae_latent': batch['vae_latent'][i].cpu(),
+                        'image_data': batch['image_data'][i].cpu(),
                         'dino_embedding': batch['dino_embedding'][i].cpu(),
                         'dinov3_patches': batch['dinov3_patches'][i].cpu(),  # NEW - spatial patches
                         't5_hidden': batch['t5_hidden'][i].cpu(),
@@ -244,27 +244,24 @@ class ValidationRunner:
             dino_patches = torch.stack([s['dinov3_patches'] for s in batch_samples])  # NEW - patches
             text_emb = torch.stack([s['t5_hidden'] for s in batch_samples])
             text_mask = torch.stack([s['t5_mask'] for s in batch_samples])
-            gt_latents = torch.stack([s['vae_latent'] for s in batch_samples])
+            gt_images_raw = torch.stack([s['image_data'] for s in batch_samples])
             image_ids = [s['image_id'] for s in batch_samples]
             
             # Generate images at current training resolution
             gen_images = sampler.generate(dino_emb, dino_patches, text_emb, text_mask,
                                           latent_size=latent_size)
             
-            # Resize GT latents to match generation resolution before decoding
+            # Resize GT to match generation resolution
             if latent_size is not None:
-                gt_h, gt_w = gt_latents.shape[2], gt_latents.shape[3]
+                gt_h, gt_w = gt_images_raw.shape[2], gt_images_raw.shape[3]
                 if gt_h != latent_size or gt_w != latent_size:
-                    gt_latents = F.interpolate(
-                        gt_latents, size=(latent_size, latent_size),
+                    gt_images_raw = F.interpolate(
+                        gt_images_raw, size=(latent_size, latent_size),
                         mode='bilinear', align_corners=False
                     )
             
-            # Decode ground truth for comparison
-            if self.prediction_type == "x_prediction":
-                gt_images = gt_latents.to(self.device) * 2 - 1  # [0,1] → [-1,1]
-            else:
-                gt_images = sampler.vae.decode(gt_latents.half().to(self.device)).sample
+            # Convert ground truth [0,1] → [-1,1] for LPIPS comparison
+            gt_images = gt_images_raw.to(self.device) * 2 - 1
             
             # Compute LPIPS
             for j in range(len(batch_indices)):
@@ -540,7 +537,7 @@ class ValidationRunner:
             dino_patches = torch.stack([s['dinov3_patches'] for s in batch_samples])
             text_emb = torch.stack([s['t5_hidden'] for s in batch_samples])
             text_mask = torch.stack([s['t5_mask'] for s in batch_samples])
-            gt_latents = torch.stack([s['vae_latent'] for s in batch_samples])
+            gt_images_raw = torch.stack([s['image_data'] for s in batch_samples])
             image_ids = [s['image_id'] for s in batch_samples]
             
             # Generate images with TEXT ONLY (dino_scale=0.0 disables DINO CLS + patches)
@@ -556,20 +553,17 @@ class ValidationRunner:
                 text_scale=3.0,  # Normal text guidance
             )
             
-            # Resize GT latents to match generation resolution before decoding
+            # Resize GT to match generation resolution
             if latent_size is not None:
-                gt_h, gt_w = gt_latents.shape[2], gt_latents.shape[3]
+                gt_h, gt_w = gt_images_raw.shape[2], gt_images_raw.shape[3]
                 if gt_h != latent_size or gt_w != latent_size:
-                    gt_latents = F.interpolate(
-                        gt_latents, size=(latent_size, latent_size),
+                    gt_images_raw = F.interpolate(
+                        gt_images_raw, size=(latent_size, latent_size),
                         mode='bilinear', align_corners=False
                     )
             
-            # Decode ground truth for comparison
-            if self.prediction_type == "x_prediction":
-                gt_images = gt_latents.to(self.device) * 2 - 1  # [0,1] → [-1,1]
-            else:
-                gt_images = sampler.vae.decode(gt_latents.half().to(self.device)).sample
+            # Convert ground truth [0,1] → [-1,1] for LPIPS comparison
+            gt_images = gt_images_raw.to(self.device) * 2 - 1
             
             # Compute LPIPS
             for j in range(len(batch_indices)):

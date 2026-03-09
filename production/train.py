@@ -598,7 +598,7 @@ class Trainer:
         """Execute one training step.
         
         Args:
-            batch: dict with vae_latent, dino_embedding, dinov3_patches, t5_hidden, t5_mask, pose_keypoints
+            batch: dict with image_data, dino_embedding, dinov3_patches, t5_hidden, t5_mask, pose_keypoints
         
         Returns:
             dict with loss and grad_norm
@@ -606,7 +606,7 @@ class Trainer:
         self.model.train()
         
         # Move batch to device
-        x0 = batch['vae_latent'].to(self.device)
+        x0 = batch['image_data'].to(self.device)
         dino_emb = batch['dino_embedding'].to(self.device)
         dino_patches = batch['dinov3_patches'].to(self.device)  # (B, num_patches, 1024)
         text_emb = batch['t5_hidden'].to(self.device)

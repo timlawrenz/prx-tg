@@ -17,9 +17,9 @@ class ModelConfig:
     num_heads: int = 6
     patch_size: int = 2
     mlp_ratio: float = 4.0
-    in_channels: int = 16
-    input_size: int = 64
-    prediction_type: Literal["v_prediction", "x_prediction"] = "v_prediction"
+    in_channels: int = 3
+    input_size: int = 1024
+    prediction_type: Literal["v_prediction", "x_prediction"] = "x_prediction"
     t_clamp_min: float = 0.05       # Minimum t for x→v conversion (avoids div-by-zero)
     bottleneck_size: int = 0        # PatchEmbed bottleneck (0 = disabled)
     num_pose_joints: int = 133      # DWPose whole-body keypoints

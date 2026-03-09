@@ -234,25 +234,6 @@ def main():
     if config.validation.enabled:
         Path(config.validation.output_dir).mkdir(parents=True, exist_ok=True)
     
-    # Compute latent statistics if normalization is enabled (skip for pixel-space)
-    from production.data import USE_LATENT_NORMALIZATION, load_or_compute_latent_stats
-    pixel_space = config.model.prediction_type == "x_prediction"
-    if USE_LATENT_NORMALIZATION and not pixel_space:
-        print("\n" + "="*60)
-        print("VAE LATENT NORMALIZATION")
-        print("="*60)
-        stats = load_or_compute_latent_stats(
-            shard_dir=config.data.shard_base_dir,
-            num_samples=1000
-        )
-        # Update module-level constants
-        import production.data as data_module
-        data_module.FLUX_LATENT_MEAN = stats['mean']
-        data_module.FLUX_LATENT_STD = stats['std']
-        print(f"Normalization enabled:")
-        print(f"  Mean: {stats['mean']:.6f}")
-        print(f"  Std: {stats['std']:.6f}")
-        print("="*60 + "\n")
     
     # Create dataloader
     print("Creating dataloader...")
