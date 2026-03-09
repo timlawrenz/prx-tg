@@ -15,7 +15,7 @@ class ModelConfig:
     depth: int = 12
     hidden_size: int = 384
     num_heads: int = 6
-    patch_size: int = 2
+    patch_size: int = 16
     mlp_ratio: float = 4.0
     in_channels: int = 3
     input_size: int = 1024

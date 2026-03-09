@@ -5,7 +5,7 @@ model:
   hidden_size: 768             # Hidden dimension (scale to 768-1024 for production)
   depth: 18                    # Number of transformer layers (start small, scale to 24-28)
   num_heads: 12                 # Attention heads
-  patch_size: 2                # Spatial downsampling (2 for high detail as per plan)
+  patch_size: 16               # Pixel-space patchification (16 ≈ old VAE 8× + patch 2)
   mlp_ratio: 4.0               # MLP expansion factor
   in_channels: 3               # RGB pixel channels (pixel-space training)
   prediction_type: x_prediction  # Pixel-space: model predicts x0 directly

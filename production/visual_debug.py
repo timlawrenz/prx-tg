@@ -64,7 +64,7 @@ def create_visual_debug_fn(
         scale = get_resolution_scale() if get_resolution_scale is not None else 1.0
         if pixel_space:
             base_size = 1024  # Full resolution pixel dimension
-            spatial_size = max(32, (int(base_size * scale) // 32) * 32)  # Align to patch_size=32
+            spatial_size = max(32, (int(base_size * scale) // 32) * 32)  # Align to 32-pixel grid (divisible by patch_size=16)
             in_channels = 3
         else:
             base_size = 128  # Full resolution: 1024px / 8 = 128
