@@ -34,6 +34,7 @@ class EulerSampler:
         self_guidance=False,
         guidance_scale=3.0,
         prediction_type="v_prediction",
+        pose_kpts=None,
     ):
         """Sample from model using Euler integration with dual CFG or self-guidance.
         
@@ -54,6 +55,7 @@ class EulerSampler:
             self_guidance: if True, use TREAD self-guidance instead of dual CFG
             guidance_scale: self-guidance scale (self-guidance mode only)
             prediction_type: "v_prediction" or "x_prediction"
+            pose_kpts: (B, 133, 3) pose keypoints [x_norm, y_norm, confidence] or None
         
         Returns:
             output: (B, C, H, W) sampled data (latents or pixels)
@@ -77,12 +79,14 @@ class EulerSampler:
                 # Pass 1: Dense (all tokens, conditional, no routing)
                 v_dense = model(
                     zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
+                    pose_kpts=pose_kpts,
                     tread_enabled=False,
                 )
                 
                 # Pass 2: Routed (50% tokens, conditional, with routing)
                 v_routed = model(
                     zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
+                    pose_kpts=pose_kpts,
                     tread_enabled=True,
                 )
                 
@@ -90,28 +94,29 @@ class EulerSampler:
                 v_pred = v_routed + guidance_scale * (v_dense - v_routed)
             else:
                 # Dual CFG: 3 passes (unconditional, text-only, DINO-only)
-                # 1. Unconditional (all dropped)
+                # Pose is always passed through; unconditional pass drops it via cfg_drop_pose
+                drop_all = torch.ones(B, dtype=torch.bool, device=device)
+                keep_all = torch.zeros(B, dtype=torch.bool, device=device)
+                
+                # 1. Unconditional (all dropped including pose)
                 v_uncond = model(
                     zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
-                    cfg_drop_text=torch.ones(B, dtype=torch.bool, device=device),
-                    cfg_drop_dino_cls=torch.ones(B, dtype=torch.bool, device=device),
-                    cfg_drop_dino_patches=torch.ones(B, dtype=torch.bool, device=device),
+                    cfg_drop_text=drop_all, cfg_drop_dino_cls=drop_all, cfg_drop_dino_patches=drop_all,
+                    pose_kpts=pose_kpts, cfg_drop_pose=drop_all,
                 )
                 
-                # 2. Text-only (DINO CLS and patches dropped)
+                # 2. Text-only (DINO + pose dropped)
                 v_text = model(
                     zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
-                    cfg_drop_text=torch.zeros(B, dtype=torch.bool, device=device),
-                    cfg_drop_dino_cls=torch.ones(B, dtype=torch.bool, device=device),
-                    cfg_drop_dino_patches=torch.ones(B, dtype=torch.bool, device=device),
+                    cfg_drop_text=keep_all, cfg_drop_dino_cls=drop_all, cfg_drop_dino_patches=drop_all,
+                    pose_kpts=pose_kpts, cfg_drop_pose=drop_all,
                 )
                 
-                # 3. DINO-only (text dropped, DINO CLS and patches kept)
+                # 3. DINO-only (text + pose dropped)
                 v_dino = model(
                     zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
-                    cfg_drop_text=torch.ones(B, dtype=torch.bool, device=device),
-                    cfg_drop_dino_cls=torch.zeros(B, dtype=torch.bool, device=device),
-                    cfg_drop_dino_patches=torch.zeros(B, dtype=torch.bool, device=device),
+                    cfg_drop_text=drop_all, cfg_drop_dino_cls=keep_all, cfg_drop_dino_patches=keep_all,
+                    pose_kpts=pose_kpts, cfg_drop_pose=drop_all,
                 )
                 
                 # Dual CFG combination
@@ -295,6 +300,7 @@ class ValidationSampler:
         dino_scale=None,
         self_guidance=None,
         guidance_scale=None,
+        pose_kpts=None,
     ):
         """Generate images from conditioning.
         
@@ -309,6 +315,7 @@ class ValidationSampler:
             dino_scale: override dino CFG scale (dual CFG mode, default: use sampler's)
             self_guidance: override self-guidance mode (default: use sampler's)
             guidance_scale: override guidance scale (default: use sampler's)
+            pose_kpts: (B, 133, 3) pose keypoints or None
         
         Returns:
             images: (B, 3, 512, 512) RGB images
@@ -323,6 +330,8 @@ class ValidationSampler:
         dino_patches = dino_patches.to(self.device)
         text_emb = text_emb.to(self.device)
         text_mask = text_mask.to(self.device)
+        if pose_kpts is not None:
+            pose_kpts = pose_kpts.to(self.device)
         
         if latent_size is None:
             latent_size = getattr(self.model, 'input_size', 128)
@@ -348,6 +357,7 @@ class ValidationSampler:
                 self_guidance=True,
                 guidance_scale=guidance_scale if guidance_scale is not None else self.guidance_scale,
                 prediction_type=self.prediction_type,
+                pose_kpts=pose_kpts,
             )
         else:
             cfg_text_scale = text_scale if text_scale is not None else self.text_scale
@@ -357,6 +367,7 @@ class ValidationSampler:
                 device=self.device,
                 text_scale=cfg_text_scale, dino_scale=cfg_dino_scale,
                 prediction_type=self.prediction_type,
+                pose_kpts=pose_kpts,
             )
         
         if pixel_space:

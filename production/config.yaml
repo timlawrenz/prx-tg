@@ -9,6 +9,8 @@ model:
   mlp_ratio: 4.0               # MLP expansion factor
   in_channels: 16              # VAE latent channels
   input_size: 128              # Validation/sampling latent size (1024px / 8 = 128)
+  num_pose_joints: 133         # DWPose whole-body keypoints (17 body + 6 feet + 68 face + 42 hands)
+  pose_confidence_threshold: 0.05  # Hard-mask joints below this confidence with [NULL_POSE]
 
 training:
   total_steps: 6000           # Total optimizer steps (approx 14 days on 4090)
@@ -35,11 +37,13 @@ training:
   
   # CFG dropout (mutually exclusive categorical as per fixed validation code)
   cfg_dropout:
-    p_uncond: 0.1              # Drop both DINO and text (unconditional)
-    p_text_only: 0.3           # Drop DINO more often (reduce DINO reliance)
-    p_dino_cls_only: 0.05      # Drop text and patches (keep only global style)
-    p_dino_patches_only: 0.05  # Drop text and CLS (keep only spatial layout)
-    # Remaining 50% keeps all signals
+    p_uncond: 0.1              # Drop all conditioning (unconditional)
+    p_text_only: 0.25          # Drop DINO + pose (text only)
+    p_dino_cls_only: 0.05      # Drop text + patches + pose (keep only global style)
+    p_dino_patches_only: 0.05  # Drop text + CLS + pose (keep only spatial layout)
+    p_drop_pose: 0.10          # Drop only pose (text + DINO present)
+    p_pose_only: 0.05          # Keep only pose (text + DINO dropped)
+    # Remaining 40% keeps all signals (text + DINO + pose)
 
   # REPA (REPresentation Alignment) — align hidden states with DINOv3 patches
   repa:

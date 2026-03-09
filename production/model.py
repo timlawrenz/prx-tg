@@ -304,6 +304,9 @@ class NanoDiT(nn.Module):
         tread_route_end=None,
         tread_routing_prob=0.5,
         bottleneck_size=0,
+        num_pose_joints=133,
+        pose_dim=3,
+        pose_confidence_threshold=0.05,
     ):
         super().__init__()
         self.input_size = input_size  # For backward compatibility, but not used
@@ -317,6 +320,8 @@ class NanoDiT(nn.Module):
         self.tread_route_end = tread_route_end
         self.tread_routing_prob = tread_routing_prob
         self.tread_enabled = tread_route_start is not None and tread_route_end is not None
+        self.num_pose_joints = num_pose_joints
+        self.pose_confidence_threshold = pose_confidence_threshold
         
         # Patch embedding
         self.x_embedder = PatchEmbed(patch_size, in_channels, hidden_size, bottleneck_size=bottleneck_size)
@@ -331,6 +336,14 @@ class NanoDiT(nn.Module):
         self.dino_proj = nn.Linear(dino_dim, hidden_size, bias=True)
         self.dino_patch_proj = nn.Linear(dino_patch_dim, hidden_size, bias=True)
         self.text_proj = nn.Linear(text_dim, hidden_size, bias=True)
+        
+        # Pose conditioning: MLP projector + learned joint-type embeddings
+        self.pose_proj = nn.Sequential(
+            nn.Linear(pose_dim, hidden_size, bias=True),
+            nn.GELU(),
+            nn.Linear(hidden_size, hidden_size, bias=True),
+        )
+        self.pose_joint_embed = nn.Embedding(num_pose_joints, hidden_size)
         
         # Transformer blocks
         self.blocks = nn.ModuleList([
@@ -356,6 +369,8 @@ class NanoDiT(nn.Module):
         self.null_dino = nn.Parameter(torch.zeros(1, dino_dim))
         self.null_dino_patch_token = nn.Parameter(torch.zeros(1, 1, dino_patch_dim))
         self.null_text = nn.Parameter(torch.zeros(1, 1, text_dim))
+        # [NULL_POSE]: learned token the model sees when pose is dropped during CFG
+        self.null_pose = nn.Parameter(torch.zeros(1, num_pose_joints, hidden_size))
     
     def get_pos_embed(self, h, w, device):
         """Generate 2D sinusoidal positional embeddings for given spatial size.
@@ -419,6 +434,7 @@ class NanoDiT(nn.Module):
 
     def forward(self, x, t, dino_emb, text_emb, dino_patches=None, text_mask=None, dino_patches_mask=None,
                 cfg_drop_text=None, cfg_drop_dino_cls=None, cfg_drop_dino_patches=None,
+                pose_kpts=None, cfg_drop_pose=None,
                 return_repa_hidden=False, tread_enabled=None):
         """
         Args:
@@ -432,6 +448,8 @@ class NanoDiT(nn.Module):
             cfg_drop_text: (B,) bool mask for dropping text
             cfg_drop_dino_cls: (B,) bool mask for dropping DINO CLS
             cfg_drop_dino_patches: (B,) bool mask for dropping DINO patches
+            pose_kpts: (B, 133, 3) pose keypoints [x_norm, y_norm, confidence]
+            cfg_drop_pose: (B,) bool mask for dropping pose (swaps to [NULL_POSE])
             return_repa_hidden: if True, return (v_pred, repa_hidden, tread_visible_idx) tuple
             tread_enabled: override for TREAD routing (None = use self.training when configured)
         
@@ -493,6 +511,46 @@ class NanoDiT(nn.Module):
         dino_cls_token = dino_cond.unsqueeze(1)  # (B, 1, hidden_size) - for cross-attention
         text_cond = self.text_proj(text_emb)  # (B, seq_len, hidden_size)
         patches_cond = self.dino_patch_proj(dino_patches)  # (B, num_patches, hidden_size)
+        
+        # Pose conditioning: project keypoints and add joint-type embeddings
+        if pose_kpts is not None:
+            # CFG dropout: swap entire pose sequence to [NULL_POSE] tokens
+            if cfg_drop_pose is not None:
+                null_pose_expanded = self.null_pose.expand(B, -1, -1)  # (B, 133, hidden_size)
+                # For dropped samples, use null_pose directly (already in hidden_size space)
+                # For kept samples, project the real keypoints
+                pose_proj = self.pose_proj(pose_kpts) + self.pose_joint_embed.weight  # (B, 133, hidden_size)
+                
+                # Confidence masking: replace low-confidence joints with per-joint null
+                conf = pose_kpts[:, :, 2]  # (B, 133)
+                low_conf = conf < self.pose_confidence_threshold  # (B, 133)
+                pose_proj = torch.where(
+                    low_conf.unsqueeze(2),  # (B, 133, 1)
+                    null_pose_expanded,
+                    pose_proj,
+                )
+                
+                # CFG dropout: replace ALL tokens for dropped samples
+                pose_tokens = torch.where(
+                    cfg_drop_pose.unsqueeze(1).unsqueeze(2),  # (B, 1, 1)
+                    null_pose_expanded,
+                    pose_proj,
+                )
+            else:
+                pose_tokens = self.pose_proj(pose_kpts) + self.pose_joint_embed.weight  # (B, 133, hidden_size)
+                # Confidence masking
+                conf = pose_kpts[:, :, 2]
+                low_conf = conf < self.pose_confidence_threshold
+                null_pose_expanded = self.null_pose.expand(B, -1, -1)
+                pose_tokens = torch.where(low_conf.unsqueeze(2), null_pose_expanded, pose_tokens)
+            
+            # Append pose tokens to DINO patches for cross-attention
+            patches_cond = torch.cat([patches_cond, pose_tokens], dim=1)  # (B, num_patches+133, hidden_size)
+            
+            # Extend patches mask to cover pose tokens (all valid)
+            if dino_patches_mask is not None:
+                pose_mask = torch.ones(B, self.num_pose_joints, device=dino_patches_mask.device, dtype=dino_patches_mask.dtype)
+                dino_patches_mask = torch.cat([dino_patches_mask, pose_mask], dim=1)
         
         # Determine if TREAD routing is active
         use_tread = self.tread_enabled and (tread_enabled if tread_enabled is not None else self.training)
@@ -583,8 +641,15 @@ if __name__ == "__main__":
     mask = torch.ones(B, 512)
     
     with torch.no_grad():
-        v = model(x, t, dino, text, mask)
+        v = model(x, t, dino, text, text_mask=mask)
     
     print(f"Input shape: {x.shape}")
     print(f"Output shape: {v.shape}")
+    
+    # Test with pose conditioning
+    pose = torch.randn(B, 133, 3)
+    pose[:, :, 2] = torch.rand(B, 133)  # Confidence in [0, 1]
+    with torch.no_grad():
+        v_pose = model(x, t, dino, text, pose_kpts=pose, text_mask=mask)
+    print(f"Output shape (with pose): {v_pose.shape}")
     print("✓ Model test passed")

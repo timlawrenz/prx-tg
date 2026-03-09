@@ -22,6 +22,8 @@ class ModelConfig:
     prediction_type: Literal["v_prediction", "x_prediction"] = "v_prediction"
     t_clamp_min: float = 0.05       # Minimum t for x→v conversion (avoids div-by-zero)
     bottleneck_size: int = 0        # PatchEmbed bottleneck (0 = disabled)
+    num_pose_joints: int = 133      # DWPose whole-body keypoints
+    pose_confidence_threshold: float = 0.05  # Hard-mask joints below this with [NULL_POSE]
 
 
 @dataclass
@@ -55,10 +57,12 @@ class OptimizerConfig:
 @dataclass
 class CFGDropoutConfig:
     """CFG dropout probabilities (mutually exclusive)."""
-    p_uncond: float = 0.1        # Drop both
-    p_text_only: float = 0.3     # Keep text, drop DINO
-    p_dino_cls_only: float = 0.05    # Keep DINO CLS, drop text and patches
-    p_dino_patches_only: float = 0.05 # Keep DINO patches, drop text and CLS
+    p_uncond: float = 0.1            # Fully unconditional
+    p_text_only: float = 0.25        # Keep text, drop DINO + pose
+    p_dino_cls_only: float = 0.05    # Keep DINO CLS, drop text + patches + pose
+    p_dino_patches_only: float = 0.05  # Keep DINO patches, drop text + CLS + pose
+    p_drop_pose: float = 0.10        # Drop only pose (text + DINO present)
+    p_pose_only: float = 0.05        # Keep only pose (text + DINO dropped)
     
     def to_dict(self):
         """Convert to dict for compatibility with training code."""
@@ -67,6 +71,8 @@ class CFGDropoutConfig:
             'p_text_only': self.p_text_only,
             'p_dino_cls_only': self.p_dino_cls_only,
             'p_dino_patches_only': self.p_dino_patches_only,
+            'p_drop_pose': self.p_drop_pose,
+            'p_pose_only': self.p_pose_only,
         }
 
 

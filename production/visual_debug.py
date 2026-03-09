@@ -86,6 +86,7 @@ def create_visual_debug_fn(
             dino_patches = sample['dino_patches'].unsqueeze(0)  # (1, num_patches, 1024)
             text_emb = sample['text_emb'].unsqueeze(0)  # (1, 500, 1024)
             text_mask = sample['text_mask'].unsqueeze(0)  # (1, 500)
+            pose_kpts = sample['pose_kpts'].unsqueeze(0)  # (1, 133, 3)
             caption = sample['caption']
             
             # Sample at current training resolution
@@ -103,6 +104,7 @@ def create_visual_debug_fn(
                 self_guidance=self_guidance,
                 guidance_scale=guidance_scale,
                 prediction_type=prediction_type,
+                pose_kpts=pose_kpts,
             )
             
             if pixel_space:
@@ -240,6 +242,7 @@ def _load_debug_samples(shard_dir, num_samples, device):
             'text_emb': batch['t5_hidden'][0].to(device),  # (500, 1024)
             'text_mask': batch['t5_mask'][0].to(device),  # (500,)
             'caption': batch['captions'][0],
+            'pose_kpts': batch['pose_keypoints'][0].to(device),  # (133, 3)
         }
         samples.append(sample)
     

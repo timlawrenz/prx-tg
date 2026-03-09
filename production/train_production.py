@@ -293,6 +293,8 @@ def main():
         tread_route_end=tread_route_end,
         tread_routing_prob=tread_routing_prob,
         bottleneck_size=config.model.bottleneck_size,
+        num_pose_joints=config.model.num_pose_joints,
+        pose_confidence_threshold=config.model.pose_confidence_threshold,
     ).to(device)
     
     total_params = sum(p.numel() for p in model.parameters())

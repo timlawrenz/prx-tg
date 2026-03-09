@@ -176,7 +176,7 @@ def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="c
     return per_token_loss.mean()
 
 
-def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05):
+def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, pose_kpts=None, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05):
     """Compute flow matching loss with mutually exclusive CFG dropout.
     
     Supports two prediction modes:
@@ -193,6 +193,7 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
         text_mask: (B, seq_len) T5 attention mask
         cfg_probs: dict with CFG dropout probabilities
         dino_patches_mask: (B, num_patches) mask for padding
+        pose_kpts: (B, 133, 3) pose keypoints [x_norm, y_norm, confidence]
         return_v_pred: bool, if True return (loss, v_pred, repa_loss, lpips_loss)
         repa_config: optional REPAConfig
         tread_config: optional TREADConfig
@@ -227,29 +228,37 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     v_target = z1 - x0
     
     # Mutually exclusive CFG dropout (categorical sampling)
-    # Sample one random number per batch item and threshold it
+    # Categories: uncond, text-only, dino-cls-only, dino-patches-only,
+    #             drop-pose-only, pose-only, all-present
     rand = torch.rand(B, device=device)
     p_both = cfg_probs['p_uncond']
     p_text = cfg_probs['p_text_only']
     p_dino_cls = cfg_probs['p_dino_cls_only']
     p_dino_patches = cfg_probs['p_dino_patches_only']
+    p_drop_pose = cfg_probs.get('p_drop_pose', 0.0)
+    p_pose_only = cfg_probs.get('p_pose_only', 0.0)
     
-    # Assign to exclusive categories
-    drop_both = rand < p_both
-    drop_dino = (rand >= p_both) & (rand < p_both + p_text)
-    drop_text_and_patches = (rand >= p_both + p_text) & (rand < p_both + p_text + p_dino_cls)
-    drop_text_and_cls = (rand >= p_both + p_text + p_dino_cls) & (rand < p_both + p_text + p_dino_cls + p_dino_patches)
-    # Remainder (50% by default) has all conditionings present
+    # Assign to exclusive categories (thresholds accumulate)
+    t1 = p_both
+    t2 = t1 + p_text
+    t3 = t2 + p_dino_cls
+    t4 = t3 + p_dino_patches
+    t5 = t4 + p_drop_pose
+    t6 = t5 + p_pose_only
+    
+    drop_both = rand < t1                       # fully unconditional
+    drop_dino = (rand >= t1) & (rand < t2)      # text-only (drop DINO + pose)
+    drop_text_and_patches = (rand >= t2) & (rand < t3)  # DINO-CLS-only
+    drop_text_and_cls = (rand >= t3) & (rand < t4)      # DINO-patches-only
+    cat_drop_pose = (rand >= t4) & (rand < t5)          # drop only pose
+    cat_pose_only = (rand >= t5) & (rand < t6)          # pose only (drop text + DINO)
+    # Remainder has all conditionings present
     
     # Combine masks for specific components
-    # We want to drop text when: drop_both OR drop_text_and_patches OR drop_text_and_cls
-    drop_text = drop_both | drop_text_and_patches | drop_text_and_cls
-    
-    # We want to drop DINO CLS when: drop_both OR drop_dino OR drop_text_and_cls
-    drop_dino_cls = drop_both | drop_dino | drop_text_and_cls
-    
-    # We want to drop DINO patches when: drop_both OR drop_dino OR drop_text_and_patches
-    drop_dino_patches_mask = drop_both | drop_dino | drop_text_and_patches
+    drop_text = drop_both | drop_text_and_patches | drop_text_and_cls | cat_pose_only
+    drop_dino_cls = drop_both | drop_dino | drop_text_and_cls | cat_pose_only
+    drop_dino_patches_mask = drop_both | drop_dino | drop_text_and_patches | cat_pose_only
+    drop_pose = drop_both | drop_dino | drop_text_and_patches | drop_text_and_cls | cat_drop_pose
     
     # Determine if we need REPA hidden states
     use_repa = repa_config is not None and repa_config.enabled
@@ -263,6 +272,8 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
         cfg_drop_text=drop_text,
         cfg_drop_dino_cls=drop_dino_cls,
         cfg_drop_dino_patches=drop_dino_patches_mask,
+        pose_kpts=pose_kpts,
+        cfg_drop_pose=drop_pose,
         return_repa_hidden=use_repa,
         tread_enabled=tread_enabled,
     )
@@ -587,7 +598,7 @@ class Trainer:
         """Execute one training step.
         
         Args:
-            batch: dict with vae_latent, dino_embedding, dinov3_patches, t5_hidden, t5_mask
+            batch: dict with vae_latent, dino_embedding, dinov3_patches, t5_hidden, t5_mask, pose_keypoints
         
         Returns:
             dict with loss and grad_norm
@@ -603,11 +614,12 @@ class Trainer:
         dino_patches_mask = batch.get('dinov3_patches_mask')
         if dino_patches_mask is not None:
             dino_patches_mask = dino_patches_mask.to(self.device)
+        pose_kpts = batch['pose_keypoints'].to(self.device)  # (B, 133, 3)
         
         # Compute loss (with velocity prediction for monitoring)
         loss, v_pred, repa_loss, lpips_loss = flow_matching_loss(
             self.model, x0, dino_emb, dino_patches, text_emb, text_mask, self.cfg_probs, 
-            dino_patches_mask=dino_patches_mask, return_v_pred=True,
+            dino_patches_mask=dino_patches_mask, pose_kpts=pose_kpts, return_v_pred=True,
             repa_config=self.repa_config,
             tread_config=self.tread_config,
             perceptual_module=getattr(self, 'perceptual_module', None),
