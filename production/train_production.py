@@ -234,9 +234,10 @@ def main():
     if config.validation.enabled:
         Path(config.validation.output_dir).mkdir(parents=True, exist_ok=True)
     
-    # Compute latent statistics if normalization is enabled
+    # Compute latent statistics if normalization is enabled (skip for pixel-space)
     from production.data import USE_LATENT_NORMALIZATION, load_or_compute_latent_stats
-    if USE_LATENT_NORMALIZATION:
+    pixel_space = config.model.prediction_type == "x_prediction"
+    if USE_LATENT_NORMALIZATION and not pixel_space:
         print("\n" + "="*60)
         print("VAE LATENT NORMALIZATION")
         print("="*60)
