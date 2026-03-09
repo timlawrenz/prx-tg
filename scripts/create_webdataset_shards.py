@@ -114,6 +114,7 @@ def iter_ready_records(
     dino_dir = derived_dir / "dinov3"
     dino_patches_dir = derived_dir / "dinov3_patches"
     t5_dir = derived_dir / "t5_hidden"
+    pose_dir = derived_dir / "pose"
 
     with jsonl_path.open("r", encoding="utf-8") as f:
         for line_num, line in enumerate(f, 1):
@@ -151,8 +152,9 @@ def iter_ready_records(
             dino_path = dino_dir / f"{image_id}.npy"
             dino_patch_path = dino_patches_dir / f"{image_id}.npy"
             t5_path = t5_dir / f"{image_id}.npy"
+            pose_path = pose_dir / f"{image_id}.npy"
 
-            if not (caption_ok and mask_ok and dino_path.is_file() and dino_patch_path.is_file() and t5_path.is_file()):
+            if not (caption_ok and mask_ok and dino_path.is_file() and dino_patch_path.is_file() and t5_path.is_file() and pose_path.is_file()):
                 counters.skipped_incomplete += 1
                 continue
 
@@ -171,6 +173,7 @@ def iter_ready_records(
                 "dino_patch_path": dino_patch_path,
                 "t5_path": t5_path,
                 "t5_mask": mask,
+                "pose_path": pose_path,
             }
 
             if include_images:
@@ -245,6 +248,7 @@ def write_shards(
                 add_file(tf, f"{image_id}.dinov3.npy", s["dino_path"])
                 add_file(tf, f"{image_id}.dinov3_patches.npy", s["dino_patch_path"])
                 add_file(tf, f"{image_id}.t5h.npy", s["t5_path"])
+                add_file(tf, f"{image_id}.pose.npy", s["pose_path"])
 
                 # 3) Attention mask as .npy
                 try:
@@ -277,7 +281,7 @@ def main(argv: list[str]) -> int:
         eprint(f"error: input jsonl not found: {jsonl_path}")
         return 2
 
-    for sub in ("dinov3", "dinov3_patches", "t5_hidden"):
+    for sub in ("dinov3", "dinov3_patches", "t5_hidden", "pose"):
         p = derived_dir / sub
         if not p.is_dir():
             eprint(f"error: missing derived subdir: {p}")

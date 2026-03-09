@@ -248,10 +248,10 @@ class ValidationDataset:
         """Process a raw WebDataset sample into model inputs.
         
         Args:
-            sample: dict with keys: __key__, json, dinov3.npy, dinov3_patches.npy, vae.npy/image.npy, t5h.npy, t5m.npy
+            sample: dict with keys: __key__, json, dinov3.npy, dinov3_patches.npy, vae.npy/image.npy, t5h.npy, t5m.npy, pose.npy
         
         Returns:
-            dict with keys: vae_latent, dino_embedding, dinov3_patches, t5_hidden, t5_mask, caption, image_id
+            dict with keys: vae_latent, dino_embedding, dinov3_patches, t5_hidden, t5_mask, pose_keypoints, caption, image_id
         """
         # Parse metadata (webdataset already decoded JSON)
         metadata = sample['json']
@@ -263,6 +263,7 @@ class ValidationDataset:
         dino_patches = sample['dinov3_patches.npy']  # (num_patches, 1024) - variable length!
         t5_hidden = sample['t5h.npy']  # (512, 1024) - T5-XXL supports 512 tokens
         t5_mask = sample['t5m.npy']  # (512,)
+        pose_kpts = sample['pose.npy']  # (133, 3) — [x_norm, y_norm, confidence] per joint
         
         # Load image data: pixel-space RGB or VAE latents
         if self.pixel_space:
@@ -287,6 +288,7 @@ class ValidationDataset:
             'dinov3_patches': torch.from_numpy(dino_patches).float(),  # (num_patches, 1024) - VARIABLE!
             't5_hidden': torch.from_numpy(t5_hidden).float(),  # (512, 1024)
             't5_mask': torch.from_numpy(t5_mask).long(),  # (512,)
+            'pose_keypoints': torch.from_numpy(pose_kpts).float(),  # (133, 3)
             'caption': caption,
             'image_id': image_id,
         }
@@ -325,6 +327,7 @@ class ValidationDataset:
             'dinov3_patches_mask': torch.stack(patch_masks), # (B, max_patches)
             't5_hidden': torch.stack([s['t5_hidden'] for s in batch]),
             't5_mask': torch.stack([s['t5_mask'] for s in batch]),
+            'pose_keypoints': torch.stack([s['pose_keypoints'] for s in batch]),  # (B, 133, 3)
             'captions': [s['caption'] for s in batch],
             'image_ids': [s['image_id'] for s in batch],
         }

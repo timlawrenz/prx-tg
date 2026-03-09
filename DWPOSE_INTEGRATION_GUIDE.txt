@@ -1,0 +1,539 @@
+================================================================================
+  DWPOSE CONDITIONING INTEGRATION — COMPLETE CODEBASE GUIDE
+================================================================================
+
+KEY ARCHITECTURAL FACTS:
+- Model: NanoDiT (hidden_size=384 in config, 768 in production)
+- Current conditioning: DINO (CLS + patches) + T5 text
+- Token assembly: All conditioning projected to hidden_size, concatenated for cross-attn
+- CFG dropout: Mutually exclusive categorical (10% uncond, 30% text-only, 5% cls-only, 5% patches-only, 50% full)
+- Inference: Dual CFG with 3 model passes (uncond, text-only, dino-only) OR self-guidance (2 passes dense/routed)
+
+================================================================================
+1. MODEL ARCHITECTURE (production/model.py)
+================================================================================
+
+1.1 CONDITIONING PROJECTION LAYERS (lines 328-330, 353-355)
+───────────────────────────────────────────────────────────
+
+    # In __init__:
+    self.dino_proj = nn.Linear(dino_dim, hidden_size, bias=True)        # (1024) → (384)
+    self.dino_patch_proj = nn.Linear(dino_patch_dim, hidden_size, bias=True)
+    self.text_proj = nn.Linear(text_dim, hidden_size, bias=True)
+    
+    # Null embeddings (for CFG):
+    self.null_dino = nn.Parameter(torch.zeros(1, dino_dim))                    # (1, 1024)
+    self.null_dino_patch_token = nn.Parameter(torch.zeros(1, 1, dino_patch_dim))  # (1, 1, 1024)
+    self.null_text = nn.Parameter(torch.zeros(1, 1, text_dim))                # (1, 1, 1024)
+
+ACTION: Add similar for DWPose:
+    self.dwpose_proj = nn.Linear(dwpose_dim, hidden_size, bias=True)  # new line after text_proj
+    self.null_dwpose = nn.Parameter(torch.zeros(1, 1, dwpose_dim))     # new line after null_text
+
+
+1.2 FORWARD METHOD CFG DROPOUT LOGIC (lines 454-475)
+────────────────────────────────────────────────────
+
+    # CFG dropout is applied AFTER receiving embeddings, BEFORE projection:
+    if cfg_drop_dino_cls is not None:
+        dino_emb = torch.where(
+            cfg_drop_dino_cls.unsqueeze(1),
+            self.null_dino.expand(B, -1),
+            dino_emb
+        )
+    
+    if cfg_drop_dino_patches is not None:
+        null_patches = self.null_dino_patch_token.expand(B, num_patches, -1)
+        dino_patches = torch.where(
+            cfg_drop_dino_patches.unsqueeze(1).unsqueeze(2),
+            null_patches,
+            dino_patches
+        )
+    
+    if cfg_drop_text is not None:
+        text_emb = torch.where(
+            cfg_drop_text.unsqueeze(1).unsqueeze(2),
+            self.null_text.expand(B, text_emb.shape[1], -1),
+            text_emb
+        )
+
+ACTION: Add after cfg_drop_text logic (around line 476):
+    if cfg_drop_dwpose is not None:
+        null_dwpose = self.null_dwpose.expand(B, dwpose_emb.shape[1], -1)  # assumes (B, seq_len, dim)
+        dwpose_emb = torch.where(
+            cfg_drop_dwpose.unsqueeze(1).unsqueeze(2),
+            null_dwpose,
+            dwpose_emb
+        )
+
+
+1.3 CONDITIONING TOKEN ASSEMBLY (lines 486-495)
+────────────────────────────────────────────────
+
+    t_emb = self.t_embedder(t)  # (B, hidden_size)
+    
+    # Project conditioning (after CFG dropout):
+    dino_cond = self.dino_proj(dino_emb) + t_emb  # (B, hidden_size)
+    dino_cls_token = dino_cond.unsqueeze(1)  # (B, 1, hidden_size)
+    text_cond = self.text_proj(text_emb)  # (B, seq_len, hidden_size)
+    patches_cond = self.dino_patch_proj(dino_patches)  # (B, num_patches, hidden_size)
+
+ACTION: Add after patches_cond (around line 496):
+    dwpose_cond = self.dwpose_proj(dwpose_emb)  # (B, seq_len_pose, hidden_size)
+
+
+1.4 FORWARD SIGNATURE — ADD PARAMETERS (line 420-422)
+──────────────────────────────────────────────────────
+
+    def forward(self, x, t, dino_emb, text_emb, dino_patches=None, text_mask=None, 
+                dino_patches_mask=None,
+                cfg_drop_text=None, cfg_drop_dino_cls=None, cfg_drop_dino_patches=None,
+                return_repa_hidden=False, tread_enabled=None):
+
+ACTION: Modify to:
+    def forward(self, x, t, dino_emb, text_emb, dino_patches=None, text_mask=None, 
+                dino_patches_mask=None, dwpose_emb=None, dwpose_mask=None,
+                cfg_drop_text=None, cfg_drop_dino_cls=None, cfg_drop_dino_patches=None,
+                cfg_drop_dwpose=None, return_repa_hidden=False, tread_enabled=None):
+
+
+1.5 BLOCK FORWARD CALLS — PASS DWPOSE (lines 516, 524, 536, 542)
+────────────────────────────────────────────────────────────────
+
+    # Current pattern (all blocks called with same args):
+    x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, 
+                       patches_mask=dino_patches_mask)
+
+ACTION: Modify to:
+    x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, 
+                       dwpose_cond, patches_mask=dino_patches_mask, dwpose_mask=dwpose_mask)
+
+(NOTE: Need to check DiTBlock.forward() signature to add dwpose params there too)
+
+
+================================================================================
+2. TRAINING LOOP (production/train.py)
+================================================================================
+
+2.1 CFG DROPOUT PROBABILITY SAMPLING (lines 206-224)
+─────────────────────────────────────────────────────
+
+    # Mutually exclusive categorical distribution:
+    rand = torch.rand(B, device=device)
+    p_both = cfg_probs['p_uncond']                  # 10%
+    p_text = cfg_probs['p_text_only']               # 30%
+    p_dino_cls = cfg_probs['p_dino_cls_only']      # 5%
+    p_dino_patches = cfg_probs['p_dino_patches_only']  # 5%
+    
+    drop_both = rand < p_both
+    drop_dino = (rand >= p_both) & (rand < p_both + p_text)
+    drop_text_and_patches = (rand >= p_both + p_text) & (rand < p_both + p_text + p_dino_cls)
+    drop_text_and_cls = (rand >= p_both + p_text + p_dino_cls) & (rand < p_both + p_text + p_dino_cls + p_dino_patches)
+    
+    # Combine into per-component masks:
+    drop_text = drop_both | drop_text_and_patches | drop_text_and_cls
+    drop_dino_cls = drop_both | drop_dino | drop_text_and_cls
+    drop_dino_patches = drop_both | drop_dino | drop_text_and_patches
+    # Remainder (50%): no mask = all kept
+
+ACTION: Option 1 (Integrated with DINO):
+Keep DWPose always when DINO is kept, drop when DINO dropped.
+    drop_dwpose = drop_dino_cls | drop_dino  # Drop with DINO
+
+ACTION: Option 2 (Independent category):
+Add p_dwpose_only to config, add another category.
+
+
+2.2 BATCH UNPACKING IN train_step (lines 598-605)
+──────────────────────────────────────────────────
+
+    x0 = batch['vae_latent'].to(self.device)
+    dino_emb = batch['dino_embedding'].to(self.device)
+    dino_patches = batch['dinov3_patches'].to(self.device)
+    text_emb = batch['t5_hidden'].to(self.device)
+    text_mask = batch['t5_mask'].to(self.device)
+    dino_patches_mask = batch.get('dinov3_patches_mask')
+    if dino_patches_mask is not None:
+        dino_patches_mask = dino_patches_mask.to(self.device)
+
+ACTION: Add after text_mask (around line 602):
+    dwpose_emb = batch['dwpose_embedding'].to(self.device)
+    dwpose_mask = batch.get('dwpose_mask')
+    if dwpose_mask is not None:
+        dwpose_mask = dwpose_mask.to(self.device)
+
+
+2.3 LOSS FUNCTION CALL (lines 609-619)
+──────────────────────────────────────
+
+    loss, v_pred, repa_loss, lpips_loss = flow_matching_loss(
+        self.model, x0, dino_emb, dino_patches, text_emb, text_mask, self.cfg_probs,
+        dino_patches_mask=dino_patches_mask, return_v_pred=True,
+        repa_config=self.repa_config,
+        tread_config=self.tread_config,
+        ...
+    )
+
+ACTION: Modify to:
+    loss, v_pred, repa_loss, lpips_loss = flow_matching_loss(
+        self.model, x0, dino_emb, dino_patches, text_emb, text_mask, self.cfg_probs,
+        dino_patches_mask=dino_patches_mask, dwpose_emb=dwpose_emb, dwpose_mask=dwpose_mask,
+        ...
+    )
+
+
+2.4 FLOW_MATCHING_LOSS FUNCTION SIGNATURE (line 179)
+─────────────────────────────────────────────────────
+
+    def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs,
+                          dino_patches_mask=None, return_v_pred=False, repa_config=None,
+                          tread_config=None, perceptual_module=None, perceptual_config=None,
+                          micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05):
+
+ACTION: Add parameters:
+    def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs,
+                          dino_patches_mask=None, dwpose_emb=None, dwpose_mask=None,
+                          return_v_pred=False, repa_config=None, ...):
+
+
+2.5 FLOW_MATCHING_LOSS FORWARD CALL (lines 234-240)
+────────────────────────────────────────────────────
+
+    model_output = model(
+        zt, t, dino_emb, text_emb, dino_patches, text_mask, dino_patches_mask=dino_patches_mask,
+        cfg_drop_text=drop_text,
+        cfg_drop_dino_cls=drop_dino_cls,
+        cfg_drop_dino_patches=drop_dino_patches_mask,
+        return_repa_hidden=use_repa,
+        tread_enabled=tread_enabled,
+    )
+
+ACTION: Modify to:
+    model_output = model(
+        zt, t, dino_emb, text_emb, dino_patches, text_mask,
+        dino_patches_mask=dino_patches_mask, dwpose_emb=dwpose_emb, dwpose_mask=dwpose_mask,
+        cfg_drop_text=drop_text,
+        cfg_drop_dino_cls=drop_dino_cls,
+        cfg_drop_dino_patches=drop_dino_patches_mask,
+        cfg_drop_dwpose=drop_dwpose,  # NEW
+        return_repa_hidden=use_repa,
+        tread_enabled=tread_enabled,
+    )
+
+
+================================================================================
+3. DATA LOADING (production/data.py)
+================================================================================
+
+3.1 FILES LOADED FROM TAR (process_sample, lines 262-266)
+──────────────────────────────────────────────────────────
+
+    dino_emb = sample['dinov3.npy']  # (1024,)
+    dino_patches = sample['dinov3_patches.npy']  # (num_patches, 1024)
+    t5_hidden = sample['t5h.npy']  # (512, 1024)
+    t5_mask = sample['t5m.npy']  # (512,)
+    
+    if self.pixel_space:
+        image_data = sample['image.npy']
+    else:
+        image_data = sample['vae.npy']
+
+ACTION: Add after t5_mask (around line 266):
+    dwpose_emb = sample['dwpose.npy']  # (seq_len_pose, pose_dim)
+    # If variable length:
+    dwpose_mask = sample.get('dwpose_mask.npy')  # (seq_len_pose,)
+
+
+3.2 SAMPLE PROCESSING RETURN DICT (lines 284-292)
+──────────────────────────────────────────────────
+
+    return {
+        'vae_latent': image_data.float(),
+        'dino_embedding': torch.from_numpy(dino_emb).float(),
+        'dinov3_patches': torch.from_numpy(dino_patches).float(),
+        't5_hidden': torch.from_numpy(t5_hidden).float(),
+        't5_mask': torch.from_numpy(t5_mask).long(),
+        'caption': caption,
+        'image_id': image_id,
+    }
+
+ACTION: Add:
+        'dwpose_embedding': torch.from_numpy(dwpose_emb).float(),
+        'dwpose_mask': torch.from_numpy(dwpose_mask).long() if dwpose_mask is not None else None,
+
+
+3.3 COLLATE FUNCTION — VARIABLE LENGTH PADDING (lines 299-330)
+──────────────────────────────────────────────────────────────
+
+    # Current pattern for dinov3_patches:
+    max_patches = max(s['dinov3_patches'].shape[0] for s in batch)
+    
+    padded_patches = []
+    patch_masks = []
+    for s in batch:
+        patches = s['dinov3_patches']
+        num_patches = patches.shape[0]
+        mask = torch.zeros(max_patches, dtype=torch.long)
+        mask[:num_patches] = 1
+        patch_masks.append(mask)
+        
+        if num_patches < max_patches:
+            pad = torch.zeros(max_patches - num_patches, patches.shape[1], dtype=patches.dtype)
+            padded = torch.cat([patches, pad], dim=0)
+        else:
+            padded = patches
+        padded_patches.append(padded)
+    
+    return {
+        ...
+        'dinov3_patches': torch.stack(padded_patches),
+        'dinov3_patches_mask': torch.stack(patch_masks),
+    }
+
+ACTION: If DWPose is variable length, apply same pattern:
+    max_dwpose = max(s['dwpose_embedding'].shape[0] for s in batch)
+    padded_dwpose = []
+    dwpose_masks = []
+    for s in batch:
+        dwpose = s['dwpose_embedding']
+        num_pose = dwpose.shape[0]
+        mask = torch.zeros(max_dwpose, dtype=torch.long)
+        mask[:num_pose] = 1
+        dwpose_masks.append(mask)
+        if num_pose < max_dwpose:
+            pad = torch.zeros(max_dwpose - num_pose, dwpose.shape[1], dtype=dwpose.dtype)
+            dwpose = torch.cat([dwpose, pad], dim=0)
+        padded_dwpose.append(dwpose)
+    
+    return {
+        ...
+        'dwpose_embedding': torch.stack(padded_dwpose),
+        'dwpose_mask': torch.stack(dwpose_masks),
+    }
+
+
+================================================================================
+4. INFERENCE SAMPLING (production/sample.py)
+================================================================================
+
+4.1 SAMPLER.SAMPLE() SIGNATURE (lines 23-37)
+─────────────────────────────────────────────
+
+    def sample(
+        self,
+        model,
+        shape,
+        dino_emb,
+        dino_patches,
+        text_emb,
+        text_mask,
+        device='cuda',
+        text_scale=3.0,
+        dino_scale=2.0,
+        self_guidance=False,
+        guidance_scale=3.0,
+        prediction_type="v_prediction",
+    ):
+
+ACTION: Add parameters:
+        dwpose_emb,
+        dwpose_mask,
+        dwpose_scale=2.0,  # if using separate control
+
+
+4.2 DUAL CFG IMPLEMENTATION (lines 92-117)
+──────────────────────────────────────────
+
+    # Current: 3 model passes (uncond, text-only, dino-only)
+    v_uncond = model(zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
+        cfg_drop_text=torch.ones(B, dtype=torch.bool, device=device),
+        cfg_drop_dino_cls=torch.ones(B, dtype=torch.bool, device=device),
+        cfg_drop_dino_patches=torch.ones(B, dtype=torch.bool, device=device),
+    )
+    
+    v_text = model(zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
+        cfg_drop_text=torch.zeros(B, dtype=torch.bool, device=device),
+        cfg_drop_dino_cls=torch.ones(B, dtype=torch.bool, device=device),
+        cfg_drop_dino_patches=torch.ones(B, dtype=torch.bool, device=device),
+    )
+    
+    v_dino = model(zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
+        cfg_drop_text=torch.ones(B, dtype=torch.bool, device=device),
+        cfg_drop_dino_cls=torch.zeros(B, dtype=torch.bool, device=device),
+        cfg_drop_dino_patches=torch.zeros(B, dtype=torch.bool, device=device),
+    )
+    
+    v_pred = v_uncond + text_scale * (v_text - v_uncond) + dino_scale * (v_dino - v_uncond)
+
+ACTION: Option 1 (Integrated with DINO):
+Modify v_dino pass to include DWPose (keep when DINO kept, drop when dropped)
+
+ACTION: Option 2 (Independent, 4+ passes):
+Add additional passes like:
+    v_dwpose = model(...,
+        cfg_drop_text=torch.ones(...),
+        cfg_drop_dino_cls=torch.ones(...),
+        cfg_drop_dino_patches=torch.ones(...),
+        cfg_drop_dwpose=torch.zeros(...),  # Keep only pose
+    )
+    v_pred = v_uncond + text_scale*(...) + dino_scale*(...) + dwpose_scale*(v_dwpose - v_uncond)
+
+
+4.3 VALIDATION_SAMPLER.GENERATE() SIGNATURE (lines 287-299)
+────────────────────────────────────────────────────────────
+
+    def generate(
+        self,
+        dino_emb,
+        dino_patches,
+        text_emb,
+        text_mask,
+        latent_size=None,
+        batch_size=None,
+        text_scale=None,
+        dino_scale=None,
+        self_guidance=None,
+        guidance_scale=None,
+    ):
+
+ACTION: Add:
+        dwpose_emb,
+        dwpose_mask,
+        dwpose_scale=None,  # if separate control
+
+
+================================================================================
+5. WEBDATASET TAR CREATION (scripts/create_webdataset_shards.py)
+================================================================================
+
+5.1 REQUIRED FILES CHECK (iter_ready_records, lines 114-155)
+────────────────────────────────────────────────────────────
+
+    dino_dir = derived_dir / "dinov3"
+    dino_patches_dir = derived_dir / "dinov3_patches"
+    t5_dir = derived_dir / "t5_hidden"
+    
+    # Existence check (line 155):
+    if not (caption_ok and mask_ok and dino_path.is_file() and 
+            dino_patch_path.is_file() and t5_path.is_file()):
+        counters.skipped_incomplete += 1
+        continue
+
+ACTION: Add directory and check:
+    dwpose_dir = derived_dir / "dwpose"
+    dwpose_path = dwpose_dir / f"{image_id}.npy"
+    
+    if not (caption_ok and mask_ok and dino_path.is_file() and 
+            dino_patch_path.is_file() and t5_path.is_file() and dwpose_path.is_file()):
+        counters.skipped_incomplete += 1
+        continue
+
+
+5.2 OPTIONAL IMAGE & DWPOSE FILES (lines 176-182)
+──────────────────────────────────────────────────
+
+    if include_images:
+        image_npy_path = derived_dir / "images" / f"{image_id}.npy"
+        if not image_npy_path.is_file():
+            counters.skipped_incomplete += 1
+            counters.ready_records -= 1
+            continue
+        record_data["image_npy_path"] = image_npy_path
+
+ACTION: Similar for DWPose (if it's optional):
+    record_data["dwpose_path"] = dwpose_path
+    if include_dwpose_masks:
+        dwpose_mask_path = dwpose_dir / f"{image_id}_mask.npy"
+        if dwpose_mask_path.is_file():
+            record_data["dwpose_mask_path"] = dwpose_mask_path
+
+
+5.3 FILES ADDED TO TAR (write_shards, lines 244-262)
+─────────────────────────────────────────────────────
+
+    # Current files:
+    add_file(tf, f"{image_id}.dinov3.npy", s["dino_path"])
+    add_file(tf, f"{image_id}.dinov3_patches.npy", s["dino_patch_path"])
+    add_file(tf, f"{image_id}.t5h.npy", s["t5_path"])
+    
+    mask_arr = np.array(s["t5_mask"], dtype=np.uint8)
+    buf = io.BytesIO()
+    np.save(buf, mask_arr)
+    add_bytes(tf, f"{image_id}.t5m.npy", buf.getvalue())
+    
+    if include_images and "image_npy_path" in s:
+        add_file(tf, f"{image_id}.image.npy", s["image_npy_path"])
+
+ACTION: Add after t5m.npy (around line 260):
+    add_file(tf, f"{image_id}.dwpose.npy", s["dwpose_path"])
+    
+    if "dwpose_mask_path" in s:
+        add_file(tf, f"{image_id}.dwpose_mask.npy", s["dwpose_mask_path"])
+
+
+================================================================================
+6. CONFIGURATION (production/config.yaml)
+================================================================================
+
+6.1 ADD CFG DROPOUT CATEGORY (training.cfg_dropout, lines 36-42)
+─────────────────────────────────────────────────────────────────
+
+    cfg_dropout:
+      p_uncond: 0.1
+      p_text_only: 0.3
+      p_dino_cls_only: 0.05
+      p_dino_patches_only: 0.05
+      # Remaining 50% keeps all signals
+
+ACTION: If independent DWPose control, add:
+      p_dwpose_only: 0.05
+      # Adjust all to sum to 100%
+
+
+6.2 ADD DWPOSE CFG SCALE (sampling, line 118-123)
+──────────────────────────────────────────────────
+
+    sampling:
+      num_steps: 35
+      text_scale: 3.0
+      dino_scale: 2.5
+      self_guidance: true
+      guidance_scale: 3.0
+
+ACTION: If separate control, add:
+      dwpose_scale: 2.0
+
+
+================================================================================
+SUMMARY TABLE: INTEGRATION CHECKLIST
+================================================================================
+
+File                              Location        Action
+──────────────────────────────────────────────────────────────────────────────
+production/model.py              328-330         Add dwpose_proj layer
+production/model.py              353-355         Add null_dwpose parameter
+production/model.py              420-422         Add params to forward signature
+production/model.py              454-475         Add CFG dropout logic for pose
+production/model.py              486-495         Project DWPose to hidden_size
+production/model.py              516,524,536,542 Pass dwpose_cond to blocks
+
+production/train.py              206-224         Add p_dwpose_only category (optional)
+production/train.py              598-605         Unpack dwpose from batch
+production/train.py              609-619         Pass dwpose to flow_matching_loss
+production/train.py              179             Modify flow_matching_loss signature
+production/train.py              234-240         Pass dwpose to model forward
+
+production/data.py               262-266         Load dwpose.npy from sample
+production/data.py               284-292         Add dwpose to return dict
+production/data.py               299-330         Add variable-length padding for dwpose
+
+production/sample.py             24-37           Add params to sample signature
+production/sample.py             93-117          Extend CFG passes to include pose
+
+scripts/create_webdataset_shards.py  114-155     Check dwpose file exists
+scripts/create_webdataset_shards.py  244-262     Add dwpose files to tar
+
+production/config.yaml           36-42           Add p_dwpose_only (optional)
+production/config.yaml           118-123         Add dwpose_scale (optional)
+
+================================================================================
