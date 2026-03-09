@@ -280,7 +280,7 @@ class ValidationRunner:
             )
             
             # Clear GPU memory after each batch
-            del dino_emb, dino_patches, text_emb, text_mask, gt_latents, gen_images, gt_images
+            del dino_emb, dino_patches, text_emb, text_mask, gen_images, gt_images
             torch.cuda.empty_cache()
         
         mean_lpips = sum(lpips_scores) / len(lpips_scores)
@@ -582,7 +582,7 @@ class ValidationRunner:
             )
             
             # Clear GPU memory after each batch
-            del dino_emb, dino_patches, text_emb, text_mask, gt_latents, gen_images, gt_images
+            del dino_emb, dino_patches, text_emb, text_mask, gen_images, gt_images
             torch.cuda.empty_cache()
         
         mean_lpips = sum(lpips_scores) / len(lpips_scores)
