@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Create WebDataset tar shards from the Stage 2 derived dataset.
 
-This packages "ready" samples (caption + attention mask + DINOv3/VAE/T5 .npy files)
+This packages "ready" samples (caption + attention mask + DINOv3/T5/image/pose .npy files)
 into tar files following WebDataset naming conventions.
 
 By default, samples are grouped by aspect_bucket and sharded within each bucket.
@@ -56,7 +56,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--derived-dir",
         default=os.path.join("data", "derived"),
-        help="Base directory containing dinov3/, vae_latents/, t5_hidden/ (default: %(default)s)",
+        help="Base directory containing dinov3/, t5_hidden/ (default: %(default)s)",
     )
     p.add_argument(
         "--output-dir",
@@ -113,7 +113,6 @@ def iter_ready_records(
 ):
     dino_dir = derived_dir / "dinov3"
     dino_patches_dir = derived_dir / "dinov3_patches"
-    vae_dir = derived_dir / "vae_latents"
     t5_dir = derived_dir / "t5_hidden"
 
     with jsonl_path.open("r", encoding="utf-8") as f:
@@ -151,10 +150,9 @@ def iter_ready_records(
 
             dino_path = dino_dir / f"{image_id}.npy"
             dino_patch_path = dino_patches_dir / f"{image_id}.npy"
-            vae_path = vae_dir / f"{image_id}.npy"
             t5_path = t5_dir / f"{image_id}.npy"
 
-            if not (caption_ok and mask_ok and dino_path.is_file() and dino_patch_path.is_file() and vae_path.is_file() and t5_path.is_file()):
+            if not (caption_ok and mask_ok and dino_path.is_file() and dino_patch_path.is_file() and t5_path.is_file()):
                 counters.skipped_incomplete += 1
                 continue
 
@@ -171,7 +169,6 @@ def iter_ready_records(
                 "bucket": bucket,
                 "dino_path": dino_path,
                 "dino_patch_path": dino_patch_path,
-                "vae_path": vae_path,
                 "t5_path": t5_path,
                 "t5_mask": mask,
             }
@@ -247,7 +244,6 @@ def write_shards(
                 # 2) Existing .npy derivatives (copied verbatim)
                 add_file(tf, f"{image_id}.dinov3.npy", s["dino_path"])
                 add_file(tf, f"{image_id}.dinov3_patches.npy", s["dino_patch_path"])
-                add_file(tf, f"{image_id}.vae.npy", s["vae_path"])
                 add_file(tf, f"{image_id}.t5h.npy", s["t5_path"])
 
                 # 3) Attention mask as .npy
@@ -281,7 +277,7 @@ def main(argv: list[str]) -> int:
         eprint(f"error: input jsonl not found: {jsonl_path}")
         return 2
 
-    for sub in ("dinov3", "dinov3_patches", "vae_latents", "t5_hidden"):
+    for sub in ("dinov3", "dinov3_patches", "t5_hidden"):
         p = derived_dir / sub
         if not p.is_dir():
             eprint(f"error: missing derived subdir: {p}")
