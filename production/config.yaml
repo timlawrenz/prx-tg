@@ -14,7 +14,7 @@ model:
   pose_confidence_threshold: 0.05  # Hard-mask joints below this confidence with [NULL_POSE]
 
 training:
-  total_steps: 6000           # Total optimizer steps (approx 14 days on 4090)
+  total_steps: 6000           # Total optimizer steps
   warmup_steps: 500           # Linear LR warmup
   batch_size: 1               # Per-GPU batch size
   grad_accumulation_steps: 256 # Effective batch
@@ -93,7 +93,7 @@ training:
     crop_size: 256                   # Pixel crop size for LPIPS comparison
 
 data:
-  shard_base_dir: "data/shards/2026-03-09"      # Base directory for WebDataset shards
+  shard_base_dir: "data/shards/faces7k"      # Base directory for WebDataset shards
   
   # Aspect ratio buckets to read (each bucket is a subdirectory with tar files)
   buckets:

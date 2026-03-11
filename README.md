@@ -284,9 +284,14 @@ This loads the model and EMA weights, runs the full validation suite (Reconstruc
   - Loss (flow matching MSE + REPA alignment)
   - REPA loss (cosine alignment with DINOv3 patches)
   - LPIPS loss (perceptual quality on decoded crops, when enabled)
-  - Gradient norm
+  - Gradient norm (overall + per-layer)
   - Velocity norm (RMS of predicted velocity vectors, should be ~1.0)
   - Learning rate
+- **System**:
+  - `sys/iter_per_sec` — wall-clock throughput
+  - `sys/active_tokens` — tokens processed per forward pass (quantifies TREAD savings)
+  - `memory/peak_vram_gb` — peak GPU memory (`max_memory_allocated`)
+  - `memory/vram_allocated_gb`, `memory/vram_reserved_gb`
 - **Validation**:
   - LPIPS (reconstruction, DINO swap, text manipulation)
   - Per-test statistics
@@ -397,6 +402,38 @@ python -m production.sample \
   --reference-image path/to/style.jpg \
   --output output.png
 ```
+
+## Ablation Study
+
+The ablation grid isolates the contribution of each key technique. Each run trains for 5,000 steps on the same 7k FFHQ subset.
+
+| Run | TREAD | Optimizer | REPA | Purpose |
+|-----|-------|-----------|------|---------|
+| A   | ✗     | AdamW     | ✗    | Baseline (no optimizations) |
+| B   | ✓     | AdamW     | ✗    | Proves TREAD's VRAM/speed value |
+| C   | ✓     | Muon      | ✗    | Proves Muon's convergence advantage |
+| D   | ✓     | Muon      | ✓    | Full stack — proves REPA's quality boost |
+
+### Running Ablations
+
+```bash
+# Run the full grid (A → B → C → D)
+bash scripts/run_ablations.sh
+
+# Run a subset
+bash scripts/run_ablations.sh B D
+
+# Select GPU
+GPU=1 bash scripts/run_ablations.sh
+```
+
+Configs are in `experiments/ablations/config_{A,B,C,D}_*.yaml`. Results are logged to TensorBoard under each experiment's `tensorboard/` directory.
+
+### Key Metrics
+
+- **A vs B**: `memory/peak_vram_gb` and `sys/iter_per_sec` — quantifies TREAD's compute savings
+- **B vs C**: `train/loss` slope during first 5,000 steps — proves Muon's faster convergence
+- **C vs D**: `validation/reconstruction_lpips` — proves REPA's perceptual quality improvement
 
 ## Dependencies
 

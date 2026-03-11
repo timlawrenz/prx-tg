@@ -1,6 +1,7 @@
 """Training loop for Nano DiT validation."""
 
 import math
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -735,6 +736,19 @@ class Trainer:
         if self.device.type == 'cuda':
             metrics['vram_allocated_gb'] = torch.cuda.memory_allocated(self.device) / 1024**3
             metrics['vram_reserved_gb'] = torch.cuda.memory_reserved(self.device) / 1024**3
+            metrics['peak_vram_gb'] = torch.cuda.max_memory_allocated(self.device) / 1024**3
+        
+        # Active token count for TREAD ablation
+        tread_cfg = getattr(self, 'tread_config', None)
+        if tread_cfg is not None and tread_cfg.enabled:
+            total_tokens = (x0.shape[2] // getattr(self.model, 'patch_size', 16)) * \
+                           (x0.shape[3] // getattr(self.model, 'patch_size', 16))
+            active_tokens = total_tokens - int(total_tokens * tread_cfg.routing_probability)
+            metrics['active_tokens'] = active_tokens
+        else:
+            total_tokens = (x0.shape[2] // getattr(self.model, 'patch_size', 16)) * \
+                           (x0.shape[3] // getattr(self.model, 'patch_size', 16))
+            metrics['active_tokens'] = total_tokens
         
         return metrics, is_accumulation_step
     
@@ -846,6 +860,7 @@ class Trainer:
         data_iter = iter(self.dataloader)
         
         accum_loss = 0.0
+        _last_step_time = time.monotonic()
         
         while self.step < self.total_steps:
             # Update resolution schedule if configured
@@ -865,6 +880,11 @@ class Trainer:
             
             if is_step:
                 self.step += 1
+                
+                # Throughput tracking
+                now = time.monotonic()
+                metrics['iter_per_sec'] = 1.0 / max(now - _last_step_time, 1e-6)
+                _last_step_time = now
                 
                 # Average loss over accumulation steps
                 metrics['loss'] = accum_loss / self.grad_accumulation_steps
@@ -1052,6 +1072,14 @@ class ProductionTrainer(Trainer):
                 self.writer.add_scalar('memory/vram_allocated_gb', metrics['vram_allocated_gb'], step)
             if 'vram_reserved_gb' in metrics:
                 self.writer.add_scalar('memory/vram_reserved_gb', metrics['vram_reserved_gb'], step)
+            if 'peak_vram_gb' in metrics:
+                self.writer.add_scalar('memory/peak_vram_gb', metrics['peak_vram_gb'], step)
+            
+            # System metrics (throughput, token counts)
+            if 'iter_per_sec' in metrics:
+                self.writer.add_scalar('sys/iter_per_sec', metrics['iter_per_sec'], step)
+            if 'active_tokens' in metrics:
+                self.writer.add_scalar('sys/active_tokens', metrics['active_tokens'], step)
             
             # Additional monitoring
             if 'velocity_norm' in metrics:
