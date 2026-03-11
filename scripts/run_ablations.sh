@@ -21,7 +21,7 @@ declare -A CONFIGS=(
   [D]="config_D_full_stack.yaml"
 )
 
-DESCRIPTIONS=(
+declare -A DESCRIPTIONS=(
   [A]="Baseline (No TREAD, AdamW, No REPA)"
   [B]="+TREAD (TREAD, AdamW, No REPA)"
   [C]="+Muon (TREAD, Muon, No REPA)"
