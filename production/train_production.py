@@ -196,6 +196,17 @@ def main():
     """Main training function."""
     args = parse_args()
     
+    # When resuming, auto-load config from the experiment directory
+    # unless --config was explicitly specified on the command line
+    if args.resume and args.config == 'production/config.yaml':
+        resume_path = Path(args.resume)
+        # checkpoint lives at experiments/<timestamp>/checkpoints/checkpoint.pt
+        # config lives at experiments/<timestamp>/config.yaml
+        exp_config = resume_path.parent.parent / 'config.yaml'
+        if exp_config.exists():
+            print(f"Auto-loading config from experiment directory: {exp_config}")
+            args.config = str(exp_config)
+    
     # Load config
     print(f"Loading config from: {args.config}")
     config = load_config(args.config)
