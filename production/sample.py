@@ -371,8 +371,9 @@ class ValidationSampler:
             )
         
         if pixel_space:
-            # Output is already RGB [0,1] — clamp and return
-            images = output.clamp(0, 1)
+            # Output is RGB [0,1] from sampler — convert to [-1,1] for consistency
+            # (tensor_to_pil, LPIPS, and all consumers expect [-1,1])
+            images = output.clamp(0, 1) * 2 - 1
         else:
             # Decode latents to images via VAE
             images = decode_latents(self.vae, output)
