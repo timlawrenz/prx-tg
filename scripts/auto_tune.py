@@ -191,7 +191,7 @@ class BenchmarkRunner:
                 batch['dinov3_patches'],
                 batch['t5_hidden'],
                 batch['t5_mask'],
-                cfg_probs={'p_uncond': 0.0, 'p_text_only': 0.0, 'p_dino_only': 0.0},
+                cfg_probs={'p_uncond': 0.0, 'p_text_only': 0.0, 'p_dino_cls_only': 0.0, 'p_dino_patches_only': 0.0},
                 return_v_pred=False,
                 tread_config=tread_cfg,
                 maskdit_config=maskdit_cfg,
