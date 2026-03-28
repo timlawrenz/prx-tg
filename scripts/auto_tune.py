@@ -178,7 +178,7 @@ class BenchmarkRunner:
 
         tc = self.config.training
         maskdit_cfg = tc.maskdit if tc.maskdit.enabled else None
-        tread_enabled = tc.tread.enabled
+        tread_cfg = tc.tread if tc.tread.enabled else None
 
         ctx = torch.amp.autocast('cuda', enabled=self.use_amp,
                                  dtype=self.amp_dtype if self.use_amp else torch.float32)
@@ -193,7 +193,7 @@ class BenchmarkRunner:
                 batch['t5_mask'],
                 cfg_probs={'p_uncond': 0.0, 'p_text_only': 0.0, 'p_dino_only': 0.0},
                 return_v_pred=False,
-                tread_enabled=tread_enabled,
+                tread_config=tread_cfg,
                 maskdit_config=maskdit_cfg,
             )
             # flow_matching_loss returns scalar when return_v_pred=False
