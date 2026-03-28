@@ -604,26 +604,44 @@ class Trainer:
         
         Uses self.resolution_phases (set by ProductionTrainer) to determine
         the correct scale for the current step. Updates the dataloader's
-        resolution_scale property when the phase changes.
+        resolution_scale property when the phase changes. Also applies
+        per-phase overrides for batch_size and grad_accumulation_steps.
         """
         phases = getattr(self, 'resolution_phases', None)
         if not phases:
             return
         
         # Find the current phase
-        scale = 1.0
+        current_phase = phases[-1]  # default to last phase
         for phase in phases:
             if self.step < phase.until_step:
-                scale = phase.scale
+                current_phase = phase
                 break
         
-        current = getattr(self, '_current_resolution_scale', None)
-        if current != scale:
+        scale = current_phase.scale
+        prev_scale = getattr(self, '_current_resolution_scale', None)
+        if prev_scale != scale:
             if hasattr(self.dataloader, 'resolution_scale'):
                 self.dataloader.resolution_scale = scale
                 self._current_resolution_scale = scale
-                if current is not None:
-                    print(f"\n  Resolution schedule: scale {current} → {scale} at step {self.step}")
+                
+                # Apply per-phase overrides
+                changes = []
+                if current_phase.batch_size is not None:
+                    if hasattr(self.dataloader, 'batch_size'):
+                        self.dataloader.batch_size = current_phase.batch_size
+                    changes.append(f"batch_size={current_phase.batch_size}")
+                if current_phase.grad_accumulation_steps is not None:
+                    self.grad_accumulation_steps = current_phase.grad_accumulation_steps
+                    changes.append(f"grad_accum={current_phase.grad_accumulation_steps}")
+                
+                if prev_scale is not None:
+                    overrides = f" ({', '.join(changes)})" if changes else ""
+                    print(f"\n  Resolution schedule: scale {prev_scale} → {scale} at step {self.step}{overrides}")
+                
+                # Signal the training loop to recreate the data iterator
+                if changes:
+                    self._needs_data_reload = True
     
     def train_step(self, batch):
         """Execute one training step.
@@ -923,6 +941,11 @@ class Trainer:
         while self.step < self.total_steps:
             # Update resolution schedule if configured
             self._update_resolution_schedule()
+            
+            # Reload data iterator if resolution phase changed batch_size
+            if getattr(self, '_needs_data_reload', False):
+                data_iter = iter(self.dataloader)
+                self._needs_data_reload = False
             
             # Get batch
             try:

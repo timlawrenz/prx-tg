@@ -452,6 +452,19 @@ class BucketAwareDataLoader:
                 ds.target_latent_size = max(align, (int(base * scale) // align) * align)
         self._logged.clear()  # Re-log shapes at new resolution
 
+    @property
+    def batch_size(self):
+        """Current micro-batch size (same across all bucket datasets)."""
+        first = next(iter(self.bucket_datasets.values()), None)
+        return first.batch_size if first else 1
+
+    @batch_size.setter
+    def batch_size(self, bs):
+        """Update batch size on all bucket datasets. Takes effect on next __iter__ cycle."""
+        for ds in self.bucket_datasets.values():
+            ds.batch_size = bs
+        self._needs_reload = True
+
     def __iter__(self):
         iters = {name: iter(ds) for name, ds in self.bucket_datasets.items()}
         bucket_names = list(self.bucket_names)

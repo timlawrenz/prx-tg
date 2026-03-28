@@ -37,9 +37,16 @@ class MuonConfig:
 
 @dataclass
 class ResolutionPhase:
-    """A phase in the resolution schedule."""
-    until_step: int = 0    # End step for this phase (exclusive)
-    scale: float = 1.0     # Spatial scale factor (0.5 = half resolution)
+    """A phase in the resolution schedule.
+    
+    Optional overrides (batch_size, grad_accumulation_steps, num_workers)
+    replace the global training defaults during this phase. None = use global.
+    """
+    until_step: int = 0
+    scale: float = 1.0
+    batch_size: Optional[int] = None
+    grad_accumulation_steps: Optional[int] = None
+    num_workers: Optional[int] = None
 
 
 @dataclass
