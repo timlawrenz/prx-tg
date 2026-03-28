@@ -575,7 +575,7 @@ def main():
         device = torch.device(f'cuda:{args.gpu}')
         torch.cuda.set_device(device)
         props = torch.cuda.get_device_properties(device)
-        print(f"GPU: {props.name} ({props.total_mem / 1024**3:.1f} GB)")
+        print(f"GPU: {props.name} ({props.total_memory / 1024**3:.1f} GB)")
     else:
         device = torch.device('cpu')
         print("WARNING: Running on CPU — results won't reflect GPU throughput")
