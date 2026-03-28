@@ -125,11 +125,11 @@ class BenchmarkRunner:
 
         tread_route_start, tread_route_end, tread_routing_prob = None, None, 0.0
         if tc.tread.enabled:
-            tread_route_start = tc.tread.route_start_block
-            tread_route_end = tc.tread.route_end_block
+            tread_route_start = tc.tread.route_start
+            tread_route_end = tc.tread.route_end
             tread_routing_prob = tc.tread.routing_probability
 
-        repa_block_idx = tc.repa.block_idx if tc.repa.enabled else None
+        repa_block_idx = tc.repa.block_index if tc.repa.enabled else None
 
         maskdit_enabled = tc.maskdit.enabled
         maskdit_mask_ratio = tc.maskdit.mask_ratio
