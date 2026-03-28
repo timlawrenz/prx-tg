@@ -74,9 +74,18 @@ def print_config_summary(config):
     print(f"  Heads: {config.model.num_heads}")
     print(f"  Patch size: {config.model.patch_size}")
     print("\nTraining:")
-    print(f"  Batch size: {config.training.batch_size}")
-    print(f"  Grad accumulation: {config.training.grad_accumulation_steps}")
+    print(f"  Batch size: {config.training.batch_size} (global default)")
+    print(f"  Grad accumulation: {config.training.grad_accumulation_steps} (global default)")
     print(f"  Effective batch: {config.training.batch_size * config.training.grad_accumulation_steps}")
+    res_phases = config.training.get_resolution_phases()
+    has_overrides = any(p.batch_size is not None or p.grad_accumulation_steps is not None for p in res_phases) if res_phases else False
+    if has_overrides:
+        print(f"  Per-phase overrides:")
+        for p in res_phases:
+            bs = p.batch_size if p.batch_size is not None else config.training.batch_size
+            ga = p.grad_accumulation_steps if p.grad_accumulation_steps is not None else config.training.grad_accumulation_steps
+            res = int(config.model.input_size * p.scale)
+            print(f"    {res}×{res} (scale={p.scale}): bs={bs}, ga={ga}, eff={bs*ga}")
     print(f"  Total steps: {config.training.total_steps}")
     print(f"  Warmup: {config.training.warmup_steps} steps")
     print(f"  Peak LR: {config.training.optimizer.lr}")
