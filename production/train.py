@@ -337,6 +337,7 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
         masked_idx = maskdit_info['masked_idx']
         # v_pred is the full spatial output (B, C, H, W) — patchify to compare masked tokens
         ps = getattr(model, 'patch_size', 16)
+        C = x0.shape[1]
         h_p = x0.shape[2] // ps
         w_p = x0.shape[3] // ps
         # Patchify ground truth and prediction

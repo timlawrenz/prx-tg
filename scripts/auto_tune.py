@@ -159,15 +159,18 @@ class BenchmarkRunner:
     def _make_synthetic_batch(self, batch_size: int, h_px: int, w_px: int) -> dict:
         """Create a synthetic batch matching the model's expected inputs."""
         mc = self.config.model
-        ps = mc.patch_size
-        C = mc.in_channels  # pixel-space: 3, latent-space: 4
+        C = mc.in_channels  # pixel-space: 3
+
+        # DINOv3 patches: variable per image, ~(h/14)*(w/14) patches, 1024-dim
+        num_patches = max(256, (h_px // 14) * (w_px // 14))
 
         return {
             'image_data': torch.randn(batch_size, C, h_px, w_px, device=self.device),
             'dino_embedding': torch.randn(batch_size, 1024, device=self.device),
-            'dinov3_patches': torch.randn(batch_size, 256, 1024, device=self.device),
-            't5_hidden': torch.randn(batch_size, 77, 2048, device=self.device),
-            't5_mask': torch.ones(batch_size, 77, dtype=torch.bool, device=self.device),
+            'dinov3_patches': torch.randn(batch_size, num_patches, 1024, device=self.device),
+            'dinov3_patches_mask': torch.ones(batch_size, num_patches, dtype=torch.long, device=self.device),
+            't5_hidden': torch.randn(batch_size, 512, 1024, device=self.device),
+            't5_mask': torch.ones(batch_size, 512, dtype=torch.long, device=self.device),
             'pose_keypoints': torch.randn(batch_size, mc.num_pose_joints, 3, device=self.device),
             'bucket': 'synthetic',
         }
@@ -192,6 +195,8 @@ class BenchmarkRunner:
                 batch['t5_hidden'],
                 batch['t5_mask'],
                 cfg_probs={'p_uncond': 0.0, 'p_text_only': 0.0, 'p_dino_cls_only': 0.0, 'p_dino_patches_only': 0.0},
+                dino_patches_mask=batch.get('dinov3_patches_mask'),
+                pose_kpts=batch.get('pose_keypoints'),
                 return_v_pred=False,
                 tread_config=tread_cfg,
                 maskdit_config=maskdit_cfg,
