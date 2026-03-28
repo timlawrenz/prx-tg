@@ -272,6 +272,13 @@ def main():
         tread_routing_prob = config.training.tread.routing_probability
         print(f"TREAD enabled: routing {tread_routing_prob*100:.0f}% tokens past blocks {tread_route_start}-{tread_route_end}")
     
+    # Resolve MaskDiT config
+    maskdit_enabled = config.training.maskdit.enabled
+    maskdit_mask_ratio = config.training.maskdit.mask_ratio
+    maskdit_decoder_depth = config.training.maskdit.decoder_depth
+    if maskdit_enabled:
+        print(f"MaskDiT enabled: {maskdit_mask_ratio*100:.0f}% masking, {maskdit_decoder_depth} decoder blocks")
+    
     model = NanoDiT(
         input_size=config.model.input_size,
         patch_size=config.model.patch_size,
@@ -288,6 +295,9 @@ def main():
         bottleneck_size=config.model.bottleneck_size,
         num_pose_joints=config.model.num_pose_joints,
         pose_confidence_threshold=config.model.pose_confidence_threshold,
+        maskdit_enabled=maskdit_enabled,
+        maskdit_mask_ratio=maskdit_mask_ratio,
+        maskdit_decoder_depth=maskdit_decoder_depth,
     ).to(device)
     
     total_params = sum(p.numel() for p in model.parameters())

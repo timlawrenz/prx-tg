@@ -177,7 +177,7 @@ def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="c
     return per_token_loss.mean()
 
 
-def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, pose_kpts=None, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05):
+def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, pose_kpts=None, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05, maskdit_config=None):
     """Compute flow matching loss with mutually exclusive CFG dropout.
     
     Supports two prediction modes:
@@ -267,6 +267,9 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     # TREAD: enable routing during training
     tread_enabled = tread_config is not None and tread_config.enabled
     
+    # MaskDiT: enable masking during training
+    use_maskdit = maskdit_config is not None and maskdit_config.enabled
+    
     # Predict velocity (with DINO patches)
     model_output = model(
         zt, t, dino_emb, text_emb, dino_patches, text_mask, dino_patches_mask=dino_patches_mask,
@@ -277,10 +280,11 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
         cfg_drop_pose=drop_pose,
         return_repa_hidden=use_repa,
         tread_enabled=tread_enabled,
+        maskdit_enabled=use_maskdit,
     )
     
     if use_repa:
-        v_pred, repa_hidden, tread_visible_idx = model_output
+        v_pred, repa_hidden, tread_visible_idx, maskdit_info = model_output
     else:
         v_pred = model_output
     
@@ -317,17 +321,32 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     )
     if use_perceptual:
         if prediction_type == "x_prediction":
-            # In x-prediction, model output IS x0_pred — use directly for perceptual loss
-            # (pixel-space: no VAE decode needed, but PerceptualLossModule handles that)
-            x0_hat = v_pred  # x0_pred from model
+            x0_hat = v_pred
         else:
-            # Reconstruct predicted clean latent: x0_hat = zt - t * v_pred
             x0_hat = zt - t_expanded * v_pred
         lpips_loss = perceptual_module.compute(x0, x0_hat, perceptual_config.crop_size)
         loss = loss + perceptual_config.lpips_weight * lpips_loss
     
+    # MaskDiT: auxiliary MAE reconstruction loss on masked token positions
+    mae_loss = None
+    if use_maskdit and use_repa and maskdit_info is not None:
+        masked_idx = maskdit_info['masked_idx']
+        # v_pred is the full spatial output (B, C, H, W) — patchify to compare masked tokens
+        ps = getattr(model, 'patch_size', 16)
+        h_p = x0.shape[2] // ps
+        w_p = x0.shape[3] // ps
+        # Patchify ground truth and prediction
+        x0_patches = x0.reshape(B, C, h_p, ps, w_p, ps).permute(0, 2, 4, 1, 3, 5).reshape(B, h_p * w_p, -1)
+        if prediction_type == "x_prediction":
+            pred_patches = v_pred.reshape(B, C, h_p, ps, w_p, ps).permute(0, 2, 4, 1, 3, 5).reshape(B, h_p * w_p, -1)
+        else:
+            x0_hat_spatial = zt - t_expanded * v_pred
+            pred_patches = x0_hat_spatial.reshape(B, C, h_p, ps, w_p, ps).permute(0, 2, 4, 1, 3, 5).reshape(B, h_p * w_p, -1)
+        mae_loss = F.mse_loss(pred_patches[:, masked_idx], x0_patches[:, masked_idx])
+        loss = loss + maskdit_config.mae_loss_weight * mae_loss
+    
     if return_v_pred:
-        return loss, v_pred, repa_loss, lpips_loss
+        return loss, v_pred, repa_loss, lpips_loss, mae_loss
     return loss
 
 
@@ -508,6 +527,13 @@ class Trainer:
         # TREAD config (set by ProductionTrainer if enabled)
         self.tread_config = None
         
+        # MaskDiT config (set by ProductionTrainer if enabled)
+        self.maskdit_config = None
+        
+        # AMP (Automatic Mixed Precision) state — set by ProductionTrainer
+        self._amp_dtype = None      # None = disabled, torch.float16 or torch.bfloat16
+        self._grad_scaler = None    # GradScaler for fp16
+        
         # Logging
         self.log_file = self.checkpoint_dir.parent / 'training_log.jsonl'
     
@@ -609,32 +635,43 @@ class Trainer:
         # Move batch to device
         x0 = batch['image_data'].to(self.device)
         dino_emb = batch['dino_embedding'].to(self.device)
-        dino_patches = batch['dinov3_patches'].to(self.device)  # (B, num_patches, 1024)
+        dino_patches = batch['dinov3_patches'].to(self.device)
         text_emb = batch['t5_hidden'].to(self.device)
         text_mask = batch['t5_mask'].to(self.device)
         dino_patches_mask = batch.get('dinov3_patches_mask')
         if dino_patches_mask is not None:
             dino_patches_mask = dino_patches_mask.to(self.device)
-        pose_kpts = batch['pose_keypoints'].to(self.device)  # (B, 133, 3)
+        pose_kpts = batch['pose_keypoints'].to(self.device)
         
-        # Compute loss (with velocity prediction for monitoring)
-        loss, v_pred, repa_loss, lpips_loss = flow_matching_loss(
-            self.model, x0, dino_emb, dino_patches, text_emb, text_mask, self.cfg_probs, 
-            dino_patches_mask=dino_patches_mask, pose_kpts=pose_kpts, return_v_pred=True,
-            repa_config=self.repa_config,
-            tread_config=self.tread_config,
-            perceptual_module=getattr(self, 'perceptual_module', None),
-            perceptual_config=getattr(self, 'perceptual_config', None),
-            micro_step=getattr(self, 'micro_step', 0),
-            prediction_type=getattr(self, 'prediction_type', 'v_prediction'),
-            t_clamp_min=getattr(self, 't_clamp_min', 0.05),
-        )
+        # Determine autocast dtype
+        amp_dtype = getattr(self, '_amp_dtype', None)
+        use_amp = amp_dtype is not None
+        
+        # Forward pass with optional mixed precision
+        ctx = torch.cuda.amp.autocast(enabled=use_amp, dtype=amp_dtype if use_amp else torch.float32)
+        with ctx:
+            loss, v_pred, repa_loss, lpips_loss, mae_loss = flow_matching_loss(
+                self.model, x0, dino_emb, dino_patches, text_emb, text_mask, self.cfg_probs, 
+                dino_patches_mask=dino_patches_mask, pose_kpts=pose_kpts, return_v_pred=True,
+                repa_config=self.repa_config,
+                tread_config=self.tread_config,
+                perceptual_module=getattr(self, 'perceptual_module', None),
+                perceptual_config=getattr(self, 'perceptual_config', None),
+                micro_step=getattr(self, 'micro_step', 0),
+                prediction_type=getattr(self, 'prediction_type', 'v_prediction'),
+                t_clamp_min=getattr(self, 't_clamp_min', 0.05),
+                maskdit_config=getattr(self, 'maskdit_config', None),
+            )
         
         # Scale loss by accumulation steps
         loss = loss / self.grad_accumulation_steps
         
-        # Backward (accumulate gradients)
-        loss.backward()
+        # Backward (accumulate gradients) — with optional GradScaler for fp16
+        grad_scaler = getattr(self, '_grad_scaler', None)
+        if grad_scaler is not None:
+            grad_scaler.scale(loss).backward()
+        else:
+            loss.backward()
         
         # Increment micro step counter
         if not hasattr(self, 'micro_step'):
@@ -663,12 +700,21 @@ class Trainer:
             layer_grad_norms['dino_proj'] = self.model.dino_proj.weight.grad.norm().item()
         
         if is_accumulation_step:
-            # Gradient clipping
+            # Gradient clipping (unscale first if using GradScaler)
+            if grad_scaler is not None:
+                grad_scaler.unscale_(self.optimizer_adam or self.optimizer_muon)
             grad_norm = clip_grad_norm_(self.model.parameters(), self.grad_clip).item()
             
             # Apply LR and step all optimizers
             self._set_lr_optimizers(lr)
-            self._step_optimizers()
+            if grad_scaler is not None:
+                if self.optimizer_muon is not None:
+                    grad_scaler.step(self.optimizer_muon)
+                if self.optimizer_adam is not None:
+                    grad_scaler.step(self.optimizer_adam)
+                grad_scaler.update()
+            else:
+                self._step_optimizers()
             self._zero_grad_optimizers()
             
             # EMA update (only when optimizer steps)
@@ -692,6 +738,10 @@ class Trainer:
         # LPIPS perceptual loss logging
         if lpips_loss is not None:
             metrics['lpips_loss'] = lpips_loss.item()
+        
+        # MaskDiT MAE loss logging
+        if mae_loss is not None:
+            metrics['mae_loss'] = mae_loss.item()
         
         # Every 100 steps, add weight statistics for monitoring parameter evolution
         # Note: self.step gets incremented AFTER train_step returns, so check (self.step + 1)
@@ -738,17 +788,18 @@ class Trainer:
             metrics['vram_reserved_gb'] = torch.cuda.memory_reserved(self.device) / 1024**3
             metrics['peak_vram_gb'] = torch.cuda.max_memory_allocated(self.device) / 1024**3
         
-        # Active token count for TREAD ablation
+        # Active token count for TREAD/MaskDiT ablation
         tread_cfg = getattr(self, 'tread_config', None)
+        maskdit_cfg = getattr(self, 'maskdit_config', None)
+        total_tokens = (x0.shape[2] // getattr(self.model, 'patch_size', 16)) * \
+                       (x0.shape[3] // getattr(self.model, 'patch_size', 16))
+        active = total_tokens
+        if maskdit_cfg is not None and maskdit_cfg.enabled:
+            active = int(active * (1 - maskdit_cfg.mask_ratio))
+            metrics['maskdit_visible_tokens'] = active
         if tread_cfg is not None and tread_cfg.enabled:
-            total_tokens = (x0.shape[2] // getattr(self.model, 'patch_size', 16)) * \
-                           (x0.shape[3] // getattr(self.model, 'patch_size', 16))
-            active_tokens = total_tokens - int(total_tokens * tread_cfg.routing_probability)
-            metrics['active_tokens'] = active_tokens
-        else:
-            total_tokens = (x0.shape[2] // getattr(self.model, 'patch_size', 16)) * \
-                           (x0.shape[3] // getattr(self.model, 'patch_size', 16))
-            metrics['active_tokens'] = total_tokens
+            active = active - int(active * tread_cfg.routing_probability)
+        metrics['active_tokens'] = active
         
         return metrics, is_accumulation_step
     
@@ -997,6 +1048,27 @@ class ProductionTrainer(Trainer):
         # TREAD config
         self.tread_config = training.tread if training.tread.enabled else None
         
+        # MaskDiT config
+        self.maskdit_config = training.maskdit if training.maskdit.enabled else None
+        
+        # AMP (Automatic Mixed Precision) setup
+        if training.mixed_precision and training.precision == "float16":
+            self._amp_dtype = torch.float16
+            self._grad_scaler = torch.cuda.amp.GradScaler()
+            print(f"  Mixed precision: float16 with GradScaler (RTX 2070 compatible)")
+        elif training.mixed_precision and training.precision == "bfloat16":
+            self._amp_dtype = torch.bfloat16
+            self._grad_scaler = None  # bfloat16 doesn't need loss scaling
+            print(f"  Mixed precision: bfloat16 (no GradScaler needed)")
+        else:
+            self._amp_dtype = None
+            self._grad_scaler = None
+            print(f"  Mixed precision: disabled (float32)")
+        
+        # GaLore optimizer replacement (post-init, replaces existing AdamW)
+        if training.galore.enabled:
+            self._setup_galore_optimizer(model, training)
+        
         # Resolution schedule
         self.resolution_phases = training.get_resolution_phases()
         self._current_resolution_scale = None  # Will be set on first step
@@ -1034,6 +1106,52 @@ class ProductionTrainer(Trainer):
         print(f"  Effective batch size: {training.batch_size * self.grad_accumulation_steps}")
         print(f"  Timestep sampling: {self.timestep_sampling}")
         print(f"  EMA warmup: {self.ema_warmup_steps} steps")
+        if self.maskdit_config:
+            print(f"  MaskDiT: {self.maskdit_config.mask_ratio:.0%} masking, {self.maskdit_config.decoder_depth} decoder blocks")
+        if training.galore.enabled:
+            print(f"  GaLore: rank={training.galore.rank}, proj_gap={training.galore.update_proj_gap}")
+    
+    def _setup_galore_optimizer(self, model, training):
+        """Replace existing optimizer with GaLore-enabled variant for memory reduction."""
+        try:
+            from galore_torch import GaLoreAdamW8bit, GaLoreAdamW
+        except ImportError:
+            print("  WARNING: galore-torch not installed. Falling back to standard AdamW.")
+            print("  Install with: pip install galore-torch")
+            return
+        
+        galore_cfg = training.galore
+        
+        # Separate params: GaLore for 2D weight matrices, standard Adam for rest
+        galore_params = []
+        regular_params = []
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            if p.ndim >= 2 and min(p.shape) >= galore_cfg.rank:
+                galore_params.append(p)
+            else:
+                regular_params.append(p)
+        
+        param_groups = [
+            {'params': galore_params, 'rank': galore_cfg.rank,
+             'update_proj_gap': galore_cfg.update_proj_gap, 'scale': galore_cfg.scale,
+             'proj_type': 'std'},
+            {'params': regular_params},
+        ]
+        
+        self.optimizer_muon = None  # Disable Muon when using GaLore
+        self.optimizer_adam = GaLoreAdamW(
+            param_groups,
+            lr=training.optimizer.lr,
+            betas=tuple(training.optimizer.betas),
+            weight_decay=training.optimizer.weight_decay,
+            eps=training.optimizer.eps,
+        )
+        
+        galore_count = sum(p.numel() for p in galore_params)
+        regular_count = sum(p.numel() for p in regular_params)
+        print(f"  GaLore optimizer: {galore_count/1e6:.1f}M params (rank={galore_cfg.rank}), {regular_count/1e6:.1f}M regular")
     
     def log(self, metrics):
         """Log metrics to file, console, and TensorBoard.
@@ -1090,6 +1208,10 @@ class ProductionTrainer(Trainer):
                 self.writer.add_scalar('train/repa_loss', metrics['repa_loss'], step)
             if 'lpips_loss' in metrics:
                 self.writer.add_scalar('train/lpips_loss', metrics['lpips_loss'], step)
+            if 'mae_loss' in metrics:
+                self.writer.add_scalar('train/mae_loss', metrics['mae_loss'], step)
+            if 'maskdit_visible_tokens' in metrics:
+                self.writer.add_scalar('sys/maskdit_visible_tokens', metrics['maskdit_visible_tokens'], step)
     
     def __del__(self):
         """Cleanup: close TensorBoard writer."""

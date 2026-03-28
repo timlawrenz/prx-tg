@@ -5,7 +5,7 @@ Loads YAML config and provides structured access to all hyperparameters.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Literal
+from typing import List, Literal, Optional
 import yaml
 
 
@@ -106,6 +106,24 @@ class PerceptualLossConfig:
 
 
 @dataclass
+class MaskDiTConfig:
+    """MaskDiT masked training configuration (Operation Turbo)."""
+    enabled: bool = False
+    mask_ratio: float = 0.75        # Fraction of image tokens to mask during training
+    decoder_depth: int = 4          # Number of lightweight decoder blocks
+    mae_loss_weight: float = 0.1    # Auxiliary MAE reconstruction loss weight
+
+
+@dataclass
+class GaLoreConfig:
+    """GaLore (Gradient Low-Rank Projection) optimizer memory reduction."""
+    enabled: bool = False
+    rank: int = 128                 # Low-rank projection dimension
+    update_proj_gap: int = 200      # Re-project every N steps
+    scale: float = 0.25             # Gradient scaling factor
+
+
+@dataclass
 class TrainingConfig:
     """Training loop configuration."""
     total_steps: int = 50000
@@ -123,6 +141,8 @@ class TrainingConfig:
     repa: REPAConfig = field(default_factory=REPAConfig)
     tread: TREADConfig = field(default_factory=TREADConfig)
     perceptual: PerceptualLossConfig = field(default_factory=PerceptualLossConfig)
+    maskdit: MaskDiTConfig = field(default_factory=MaskDiTConfig)
+    galore: GaLoreConfig = field(default_factory=GaLoreConfig)
     
     timestep_sampling: Literal["uniform", "logit_normal"] = "logit_normal"
     logit_normal_loc: float = 0.0
@@ -130,7 +150,7 @@ class TrainingConfig:
     
     gradient_checkpointing: bool = False
     mixed_precision: bool = True
-    precision: Literal["float32", "bfloat16"] = "bfloat16"
+    precision: Literal["float32", "bfloat16", "float16"] = "bfloat16"
     
     resolution_schedule: List = field(default_factory=list)  # List of {until_step, scale} dicts
     

@@ -283,6 +283,58 @@ class DiTBlock(nn.Module):
             return self._forward_impl(x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask)
 
 
+class MaskDiTDecoder(nn.Module):
+    """Lightweight decoder for MaskDiT masked token reconstruction.
+    
+    Receives the full token sequence (visible encoder outputs + learned mask tokens)
+    and produces predictions for all positions. Uses the same DiTBlock architecture
+    but with fewer layers.
+    """
+    
+    def __init__(self, hidden_size, num_heads, depth=4, mlp_ratio=4.0, use_checkpoint=False):
+        super().__init__()
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, hidden_size))
+        nn.init.normal_(self.mask_token, std=0.02)
+        
+        self.blocks = nn.ModuleList([
+            DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, use_checkpoint=use_checkpoint)
+            for _ in range(depth)
+        ])
+    
+    def forward(self, x_visible, visible_idx, masked_idx, N_total, pos_embed,
+                c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask=None):
+        """
+        Args:
+            x_visible: (B, N_vis, C) encoder output for visible tokens
+            visible_idx: (N_vis,) indices of visible tokens
+            masked_idx: (N_mask,) indices of masked tokens
+            N_total: int, total number of tokens
+            pos_embed: (1, N_total, C) positional embeddings for all tokens
+            c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask: conditioning
+        
+        Returns:
+            x_full: (B, N_total, C) decoded output for all token positions
+        """
+        B, _, C = x_visible.shape
+        
+        # Create full sequence: visible outputs + mask tokens
+        mask_tokens = self.mask_token.expand(B, len(masked_idx), -1)
+        
+        # Add positional embeddings to mask tokens
+        mask_tokens = mask_tokens + pos_embed[:, masked_idx]
+        
+        # Assemble full sequence
+        x_full = torch.empty(B, N_total, C, device=x_visible.device, dtype=x_visible.dtype)
+        x_full[:, visible_idx] = x_visible
+        x_full[:, masked_idx] = mask_tokens
+        
+        # Run through decoder blocks
+        for block in self.blocks:
+            x_full = block(x_full, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask)
+        
+        return x_full
+
+
 class NanoDiT(nn.Module):
     """Nano DiT: 12L, 384H, 6A for validation testing."""
     
@@ -307,6 +359,9 @@ class NanoDiT(nn.Module):
         num_pose_joints=133,
         pose_dim=3,
         pose_confidence_threshold=0.05,
+        maskdit_enabled=False,
+        maskdit_mask_ratio=0.75,
+        maskdit_decoder_depth=4,
     ):
         super().__init__()
         self.input_size = input_size  # For backward compatibility, but not used
@@ -354,6 +409,15 @@ class NanoDiT(nn.Module):
         # REPA projection (projects hidden states to DINOv3 patch feature space)
         if repa_block_idx is not None:
             self.repa_proj = nn.Linear(hidden_size, dino_patch_dim, bias=False)
+        
+        # MaskDiT decoder for masked training
+        self.maskdit_enabled = maskdit_enabled
+        self.maskdit_mask_ratio = maskdit_mask_ratio
+        if maskdit_enabled:
+            self.maskdit_decoder = MaskDiTDecoder(
+                hidden_size, num_heads, depth=maskdit_decoder_depth,
+                mlp_ratio=mlp_ratio, use_checkpoint=use_gradient_checkpointing,
+            )
         
         # Output layers (keep bias for final projection)
         self.final_norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
@@ -435,7 +499,7 @@ class NanoDiT(nn.Module):
     def forward(self, x, t, dino_emb, text_emb, dino_patches=None, text_mask=None, dino_patches_mask=None,
                 cfg_drop_text=None, cfg_drop_dino_cls=None, cfg_drop_dino_patches=None,
                 pose_kpts=None, cfg_drop_pose=None,
-                return_repa_hidden=False, tread_enabled=None):
+                return_repa_hidden=False, tread_enabled=None, maskdit_enabled=None):
         """
         Args:
             x: (B, C, H, W) noisy latents (H and W can vary for different aspect ratios)
@@ -450,14 +514,16 @@ class NanoDiT(nn.Module):
             cfg_drop_dino_patches: (B,) bool mask for dropping DINO patches
             pose_kpts: (B, 133, 3) pose keypoints [x_norm, y_norm, confidence]
             cfg_drop_pose: (B,) bool mask for dropping pose (swaps to [NULL_POSE])
-            return_repa_hidden: if True, return (v_pred, repa_hidden, tread_visible_idx) tuple
+            return_repa_hidden: if True, return (v_pred, repa_hidden, tread_visible_idx, maskdit_info) tuple
             tread_enabled: override for TREAD routing (None = use self.training when configured)
+            maskdit_enabled: override for MaskDiT masking (None = use self.maskdit_enabled when training)
         
         Returns:
             v: (B, C, H, W) predicted velocity
             -- or if return_repa_hidden=True --
-            (v, repa_hidden, tread_visible_idx): tuple of velocity, projected hidden states,
-            and visible token indices (None when TREAD is inactive)
+            (v, repa_hidden, tread_visible_idx, maskdit_info): tuple with extra info
+            maskdit_info is None when masking is off, or dict with visible_idx, masked_idx, 
+            x0_pred_masked (decoder output for masked positions) when masking is on
         """
         B, C, H, W = x.shape
         
@@ -504,9 +570,6 @@ class NanoDiT(nn.Module):
         t_emb = self.t_embedder(t)  # (B, hidden_size)
         
         # Project conditioning (after CFG dropout)
-        # Timestep is added to DINO conditioning (which goes through adaLN-Zero)
-        # This ensures timestep information reaches all blocks, even when DINO is dropped
-        # (null_dino still gets projected and adds t_emb)
         dino_cond = self.dino_proj(dino_emb) + t_emb  # (B, hidden_size) - for adaLN
         dino_cls_token = dino_cond.unsqueeze(1)  # (B, 1, hidden_size) - for cross-attention
         text_cond = self.text_proj(text_emb)  # (B, seq_len, hidden_size)
@@ -514,43 +577,51 @@ class NanoDiT(nn.Module):
         
         # Pose conditioning: project keypoints and add joint-type embeddings
         if pose_kpts is not None:
-            # CFG dropout: swap entire pose sequence to [NULL_POSE] tokens
             if cfg_drop_pose is not None:
-                null_pose_expanded = self.null_pose.expand(B, -1, -1)  # (B, 133, hidden_size)
-                # For dropped samples, use null_pose directly (already in hidden_size space)
-                # For kept samples, project the real keypoints
-                pose_proj = self.pose_proj(pose_kpts) + self.pose_joint_embed.weight  # (B, 133, hidden_size)
-                
-                # Confidence masking: replace low-confidence joints with per-joint null
-                conf = pose_kpts[:, :, 2]  # (B, 133)
-                low_conf = conf < self.pose_confidence_threshold  # (B, 133)
-                pose_proj = torch.where(
-                    low_conf.unsqueeze(2),  # (B, 133, 1)
-                    null_pose_expanded,
-                    pose_proj,
-                )
-                
-                # CFG dropout: replace ALL tokens for dropped samples
+                null_pose_expanded = self.null_pose.expand(B, -1, -1)
+                pose_proj = self.pose_proj(pose_kpts) + self.pose_joint_embed.weight
+                conf = pose_kpts[:, :, 2]
+                low_conf = conf < self.pose_confidence_threshold
+                pose_proj = torch.where(low_conf.unsqueeze(2), null_pose_expanded, pose_proj)
                 pose_tokens = torch.where(
-                    cfg_drop_pose.unsqueeze(1).unsqueeze(2),  # (B, 1, 1)
-                    null_pose_expanded,
-                    pose_proj,
+                    cfg_drop_pose.unsqueeze(1).unsqueeze(2),
+                    null_pose_expanded, pose_proj,
                 )
             else:
-                pose_tokens = self.pose_proj(pose_kpts) + self.pose_joint_embed.weight  # (B, 133, hidden_size)
-                # Confidence masking
+                pose_tokens = self.pose_proj(pose_kpts) + self.pose_joint_embed.weight
                 conf = pose_kpts[:, :, 2]
                 low_conf = conf < self.pose_confidence_threshold
                 null_pose_expanded = self.null_pose.expand(B, -1, -1)
                 pose_tokens = torch.where(low_conf.unsqueeze(2), null_pose_expanded, pose_tokens)
             
-            # Append pose tokens to DINO patches for cross-attention
-            patches_cond = torch.cat([patches_cond, pose_tokens], dim=1)  # (B, num_patches+133, hidden_size)
-            
-            # Extend patches mask to cover pose tokens (all valid)
+            patches_cond = torch.cat([patches_cond, pose_tokens], dim=1)
             if dino_patches_mask is not None:
                 pose_mask = torch.ones(B, self.num_pose_joints, device=dino_patches_mask.device, dtype=dino_patches_mask.dtype)
                 dino_patches_mask = torch.cat([dino_patches_mask, pose_mask], dim=1)
+        
+        # MaskDiT: randomly mask image tokens during training
+        use_maskdit = self.maskdit_enabled and (maskdit_enabled if maskdit_enabled is not None else self.training)
+        maskdit_info = None
+        N_total = x.shape[1]
+        
+        if use_maskdit:
+            N_mask = int(N_total * self.maskdit_mask_ratio)
+            N_vis = N_total - N_mask
+            
+            perm = torch.randperm(N_total, device=x.device)
+            visible_idx = perm[:N_vis].sort().values
+            masked_idx = perm[N_vis:].sort().values
+            
+            # Keep only visible tokens for encoder
+            x_full_before_mask = x  # save for decoder pos_embed
+            x = x[:, visible_idx]  # (B, N_vis, C)
+            
+            maskdit_info = {
+                'visible_idx': visible_idx,
+                'masked_idx': masked_idx,
+                'N_total': N_total,
+                'pos_embed': pos_embed,
+            }
         
         # Determine if TREAD routing is active
         use_tread = self.tread_enabled and (tread_enabled if tread_enabled is not None else self.training)
@@ -563,43 +634,44 @@ class NanoDiT(nn.Module):
             N = x.shape[1]
             N_visible = N - int(N * self.tread_routing_prob)
             
-            # Random permutation to split tokens
             perm = torch.randperm(N, device=x.device)
             visible_idx = perm[:N_visible].sort().values
             routed_idx = perm[N_visible:].sort().values
             tread_visible_idx = visible_idx
             
-            # Phase 1: All tokens through initial blocks
             for i in range(self.tread_route_start):
                 x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask)
             
-            # Stash routed tokens, keep only visible
             routed_tokens = x[:, routed_idx]
             x = x[:, visible_idx]
             
-            # Phase 2: Visible tokens only through middle blocks
             for i in range(self.tread_route_start, self.tread_route_end + 1):
                 x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask)
                 if return_repa_hidden and i == self.repa_block_idx:
-                    repa_hidden = self.repa_proj(x)  # (B, N_visible, dino_patch_dim)
+                    repa_hidden = self.repa_proj(x)
             
-            # Scatter: merge visible and routed tokens back
             full_x = torch.empty(x.shape[0], N, x.shape[2], device=x.device, dtype=x.dtype)
             full_x[:, visible_idx] = x
             full_x[:, routed_idx] = routed_tokens
             x = full_x
             
-            # Phase 3: All tokens through final blocks
             for i in range(self.tread_route_end + 1, len(self.blocks)):
                 x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask)
                 if return_repa_hidden and i == self.repa_block_idx:
                     repa_hidden = self.repa_proj(x)
         else:
-            # Standard path: all tokens through all blocks
             for i, block in enumerate(self.blocks):
                 x = block(x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask)
                 if return_repa_hidden and i == self.repa_block_idx:
-                    repa_hidden = self.repa_proj(x)  # (B, N, dino_patch_dim)
+                    repa_hidden = self.repa_proj(x)
+        
+        # MaskDiT decoder: reconstruct full token sequence from visible encoder outputs
+        if use_maskdit and maskdit_info is not None:
+            x = self.maskdit_decoder(
+                x, maskdit_info['visible_idx'], maskdit_info['masked_idx'],
+                maskdit_info['N_total'], maskdit_info['pos_embed'],
+                dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, dino_patches_mask,
+            )
         
         # Output projection
         x = self.final_norm(x)
@@ -610,7 +682,7 @@ class NanoDiT(nn.Module):
         x = x + self.output_conv(x)
         
         if return_repa_hidden:
-            return x, repa_hidden, tread_visible_idx
+            return x, repa_hidden, tread_visible_idx, maskdit_info
         return x
 
 
