@@ -195,7 +195,7 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
         cfg_probs: dict with CFG dropout probabilities
         dino_patches_mask: (B, num_patches) mask for padding
         pose_kpts: (B, 133, 3) pose keypoints [x_norm, y_norm, confidence]
-        return_v_pred: bool, if True return (loss, v_pred, repa_loss, lpips_loss)
+        return_v_pred: bool, if True return (loss, v_pred, repa_loss, lpips_loss, mae_loss)
         repa_config: optional REPAConfig
         tread_config: optional TREADConfig
         perceptual_module: optional PerceptualLossModule for LPIPS loss
@@ -205,7 +205,7 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
         t_clamp_min: minimum t for x→v conversion (avoids div-by-zero)
     
     Returns:
-        loss: scalar tensor, or (loss, v_pred, repa_loss, lpips_loss) if return_v_pred=True
+        loss: scalar tensor, or (loss, v_pred, repa_loss, lpips_loss, mae_loss) if return_v_pred=True
     """
     B = x0.shape[0]
     device = x0.device
@@ -261,7 +261,7 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     drop_dino_patches_mask = drop_both | drop_dino | drop_text_and_patches | cat_pose_only
     drop_pose = drop_both | drop_dino | drop_text_and_patches | drop_text_and_cls | cat_drop_pose
     
-    # Determine if we need REPA hidden states
+    # Determine if we need REPA hidden states or MaskDiT info
     use_repa = repa_config is not None and repa_config.enabled
     
     # TREAD: enable routing during training
@@ -269,6 +269,9 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     
     # MaskDiT: enable masking during training
     use_maskdit = maskdit_config is not None and maskdit_config.enabled
+    
+    # Request extended return when we need REPA hidden states OR maskdit info
+    return_extended = use_repa or use_maskdit
     
     # Predict velocity (with DINO patches)
     model_output = model(
@@ -278,12 +281,13 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
         cfg_drop_dino_patches=drop_dino_patches_mask,
         pose_kpts=pose_kpts,
         cfg_drop_pose=drop_pose,
-        return_repa_hidden=use_repa,
+        return_repa_hidden=return_extended,
         tread_enabled=tread_enabled,
         maskdit_enabled=use_maskdit,
     )
     
-    if use_repa:
+    maskdit_info = None
+    if return_extended:
         v_pred, repa_hidden, tread_visible_idx, maskdit_info = model_output
     else:
         v_pred = model_output
@@ -329,7 +333,7 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     
     # MaskDiT: auxiliary MAE reconstruction loss on masked token positions
     mae_loss = None
-    if use_maskdit and use_repa and maskdit_info is not None:
+    if use_maskdit and maskdit_info is not None:
         masked_idx = maskdit_info['masked_idx']
         # v_pred is the full spatial output (B, C, H, W) — patchify to compare masked tokens
         ps = getattr(model, 'patch_size', 16)
@@ -702,7 +706,10 @@ class Trainer:
         if is_accumulation_step:
             # Gradient clipping (unscale first if using GradScaler)
             if grad_scaler is not None:
-                grad_scaler.unscale_(self.optimizer_adam or self.optimizer_muon)
+                if self.optimizer_muon is not None:
+                    grad_scaler.unscale_(self.optimizer_muon)
+                if self.optimizer_adam is not None:
+                    grad_scaler.unscale_(self.optimizer_adam)
             grad_norm = clip_grad_norm_(self.model.parameters(), self.grad_clip).item()
             
             # Apply LR and step all optimizers

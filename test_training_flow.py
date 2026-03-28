@@ -53,7 +53,7 @@ print("\n" + "="*60)
 print("RUNNING TRAINING STEP (no REPA)")
 print("="*60)
 
-loss, v_pred, repa_loss, lpips_loss = flow_matching_loss(
+loss, v_pred, repa_loss, lpips_loss, mae_loss = flow_matching_loss(
     model, x0, dino_emb, dino_patches, text_emb, text_mask,
     cfg_probs, return_v_pred=True
 )
@@ -254,7 +254,7 @@ model_tread_repa = NanoDiT(
 )
 
 model_tread_repa.train()
-v_pred_tr, repa_hidden_tr, visible_idx_tr = model_tread_repa(
+v_pred_tr, repa_hidden_tr, visible_idx_tr, maskdit_info_tr = model_tread_repa(
     x0, torch.rand(B), dino_emb, text_emb, dino_patches_repa, text_mask,
     dino_patches_mask=dino_patches_mask, return_repa_hidden=True, tread_enabled=True,
 )
