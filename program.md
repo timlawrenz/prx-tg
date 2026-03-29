@@ -1,47 +1,119 @@
-# autoresearch — DiT Experiment Program
+# autoresearch — Multi-Phase Tournament for DiT Training
 
-You are an autonomous researcher optimizing a DiT (Diffusion Transformer) image generation model on a single RTX 2070 SUPER (8GB VRAM). Your goal: find the config that achieves the **lowest validation loss** within a fixed training time budget.
+You are an autonomous researcher optimizing a DiT (Diffusion Transformer) image generation model on a single RTX 2070 SUPER (8GB VRAM). Your goal: find the config that produces the **best image quality** through progressive tournament phases.
+
+## Multi-Phase Tournament Strategy
+
+Each phase trains for a fixed **step budget**, not a time budget. This keeps validation deterministic — every experiment gets the same number of training steps regardless of throughput differences.
+
+```
+Phase A → N experiments from scratch (val_loss)           → best checkpoint
+Phase B → N experiments from A's best (reconstruction_lpips) → best checkpoint
+Phase C → N experiments from B's best (reconstruction_lpips) → best checkpoint
+...
+```
+
+Every phase after A **resumes from the previous phase's best checkpoint**. Breadth stays the same — run just as many experiments in Phase B as Phase A.
+
+### Why step budget?
+
+- Validation (LPIPS) runs at fixed step intervals — step budget ensures it actually fires
+- Different configs have different throughput — time budget means some get more steps, confounding results
+- Step budget = comparable experiments
+
+### Metric evolution
+
+- **Phase A**: `val_loss` (flow matching loss). Fast, good proxy for convergence speed. LPIPS is meaningless this early.
+- **Phase B+**: `reconstruction_lpips` (lower = better). Measures actual generated image quality via LPIPS between generated and ground-truth. Only meaningful after Phase A's worth of training.
 
 ## Setup
 
-1. **Verify the branch**: `git checkout -b autoresearch/<tag>` from current branch.
-2. **Read context**: Skim `production/config_turbo.yaml` to understand the current config.
-3. **Run baseline**: Establish reference val_loss:
-   ```
-   python scripts/autoresearch.py baseline --base-config production/config_turbo.yaml --time-budget 15
-   ```
-4. **Check results**: `python scripts/autoresearch.py results`
-5. **Confirm and go**.
+1. **Branch**: `git checkout -b autoresearch/<tag>` from current branch.
+2. **Read config**: Skim `production/config_turbo_2070.yaml` to understand current settings.
+3. **Start Phase A**.
 
-## Running Experiments
+## Phase A: Explore from Scratch
 
+### Run baseline
 ```bash
-python scripts/autoresearch.py run \
-    --base-config production/config_turbo.yaml \
-    --changes "training.maskdit.mask_ratio=0.8" \
-    --description "increase mask ratio from 0.75 to 0.8" \
-    --time-budget 15
+python scripts/autoresearch.py baseline --phase A \
+    --base-config production/config_turbo_2070.yaml \
+    --step-budget 1500
 ```
 
-The script automatically:
-- Creates a temporary config with your changes
-- Auto-tunes throughput (batch_size, grad_accum) for this specific config
-- Trains for the time budget
-- Evaluates validation loss
-- Reports keep/discard
+### Run experiments
+```bash
+python scripts/autoresearch.py run --phase A \
+    --base-config production/config_turbo_2070.yaml \
+    --changes "training.optimizer.lr=1e-4" \
+    --description "lower LR to 1e-4" \
+    --step-budget 1500
+```
 
-### Output format
+### Check results
+```bash
+python scripts/autoresearch.py results --phase A
+```
 
+### Transition to Phase B
+```bash
+# Find Phase A's best checkpoint
+python scripts/autoresearch.py best-checkpoint --phase A
+# Output:
+# ---
+# checkpoint: experiments/2026-03-29_1800/checkpoints/checkpoint_final.pt
+# ---
+```
+
+## Phase B+: Exploit from Best Checkpoint
+
+### Run baseline (from Phase A's best)
+```bash
+python scripts/autoresearch.py baseline --phase B \
+    --base-config production/config_turbo_2070.yaml \
+    --resume-from experiments/.../checkpoints/checkpoint_final.pt \
+    --step-budget 1500 \
+    --metric reconstruction_lpips
+```
+
+### Run experiments
+```bash
+python scripts/autoresearch.py run --phase B \
+    --base-config production/config_turbo_2070.yaml \
+    --resume-from experiments/.../checkpoints/checkpoint_final.pt \
+    --changes "training.maskdit.mask_ratio=0.8" \
+    --description "higher masking" \
+    --step-budget 1500 \
+    --metric reconstruction_lpips
+```
+
+### Transition to Phase C
+```bash
+python scripts/autoresearch.py best-checkpoint --phase B --metric reconstruction_lpips
+# Use the checkpoint path for Phase C's --resume-from
+```
+
+## Output Format
+
+Every `run` and `baseline` prints structured output:
 ```
 ---
+phase: A
 val_loss: 0.452300
+reconstruction_lpips: 0.6821
+text_only_lpips: 0.7234
 peak_vram_gb: 6.2
 status: keep
-description: increase mask ratio from 0.75 to 0.8
+checkpoint: experiments/2026-03-29_1800/checkpoints/checkpoint_final.pt
+description: lower LR to 1e-4
 ---
 ```
 
-## What you CAN change
+`status: keep` = this experiment beat the current best for this phase.
+`status: discard` = no improvement.
+`status: crash` = OOM or other failure.
+
+## What You CAN Change
 
 Only config YAML values. Do NOT modify Python files.
 
@@ -74,7 +146,7 @@ Only config YAML values. Do NOT modify Python files.
 
 | Knob | Path | Current | Notes |
 |------|------|---------|-------|
-| REPA weight | `training.repa.weight` | 0.5 | Alignment loss (if enabled) |
+| REPA weight | `training.repa.weight` | 0.5 | Alignment loss |
 | MAE loss weight | `training.maskdit.mae_loss_weight` | 0.1 | Masked reconstruction |
 | GaLore scale | `training.galore.scale` | 0.25 | Gradient projection scaling |
 | GaLore rank | `training.galore.rank` | 128 | Low-rank dimension |
@@ -83,46 +155,56 @@ Only config YAML values. Do NOT modify Python files.
 
 | Knob | Path | Current | Notes |
 |------|------|---------|-------|
-| MaskDiT decoder depth | `training.maskdit.decoder_depth` | 4 | 2-8, affects reconstruction quality |
-| MLP ratio | `model.mlp_ratio` | 4.0 | 2.0-8.0, affects model capacity |
+| MaskDiT decoder depth | `training.maskdit.decoder_depth` | 4 | 2-8 |
+| MLP ratio | `model.mlp_ratio` | 4.0 | 2.0-8.0, affects capacity |
 | Prediction type | `model.prediction_type` | x_prediction | Try v_prediction |
-| Gradient checkpointing | `training.gradient_checkpointing` | true | false = faster but more VRAM |
+| Gradient checkpointing | `training.gradient_checkpointing` | true | false = faster, more VRAM |
 
-## What you CANNOT change
+## What You CANNOT Change
 
 - Python files (model.py, train.py, etc.)
 - Data pipeline or augmentation
-- The evaluation metric (validation flow matching loss)
 - Install new packages
 
 ## Constraints
 
-- **8GB VRAM** — the auto-tuner handles batch sizing, but architectural changes that increase memory (e.g., deeper MaskDiT decoder, larger MLP ratio) may cause OOM
+- **8GB VRAM** — auto-tuner handles batch sizing, but architecture changes may OOM
 - **Single GPU** — no distributed training
 - **float16 only** — RTX 2070 doesn't support bfloat16
 
-## Strategy Suggestions
+## Strategy
 
-1. **Start with learning rate**: Try 1e-4, 5e-4, 1e-3. LR is almost always the highest-impact knob.
-2. **One change at a time**: Isolate the effect of each change.
-3. **Combine winners**: After finding individual improvements, try combining them.
-4. **Diminishing returns**: After 3-5 experiments with no improvement, try a more radical change.
+1. **Phase A — learning rate sweep first**: Try 1e-4, 5e-4, 1e-3. LR is almost always highest-impact.
+2. **One change at a time**: Isolate effects.
+3. **Combine winners**: After Phase A, the winning config becomes the baseline for Phase B.
+4. **Diminishing returns**: After 3-5 experiments with no improvement in a phase, move to the next phase.
 5. **Known interactions**:
-   - Higher mask_ratio → trains faster per step but may need more steps → adjust time budget
-   - Higher TREAD routing → faster but routes more tokens around blocks → may hurt quality
-   - Enabling `training.compile=true` gives 20-40% speedup but adds JIT warmup time
+   - Higher mask_ratio → faster per step but may need more steps
+   - Higher TREAD routing → faster but routes more tokens → may hurt quality
+   - `training.compile=true` gives 20-40% speedup but adds JIT warmup
 
 ## The Experiment Loop
 
+Within each phase:
+
+```
 LOOP FOREVER:
-
-1. Review results.tsv — what worked, what didn't
+1. Review results: python scripts/autoresearch.py results --phase <current>
 2. Propose a config change based on your analysis
-3. Run the experiment via `scripts/autoresearch.py run`
-4. Read the structured output (`---` block)
-5. If `status: keep` — good, record the insight and build on it
-6. If `status: discard` — the change didn't help, try something else
-7. If `status: crash` — check if it's OOM (reduce model size) or a bug (skip this direction)
-8. Repeat
+3. Run the experiment via scripts/autoresearch.py run --phase <current> ...
+4. Read the structured output (--- block)
+5. If keep → record insight, build on it
+6. If discard → try something else
+7. If crash → check OOM (reduce model size) or bug (skip direction)
+8. After 3-5 consecutive discards with no new insight → transition to next phase
+9. Repeat
+```
 
-**NEVER STOP**: Do not pause to ask the human. They may be asleep. Run experiments indefinitely until manually interrupted. If you run out of ideas, re-read this file, try combining previous near-misses, or try more radical changes.
+When transitioning phases:
+```
+1. python scripts/autoresearch.py best-checkpoint --phase <current>
+2. Use the checkpoint path as --resume-from for the next phase
+3. Switch --metric to reconstruction_lpips for Phase B+
+```
+
+**NEVER STOP**: Do not pause to ask the human. They may be asleep. Run experiments indefinitely until manually interrupted.
