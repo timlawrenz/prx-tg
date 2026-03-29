@@ -158,6 +158,8 @@ class TrainingConfig:
     gradient_checkpointing: bool = False
     mixed_precision: bool = True
     precision: Literal["float32", "bfloat16", "float16"] = "bfloat16"
+    compile: bool = False  # torch.compile the model for ~20-40% speedup
+    time_budget_minutes: float = 0  # 0 = disabled, >0 = stop after N minutes
     
     resolution_schedule: List = field(default_factory=list)  # List of {until_step, scale} dicts
     

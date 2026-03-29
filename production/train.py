@@ -1,5 +1,6 @@
 """Training loop for Nano DiT validation."""
 
+import gc
 import math
 import time
 import torch
@@ -353,6 +354,66 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     if return_v_pred:
         return loss, v_pred, repa_loss, lpips_loss, mae_loss
     return loss
+
+
+@torch.no_grad()
+def evaluate_val_loss(model, dataloader, config, device, num_batches=50):
+    """Compute mean flow matching loss on validation data (forward-only, no grad).
+    
+    Used by autoresearch as the experiment fitness metric.
+    Returns a dict with val_loss and num_samples.
+    """
+    model.eval()
+    training = config.training
+    
+    cfg_probs = training.cfg_dropout.to_dict()
+    tread_cfg = training.tread if training.tread.enabled else None
+    maskdit_cfg = training.maskdit if training.maskdit.enabled else None
+    
+    amp_dtype = None
+    if training.mixed_precision:
+        amp_dtype = torch.float16 if training.precision == "float16" else torch.bfloat16
+    use_amp = amp_dtype is not None
+    
+    total_loss = 0.0
+    count = 0
+    data_iter = iter(dataloader)
+    
+    for _ in range(num_batches):
+        try:
+            batch = next(data_iter)
+        except StopIteration:
+            data_iter = iter(dataloader)
+            batch = next(data_iter)
+        
+        x0 = batch['image_data'].to(device)
+        dino_emb = batch['dino_embedding'].to(device)
+        dino_patches = batch['dinov3_patches'].to(device)
+        text_emb = batch['t5_hidden'].to(device)
+        text_mask = batch['t5_mask'].to(device)
+        dino_patches_mask = batch.get('dinov3_patches_mask')
+        if dino_patches_mask is not None:
+            dino_patches_mask = dino_patches_mask.to(device)
+        pose_kpts = batch['pose_keypoints'].to(device)
+        
+        ctx = torch.amp.autocast('cuda', enabled=use_amp,
+                                  dtype=amp_dtype if use_amp else torch.float32)
+        with ctx:
+            loss = flow_matching_loss(
+                model, x0, dino_emb, dino_patches, text_emb, text_mask,
+                cfg_probs=cfg_probs,
+                dino_patches_mask=dino_patches_mask,
+                pose_kpts=pose_kpts,
+                return_v_pred=False,
+                tread_config=tread_cfg,
+                maskdit_config=maskdit_cfg,
+            )
+        
+        total_loss += loss.item() * x0.shape[0]
+        count += x0.shape[0]
+    
+    model.train()
+    return {'val_loss': total_loss / max(count, 1), 'num_samples': count}
 
 
 class EMAModel:
@@ -932,12 +993,21 @@ class Trainer:
         print(f"Peak LR: {self.peak_lr}, Min LR: {self.min_lr}")
         print(f"CFG probs: {self.cfg_probs}")
         
+        # Time budget support
+        time_budget = getattr(self, '_time_budget_seconds', 0)
+        if time_budget > 0:
+            print(f"Time budget: {time_budget / 60:.0f} minutes")
+        
         pbar = tqdm(total=self.total_steps, initial=self.step, desc='Training')
         
         data_iter = iter(self.dataloader)
         
         accum_loss = 0.0
         _last_step_time = time.monotonic()
+        _training_start = time.monotonic()
+        _gc_frozen = False
+        _timing_warmup = 10  # skip first N steps for torch.compile warmup
+        _total_training_time = 0.0
         
         while self.step < self.total_steps:
             # Update resolution schedule if configured
@@ -963,8 +1033,19 @@ class Trainer:
             if is_step:
                 self.step += 1
                 
-                # Throughput tracking
+                # GC management: freeze after warmup to avoid ~500ms stalls
+                if not _gc_frozen and self.step > _timing_warmup:
+                    gc.collect()
+                    gc.freeze()
+                    gc.disable()
+                    _gc_frozen = True
+                
+                # Track wall-clock training time (exclude warmup steps)
                 now = time.monotonic()
+                if self.step > _timing_warmup:
+                    _total_training_time += now - _last_step_time
+                
+                # Throughput tracking
                 metrics['iter_per_sec'] = 1.0 / max(now - _last_step_time, 1e-6)
                 _last_step_time = now
                 
@@ -980,6 +1061,13 @@ class Trainer:
                         'grad': f"{metrics['grad_norm']:.2f}",
                         'lr': f"{metrics['lr']:.2e}",
                     })
+                
+                # Periodic GC (prevent unbounded growth)
+                if _gc_frozen and self.step % 5000 == 0:
+                    gc.enable()
+                    gc.collect()
+                    gc.freeze()
+                    gc.disable()
                 
                 # Visual debugging (more frequent than full validation)
                 if visual_debug_fn is not None:
@@ -1003,8 +1091,21 @@ class Trainer:
                         self.model.train()
                 
                 pbar.update(1)
+                
+                # Time budget: stop after N minutes of training
+                if time_budget > 0 and self.step > _timing_warmup and _total_training_time >= time_budget:
+                    print(f"\n  Time budget reached ({_total_training_time / 60:.1f} min). Stopping training.")
+                    break
         
         pbar.close()
+        
+        # Re-enable GC
+        if _gc_frozen:
+            gc.enable()
+        
+        # Store timing info for autoresearch
+        self._total_training_time = _total_training_time
+        self._final_loss = metrics.get('loss', float('inf'))
         
         # Final checkpoint
         self.save_checkpoint(self.checkpoint_dir / 'checkpoint_final.pt')
@@ -1073,6 +1174,9 @@ class ProductionTrainer(Trainer):
         # Visual debugging interval
         self.visual_debug_interval = config.validation.visual_debug_interval
         
+        # Time budget (for autoresearch experiments)
+        self._time_budget_seconds = training.time_budget_minutes * 60 if training.time_budget_minutes > 0 else 0
+        
         # REPA config
         self.repa_config = training.repa if training.repa.enabled else None
         
@@ -1103,6 +1207,12 @@ class ProductionTrainer(Trainer):
         # Resolution schedule
         self.resolution_phases = training.get_resolution_phases()
         self._current_resolution_scale = None  # Will be set on first step
+        
+        # torch.compile
+        if training.compile:
+            print("  Compiling model with torch.compile(dynamic=True)...")
+            self.model = torch.compile(self.model, dynamic=True)
+            print("  Model compiled (first few steps will be slow due to JIT warmup)")
         
         # Perceptual loss (LPIPS)
         if training.perceptual.enabled:

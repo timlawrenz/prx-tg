@@ -556,6 +556,64 @@ def write_tuned_config(results: dict, config, config_path: str, output_path: str
 
 
 # ---------------------------------------------------------------------------
+# Python API (for use by autoresearch.py)
+# ---------------------------------------------------------------------------
+
+def quick_tune(config, device, generations=2, population=4, warmup_steps=2, timed_steps=4):
+    """Fast auto-tune for use inside the experiment loop.
+    
+    Returns dict mapping each resolution phase to its optimal config:
+    {scale: {'batch_size': int, 'grad_accumulation_steps': int, 'samples_per_sec': float}}
+    
+    Default params (~2 min total) find good-enough throughput settings.
+    """
+    tuner = AutoTuner(config, device,
+                      pop_size=population, generations=generations,
+                      warmup_steps=warmup_steps, timed_steps=timed_steps)
+    raw_results = tuner.tune_all()
+    
+    # Convert to simple dict
+    effective_batch = config.training.batch_size * config.training.grad_accumulation_steps
+    out = {}
+    for scale, result in raw_results.items():
+        if result.oom or result.samples_per_sec == 0:
+            out[scale] = {'batch_size': 1, 'grad_accumulation_steps': effective_batch,
+                          'samples_per_sec': 0.0}
+        else:
+            bs = result.candidate.batch_size
+            ga = max(1, effective_batch // bs)
+            out[scale] = {'batch_size': bs, 'grad_accumulation_steps': ga,
+                          'samples_per_sec': result.samples_per_sec}
+    return out
+
+
+def apply_tune_results(config_path, tune_results, output_path=None):
+    """Apply quick_tune() results to a config YAML. Returns the output path."""
+    with open(config_path) as f:
+        raw = yaml.safe_load(f)
+    
+    from production.config_loader import load_config
+    config = load_config(config_path)
+    phases = config.training.get_resolution_phases()
+    
+    tuned_schedule = []
+    for phase in phases:
+        entry = {'until_step': phase.until_step, 'scale': phase.scale}
+        r = tune_results.get(phase.scale)
+        if r:
+            entry['batch_size'] = r['batch_size']
+            entry['grad_accumulation_steps'] = r['grad_accumulation_steps']
+        tuned_schedule.append(entry)
+    
+    raw.setdefault('training', {})['resolution_schedule'] = tuned_schedule
+    
+    out = output_path or config_path
+    with open(out, 'w') as f:
+        yaml.dump(raw, f, default_flow_style=False, sort_keys=False)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
