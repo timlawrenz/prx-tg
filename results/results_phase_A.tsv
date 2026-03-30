@@ -1,0 +1,2 @@
+commit	val_loss	reconstruction_lpips	text_only_lpips	samp_per_sec	peak_vram_gb	status	description	checkpoint_path
+f26b447	2.364697	1.1714	0.6822	59.2	5.5	keep	baseline	experiments/2026-03-29_1348/checkpoints/checkpoint_final.pt

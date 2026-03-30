@@ -288,7 +288,7 @@ def extract_lpips_from_experiment(experiment_dir):
         return {'reconstruction_lpips': None, 'text_only_lpips': None}
 
 
-def evaluate_val_loss_standalone(config_path, device='cuda:0'):
+def evaluate_val_loss_standalone(config_path, device='cuda:0', experiment_dir=None):
     """Load the model from training and compute validation loss."""
     import torch
     from production.config_loader import load_config
@@ -298,7 +298,7 @@ def evaluate_val_loss_standalone(config_path, device='cuda:0'):
     config = load_config(config_path)
     dev = torch.device(device)
 
-    ckpt_path = find_checkpoint(config_path=config_path)
+    ckpt_path = find_checkpoint(experiment_dir=experiment_dir, config_path=config_path)
     if not ckpt_path:
         print("  No checkpoint found — cannot evaluate")
         return None
@@ -323,18 +323,17 @@ def evaluate_val_loss_standalone(config_path, device='cuda:0'):
         maskdit_decoder_depth=tc.maskdit.decoder_depth,
     ).to(dev)
 
-    if 'ema_state_dict' in ckpt:
+    if 'ema' in ckpt:
+        model.load_state_dict(ckpt['ema'], strict=False)
+    elif 'ema_state_dict' in ckpt:
         model.load_state_dict(ckpt['ema_state_dict'], strict=False)
+    elif 'model' in ckpt:
+        model.load_state_dict(ckpt['model'], strict=False)
     elif 'model_state_dict' in ckpt:
         model.load_state_dict(ckpt['model_state_dict'], strict=False)
 
-    from production.data import BucketAwareDataLoader
-    dataloader = BucketAwareDataLoader(
-        shard_base_dir=config.data.shard_base_dir,
-        bucket_configs=config.data.buckets,
-        batch_size=1,
-        horizontal_flip_prob=0.0,
-    )
+    from production.data import get_production_dataloader
+    dataloader = get_production_dataloader(config, device=device)
 
     result = evaluate_val_loss(model, dataloader, config, dev, num_batches=50)
     print(f"  Val loss: {result['val_loss']:.6f} ({result['num_samples']} samples)")
@@ -459,7 +458,7 @@ def _run_experiment(args, changes, description, is_baseline=False):
 
         # Fallback: evaluate val_loss standalone if not captured from training output
         if val_loss is None:
-            val_loss = evaluate_val_loss_standalone(str(exp_config), device=device)
+            val_loss = evaluate_val_loss_standalone(str(exp_config), device=device, experiment_dir=experiment_dir)
 
         # Extract LPIPS metrics from validation outputs
         lpips = extract_lpips_from_experiment(experiment_dir)
