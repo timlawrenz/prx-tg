@@ -62,19 +62,7 @@ training:
   mixed_precision: true
   precision: float16
   resolution_schedule:
-  - until_step: 1500
-    scale: 0.125
-    batch_size: 16
-    grad_accumulation_steps: 16
-  - until_step: 3500
-    scale: 0.25
-    batch_size: 8
-    grad_accumulation_steps: 32
-  - until_step: 5000
-    scale: 0.5
-    batch_size: 4
-    grad_accumulation_steps: 64
-  - until_step: 6000
+  - until_step: 999999
     scale: 0.75
     batch_size: 2
     grad_accumulation_steps: 128

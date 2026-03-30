@@ -38,7 +38,7 @@ Every phase after A **resumes from the previous phase's best checkpoint**. Bread
 ```bash
 python scripts/autoresearch.py baseline --phase A \
     --base-config production/config_turbo_2070.yaml \
-    --step-budget 1500
+    --step-budget 500
 ```
 
 ### Run experiments
@@ -47,7 +47,7 @@ python scripts/autoresearch.py run --phase A \
     --base-config production/config_turbo_2070.yaml \
     --changes "training.optimizer.lr=1e-4" \
     --description "lower LR to 1e-4" \
-    --step-budget 1500
+    --step-budget 500
 ```
 
 ### Check results
@@ -72,7 +72,7 @@ python scripts/autoresearch.py best-checkpoint --phase A
 python scripts/autoresearch.py baseline --phase B \
     --base-config production/config_turbo_2070.yaml \
     --resume-from experiments/.../checkpoints/checkpoint_final.pt \
-    --step-budget 1500 \
+    --step-budget 500 \
     --metric reconstruction_lpips
 ```
 
@@ -83,7 +83,7 @@ python scripts/autoresearch.py run --phase B \
     --resume-from experiments/.../checkpoints/checkpoint_final.pt \
     --changes "training.maskdit.mask_ratio=0.8" \
     --description "higher masking" \
-    --step-budget 1500 \
+    --step-budget 500 \
     --metric reconstruction_lpips
 ```
 
