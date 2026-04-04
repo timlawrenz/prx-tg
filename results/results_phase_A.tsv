@@ -1,0 +1,11 @@
+commit	val_loss	reconstruction_lpips	text_only_lpips	samp_per_sec	peak_vram_gb	status	description	checkpoint_path
+cc93735	0.452768			3.9	5.5	keep	baseline	experiments/2026-03-30_0910/checkpoints/checkpoint_final.pt
+cc93735	0.732619			3.9	5.5	discard	LR 1e-4	experiments/2026-03-30_1955/checkpoints/checkpoint_final.pt
+cc93735	0.351433			3.9	5.5	keep	LR 5e-4	experiments/2026-03-31_0644/checkpoints/checkpoint_final.pt
+cc93735	0.307200			3.9	5.5	keep	LR 1e-3	experiments/2026-03-31_1730/checkpoints/checkpoint_final.pt
+cc93735	0.266500			3.9	5.5	keep	LR 2e-3	experiments/2026-04-01_0411/checkpoints/checkpoint_final.pt
+cc93735	0.261000			3.9	5.5	keep	LR 4e-3	experiments/2026-04-01_1447/checkpoints/checkpoint_final.pt
+cc93735				0.0	5.5	crash	LR 4e-3 + warmup 200 (parse bug)	
+cc93735	0.238800			4.9	6.6	keep	LR 4e-3 + warmup 200	experiments/2026-04-02_0153/checkpoints/checkpoint_final.pt
+cc93735	0.243300			3.9	5.5	discard	LR 4e-3 + warmup 100	experiments/2026-04-02_1122/checkpoints/checkpoint_final.pt
+cc93735	0.236900			3.9	5.5	keep	LR4e3+wu200+wd0.01	experiments/2026-04-02_2258/checkpoints/checkpoint_final.pt
