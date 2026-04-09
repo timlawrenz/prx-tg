@@ -8,3 +8,5 @@ diffusers==0.30.3  # Pinned: 0.36.0+ has torchao logger bug that breaks Autoenco
 transformers>=4.38.0
 tensorboard>=2.15.0
 pyyaml>=6.0.0
+sentry-sdk>=2.35.0
+python-dotenv>=1.0.0

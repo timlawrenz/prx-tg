@@ -7,6 +7,7 @@ Usage:
 """
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -14,12 +15,16 @@ import shutil
 import json
 import subprocess
 
+import sentry_sdk
 import torch
 
 from .config_loader import load_config
 from .model import NanoDiT
 from .data import get_production_dataloader
+from .sentry_setup import init_sentry
 from .train import ProductionTrainer
+
+log = logging.getLogger(__name__)
 
 
 def parse_args():
@@ -203,6 +208,8 @@ def create_experiment_dir(config_path, resume_path=None):
 
 def main():
     """Main training function."""
+    init_sentry()
+
     args = parse_args()
     
     # When resuming, auto-load config from the experiment directory
@@ -243,6 +250,19 @@ def main():
         print("Using device: CPU")
     
     print_config_summary(config)
+    
+    # Set Sentry context for all events in this training run
+    sentry_sdk.set_tag("experiment", experiment_dir.name)
+    sentry_sdk.set_tag("device", str(device))
+    sentry_sdk.set_tag("config", Path(args.config).name)
+    sentry_sdk.set_context("training", {
+        "total_steps": config.training.total_steps,
+        "batch_size": config.training.batch_size,
+        "learning_rate": config.training.optimizer.lr,
+        "model_depth": config.model.depth,
+        "model_hidden_size": config.model.hidden_size,
+        "precision": config.training.precision,
+    })
     
     # Override config paths to use experiment directory
     config.checkpoint.output_dir = str(experiment_dir / 'checkpoints')
@@ -398,6 +418,7 @@ def main():
         trainer.load_checkpoint(args.resume)
     
     # Train
+    log.info("Starting training run: %s", experiment_dir.name)
     print("\nStarting training...\n")
     try:
         trainer.train(
@@ -413,6 +434,8 @@ def main():
         print(f"Checkpoint saved to: {config.checkpoint.output_dir}/checkpoint_interrupt.pt")
         print("You can resume with: --resume checkpoints/checkpoint_interrupt.pt")
     except Exception as e:
+        log.error("Training failed at step %d: %s", trainer.step, e, exc_info=True)
+        sentry_sdk.capture_exception(e)
         print(f"\nTraining failed with error: {e}")
         raise
     else:
@@ -420,9 +443,11 @@ def main():
         trainer.save_checkpoint(
             Path(config.checkpoint.output_dir) / 'checkpoint_final.pt'
         )
+        log.info("Training complete at step %d", trainer.step)
         print("Training complete!")
     finally:
         print_gpu_memory(device)
+        sentry_sdk.flush(timeout=10)
 
 
 if __name__ == "__main__":

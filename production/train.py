@@ -13,6 +13,8 @@ import json
 import random
 import numpy as np
 
+import sentry_sdk
+
 
 class PerceptualLossModule:
     """Computes LPIPS perceptual loss on VAE-decoded latent crops.
@@ -1008,94 +1010,112 @@ class Trainer:
         _gc_frozen = False
         _timing_warmup = 10  # skip first N steps for torch.compile warmup
         _total_training_time = 0.0
+        metrics = {}
         
-        while self.step < self.total_steps:
-            # Update resolution schedule if configured
-            self._update_resolution_schedule()
-            
-            # Reload data iterator if resolution phase changed batch_size
-            if getattr(self, '_needs_data_reload', False):
-                data_iter = iter(self.dataloader)
-                self._needs_data_reload = False
-            
-            # Get batch
-            try:
-                batch = next(data_iter)
-            except StopIteration:
-                self.epoch += 1
-                data_iter = iter(self.dataloader)
-                batch = next(data_iter)
-            
-            # Training step
-            metrics, is_step = self.train_step(batch)
-            accum_loss += metrics['loss']
-            
-            if is_step:
-                self.step += 1
+        with sentry_sdk.start_transaction(op="train", name="Training Run") as txn:
+            txn.set_data("training.total_steps", self.total_steps)
+            txn.set_data("training.start_step", self.step)
+
+            while self.step < self.total_steps:
+                # Update resolution schedule if configured
+                self._update_resolution_schedule()
                 
-                # GC management: freeze after warmup to avoid ~500ms stalls
-                if not _gc_frozen and self.step > _timing_warmup:
-                    gc.collect()
-                    gc.freeze()
-                    gc.disable()
-                    _gc_frozen = True
+                # Reload data iterator if resolution phase changed batch_size
+                if getattr(self, '_needs_data_reload', False):
+                    data_iter = iter(self.dataloader)
+                    self._needs_data_reload = False
                 
-                # Track wall-clock training time (exclude warmup steps)
-                now = time.monotonic()
-                if self.step > _timing_warmup:
-                    _total_training_time += now - _last_step_time
+                # Get batch
+                try:
+                    batch = next(data_iter)
+                except StopIteration:
+                    self.epoch += 1
+                    data_iter = iter(self.dataloader)
+                    batch = next(data_iter)
                 
-                # Throughput tracking
-                metrics['iter_per_sec'] = 1.0 / max(now - _last_step_time, 1e-6)
-                _last_step_time = now
+                # Training step (span only on optimizer steps to avoid hot-loop overhead)
+                metrics, is_step = self.train_step(batch)
+                accum_loss += metrics['loss']
                 
-                # Average loss over accumulation steps
-                metrics['loss'] = accum_loss / self.grad_accumulation_steps
-                accum_loss = 0.0
-                
-                # Logging
-                if self.step % self.log_every == 0:
-                    self.log(metrics)
-                    pbar.set_postfix({
-                        'loss': f"{metrics['loss']:.4f}",
-                        'grad': f"{metrics['grad_norm']:.2f}",
-                        'lr': f"{metrics['lr']:.2e}",
-                    })
-                
-                # Periodic GC (prevent unbounded growth)
-                if _gc_frozen and self.step % 5000 == 0:
-                    gc.enable()
-                    gc.collect()
-                    gc.freeze()
-                    gc.disable()
-                
-                # Visual debugging (more frequent than full validation)
-                if visual_debug_fn is not None:
-                    # Check if visual_debug_interval is configured (ProductionTrainer only)
-                    interval = getattr(self, 'visual_debug_interval', 0)
-                    if interval > 0 and self.step % interval == 0:
-                        visual_debug_fn(self.ema.model if self.ema else self.model, self.step)
-                
-                # Checkpointing
-                if self.step % self.checkpoint_every == 0:
-                    self.save_checkpoint()
+                if is_step:
+                    self.step += 1
                     
-                    # Run validation if provided
-                    if validate_fn is not None:
-                        # Free training memory before validation
-                        torch.cuda.empty_cache()
-                        validate_fn(self.model, self.ema, self.step, self.device)
-                        # Clean up after validation
-                        torch.cuda.empty_cache()
-                        # Put model back in train mode
-                        self.model.train()
-                
-                pbar.update(1)
-                
-                # Time budget: stop after N minutes of training
-                if time_budget > 0 and self.step > _timing_warmup and _total_training_time >= time_budget:
-                    print(f"\n  Time budget reached ({_total_training_time / 60:.1f} min). Stopping training.")
-                    break
+                    # GC management: freeze after warmup to avoid ~500ms stalls
+                    if not _gc_frozen and self.step > _timing_warmup:
+                        gc.collect()
+                        gc.freeze()
+                        gc.disable()
+                        _gc_frozen = True
+                    
+                    # Track wall-clock training time (exclude warmup steps)
+                    now = time.monotonic()
+                    if self.step > _timing_warmup:
+                        _total_training_time += now - _last_step_time
+                    
+                    # Throughput tracking
+                    metrics['iter_per_sec'] = 1.0 / max(now - _last_step_time, 1e-6)
+                    _last_step_time = now
+                    
+                    # Average loss over accumulation steps
+                    metrics['loss'] = accum_loss / self.grad_accumulation_steps
+                    accum_loss = 0.0
+                    
+                    # Logging (also emit a Sentry span with metrics at log intervals)
+                    if self.step % self.log_every == 0:
+                        with sentry_sdk.start_span(op="train.step", name=f"step_{self.step}") as step_span:
+                            step_span.set_data("training.step", self.step)
+                            step_span.set_data("training.loss", metrics['loss'])
+                            step_span.set_data("training.grad_norm", metrics.get('grad_norm', 0))
+                            step_span.set_data("training.lr", metrics.get('lr', 0))
+                            if 'velocity_norm' in metrics:
+                                step_span.set_data("training.velocity_norm", metrics['velocity_norm'])
+                        self.log(metrics)
+                        pbar.set_postfix({
+                            'loss': f"{metrics['loss']:.4f}",
+                            'grad': f"{metrics['grad_norm']:.2f}",
+                            'lr': f"{metrics['lr']:.2e}",
+                        })
+                    
+                    # Periodic GC (prevent unbounded growth)
+                    if _gc_frozen and self.step % 5000 == 0:
+                        gc.enable()
+                        gc.collect()
+                        gc.freeze()
+                        gc.disable()
+                    
+                    # Visual debugging (more frequent than full validation)
+                    if visual_debug_fn is not None:
+                        # Check if visual_debug_interval is configured (ProductionTrainer only)
+                        interval = getattr(self, 'visual_debug_interval', 0)
+                        if interval > 0 and self.step % interval == 0:
+                            visual_debug_fn(self.ema.model if self.ema else self.model, self.step)
+                    
+                    # Checkpointing
+                    if self.step % self.checkpoint_every == 0:
+                        with sentry_sdk.start_span(op="train.checkpoint", name="save_checkpoint"):
+                            self.save_checkpoint()
+                        
+                        # Run validation if provided
+                        if validate_fn is not None:
+                            with sentry_sdk.start_span(op="train.validation", name="validation") as val_span:
+                                val_span.set_data("training.step", self.step)
+                                # Free training memory before validation
+                                torch.cuda.empty_cache()
+                                validate_fn(self.model, self.ema, self.step, self.device)
+                                # Clean up after validation
+                                torch.cuda.empty_cache()
+                                # Put model back in train mode
+                                self.model.train()
+                    
+                    pbar.update(1)
+                    
+                    # Time budget: stop after N minutes of training
+                    if time_budget > 0 and self.step > _timing_warmup and _total_training_time >= time_budget:
+                        print(f"\n  Time budget reached ({_total_training_time / 60:.1f} min). Stopping training.")
+                        break
+
+            txn.set_data("training.final_step", self.step)
+            txn.set_data("training.final_loss", metrics.get('loss', float('inf')))
         
         pbar.close()
         
