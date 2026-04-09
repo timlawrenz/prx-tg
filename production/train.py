@@ -522,6 +522,7 @@ class Trainer:
         log_every=50,
         checkpoint_dir='checkpoints',
         optimizer_config=None,
+        fused_optimizer=False,
     ):
         """
         Args:
@@ -556,6 +557,10 @@ class Trainer:
         self.checkpoint_dir = Path(checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
+        # Throughput flags (defaults for base Trainer; ProductionTrainer overrides)
+        self.non_blocking = True
+        self.set_to_none = True
+        
         # CFG dropout probabilities
         self.cfg_probs = cfg_probs or {
             'p_uncond': 0.1,
@@ -566,6 +571,7 @@ class Trainer:
         
         # Optimizer setup
         self.optimizer_type = getattr(optimizer_config, 'type', 'AdamW') if optimizer_config else 'AdamW'
+        self.fused_optimizer = fused_optimizer
         self.optimizer_muon = None
         self.optimizer_adam = None
         
@@ -578,6 +584,7 @@ class Trainer:
                 betas=tuple(optimizer_config.betas) if optimizer_config else (0.9, 0.95),
                 weight_decay=weight_decay,
                 eps=optimizer_config.eps if optimizer_config else 1e-8,
+                fused=fused_optimizer and torch.cuda.is_available(),
             )
         
         # EMA
@@ -633,6 +640,7 @@ class Trainer:
                 betas=tuple(optimizer_config.betas),
                 weight_decay=weight_decay,
                 eps=optimizer_config.eps,
+                fused=self.fused_optimizer and torch.cuda.is_available(),
             )
         
         self._muon_param_count = sum(p.numel() for p in muon_params)
@@ -647,10 +655,11 @@ class Trainer:
     
     def _zero_grad_optimizers(self):
         """Zero gradients on all active optimizers."""
+        stn = self.set_to_none
         if self.optimizer_muon is not None:
-            self.optimizer_muon.zero_grad()
+            self.optimizer_muon.zero_grad(set_to_none=stn)
         if self.optimizer_adam is not None:
-            self.optimizer_adam.zero_grad()
+            self.optimizer_adam.zero_grad(set_to_none=stn)
     
     def _set_lr_optimizers(self, lr):
         """Set learning rate on all active optimizers."""
@@ -717,15 +726,16 @@ class Trainer:
         self.model.train()
         
         # Move batch to device
-        x0 = batch['image_data'].to(self.device)
-        dino_emb = batch['dino_embedding'].to(self.device)
-        dino_patches = batch['dinov3_patches'].to(self.device)
-        text_emb = batch['t5_hidden'].to(self.device)
-        text_mask = batch['t5_mask'].to(self.device)
+        nb = self.non_blocking
+        x0 = batch['image_data'].to(self.device, non_blocking=nb)
+        dino_emb = batch['dino_embedding'].to(self.device, non_blocking=nb)
+        dino_patches = batch['dinov3_patches'].to(self.device, non_blocking=nb)
+        text_emb = batch['t5_hidden'].to(self.device, non_blocking=nb)
+        text_mask = batch['t5_mask'].to(self.device, non_blocking=nb)
         dino_patches_mask = batch.get('dinov3_patches_mask')
         if dino_patches_mask is not None:
-            dino_patches_mask = dino_patches_mask.to(self.device)
-        pose_kpts = batch['pose_keypoints'].to(self.device)
+            dino_patches_mask = dino_patches_mask.to(self.device, non_blocking=nb)
+        pose_kpts = batch['pose_keypoints'].to(self.device, non_blocking=nb)
         
         # Determine autocast dtype
         amp_dtype = getattr(self, '_amp_dtype', None)
@@ -1107,6 +1117,18 @@ class Trainer:
         self._total_training_time = _total_training_time
         self._final_loss = metrics.get('loss', float('inf'))
         
+        # Print structured throughput results for experiment collection
+        if self.step > _timing_warmup:
+            avg_its = (self.step - _timing_warmup) / max(_total_training_time, 1e-6)
+            peak_vram = torch.cuda.max_memory_allocated() / (1024**3) if torch.cuda.is_available() else 0
+            print(f"\n--- THROUGHPUT RESULTS ---")
+            print(f"avg_iter_per_sec: {avg_its:.3f}")
+            print(f"peak_vram_gb: {peak_vram:.2f}")
+            print(f"final_loss: {metrics.get('loss', float('inf')):.6f}")
+            print(f"total_steps: {self.step}")
+            print(f"total_training_time_s: {_total_training_time:.1f}")
+            print(f"--- END THROUGHPUT RESULTS ---")
+        
         # Final checkpoint
         self.save_checkpoint(self.checkpoint_dir / 'checkpoint_final.pt')
         print("Training complete!")
@@ -1155,10 +1177,15 @@ class ProductionTrainer(Trainer):
             log_every=logging_cfg.log_every,
             checkpoint_dir=checkpoint_cfg.output_dir,
             optimizer_config=training.optimizer,
+            fused_optimizer=training.fused_optimizer,
         )
         
         # Store additional config for production features
         self.config = config
+        
+        # Throughput flags from config
+        self.non_blocking = training.non_blocking_transfer
+        self.set_to_none = training.set_to_none
         self.experiment_name = experiment_name or "default"
         self.ema_warmup_steps = training.ema_warmup_steps
         self.timestep_sampling = training.timestep_sampling
@@ -1208,10 +1235,20 @@ class ProductionTrainer(Trainer):
         self.resolution_phases = training.get_resolution_phases()
         self._current_resolution_scale = None  # Will be set on first step
         
+        # Throughput: runtime performance flags
+        if training.tf32_matmul:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            print("  TF32 matmul: enabled")
+        if training.cudnn_benchmark:
+            torch.backends.cudnn.benchmark = True
+            print("  cuDNN benchmark: enabled")
+        
         # torch.compile
         if training.compile:
-            print("  Compiling model with torch.compile(dynamic=True)...")
-            self.model = torch.compile(self.model, dynamic=True)
+            mode = training.compile_mode
+            print(f"  Compiling model with torch.compile(mode='{mode}')...")
+            self.model = torch.compile(self.model, mode=mode)
             print("  Model compiled (first few steps will be slow due to JIT warmup)")
         
         # Perceptual loss (LPIPS)

@@ -415,6 +415,115 @@ def get_deterministic_validation_dataloader(
     return dataset
 
 
+class VRAMResidentDataLoader:
+    """DataLoader that pre-loads the entire dataset into VRAM.
+
+    At init, iterates through all WebDataset shards and copies every tensor
+    to the GPU. During training, yields random batches by indexing into
+    VRAM-resident tensors — zero PCIe transfers per step.
+
+    IMPORTANT: This only works for datasets small enough to fit in VRAM.
+    For the faces7k dataset (7k images), this is feasible.
+    For the full 70k dataset, only the image latents would fit.
+    """
+
+    def __init__(self, bucket_datasets, device='cuda', batch_size=1):
+        """Load all data from per-bucket ValidationDataset objects into VRAM.
+
+        Args:
+            bucket_datasets: list of (ValidationDataset, weight) tuples
+            device: CUDA device
+            batch_size: batch size for yielding
+        """
+        self.device = device
+        self.batch_size = batch_size
+        self._resolution_scale = 1.0
+
+        # Collect all samples by iterating each bucket's WebDataset pipeline
+        # We create non-repeating, non-batched pipelines to get individual samples.
+        print("  Loading dataset into VRAM...")
+        all_samples = []
+        for ds, _weight in bucket_datasets:
+            shard_urls = [str(f) for f in ds.shard_files]
+            pipeline = (
+                wds.WebDataset(shard_urls, shardshuffle=False, handler=wds.warn_and_continue)
+                .decode(handler=wds.warn_and_continue)
+                .map(ds.process_sample, handler=wds.warn_and_continue)
+            )
+            for sample in pipeline:
+                all_samples.append(sample)
+
+        if not all_samples:
+            raise ValueError("No samples found in dataset")
+
+        n = len(all_samples)
+        print(f"  Loaded {n} samples from shards")
+
+        # Pad variable-length dinov3_patches to global max
+        max_patches = max(s['dinov3_patches'].shape[0] for s in all_samples)
+
+        # Determine which keys are tensors (skip caption, image_id)
+        self._tensor_keys = [
+            k for k, v in all_samples[0].items() if isinstance(v, torch.Tensor)
+        ]
+
+        # Stack tensors and transfer to VRAM
+        self._data = {}
+        total_bytes = 0
+        for key in self._tensor_keys:
+            if key == 'dinov3_patches':
+                # Pad each sample's patches to max_patches
+                padded = []
+                for s in all_samples:
+                    p = s[key]
+                    if p.shape[0] < max_patches:
+                        pad = torch.zeros(max_patches - p.shape[0], p.shape[1], dtype=p.dtype)
+                        p = torch.cat([p, pad], dim=0)
+                    padded.append(p)
+                stacked = torch.stack(padded)
+            else:
+                stacked = torch.stack([s[key] for s in all_samples])
+            self._data[key] = stacked.to(device)
+            total_bytes += self._data[key].nbytes
+
+        # Build dinov3_patches_mask from original lengths
+        patch_lengths = torch.tensor(
+            [s['dinov3_patches'].shape[0] for s in all_samples], device=device
+        )
+        mask = torch.arange(max_patches, device=device).unsqueeze(0) < patch_lengths.unsqueeze(1)
+        self._data['dinov3_patches_mask'] = mask.long()
+        total_bytes += self._data['dinov3_patches_mask'].nbytes
+
+        print(f"  VRAM dataset: {n} samples, {total_bytes / 1e9:.2f} GB")
+        self._n = n
+        self._indices = torch.arange(n, device=device)
+
+    @property
+    def resolution_scale(self):
+        return self._resolution_scale
+
+    @resolution_scale.setter
+    def resolution_scale(self, scale):
+        # Data is pre-scaled at load time; store for compatibility
+        self._resolution_scale = scale
+
+    def __iter__(self):
+        """Yield random batches from VRAM-resident data."""
+        perm = torch.randperm(self._n, device=self.device)
+
+        for i in range(0, self._n, self.batch_size):
+            idx = perm[i:i + self.batch_size]
+            if len(idx) < self.batch_size:
+                continue  # skip incomplete last batch
+            batch = {}
+            for key in self._data:
+                batch[key] = self._data[key][idx]
+            yield batch
+
+    def __len__(self):
+        return self._n // self.batch_size
+
+
 class BucketAwareDataLoader:
     """Sample whole batches from a single aspect-ratio bucket."""
 
@@ -515,8 +624,14 @@ def _bucket_target_pixel_size(bucket_name: str) -> tuple[int, int]:
     return (h_px, w_px)
 
 
-def get_production_dataloader(config, device='cuda'):
-    """Create production dataloader from config (bucket-aware, per-bucket target sizes)."""
+def get_production_dataloader(config, device='cuda', vram_dataset=False):
+    """Create production dataloader from config (bucket-aware, per-bucket target sizes).
+
+    Args:
+        config: Config object with data, training, and model sections.
+        device: CUDA device string.
+        vram_dataset: If True, pre-load entire dataset into VRAM for zero-copy training.
+    """
     from .config_loader import Config
 
     data_cfg = config.data
@@ -562,6 +677,13 @@ def get_production_dataloader(config, device='cuda'):
 
     if data_cfg.bucket_sampling == 'uniform':
         bucket_weights = [1.0 for _ in bucket_weights]
+
+    if vram_dataset:
+        return VRAMResidentDataLoader(
+            [(ds, w) for ds, w in zip(bucket_datasets.values(), bucket_weights)],
+            device=device,
+            batch_size=training_cfg.batch_size,
+        )
 
     return BucketAwareDataLoader(bucket_datasets, bucket_weights, pixel_space=pixel_space)
 

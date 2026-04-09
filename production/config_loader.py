@@ -159,7 +159,17 @@ class TrainingConfig:
     mixed_precision: bool = True
     precision: Literal["float32", "bfloat16", "float16"] = "bfloat16"
     compile: bool = False  # torch.compile the model for ~20-40% speedup
+    compile_mode: str = "default"  # "default", "reduce-overhead", or "max-autotune"
     time_budget_minutes: float = 0  # 0 = disabled, >0 = stop after N minutes
+
+    # Throughput optimization flags (trade VRAM / precision margin for speed)
+    tf32_matmul: bool = False       # torch.backends.cuda.matmul.allow_tf32
+    cudnn_benchmark: bool = False   # torch.backends.cudnn.benchmark
+    fused_optimizer: bool = False   # Use fused=True in AdamW (requires CUDA)
+    non_blocking_transfer: bool = True   # Use non_blocking=True for .to(device)
+    set_to_none: bool = True        # Use set_to_none=True in zero_grad
+    vram_dataset: bool = False      # Pre-load entire dataset into VRAM
+    cache_embeddings: bool = False  # Pre-cache positional/timestep embeddings in model
     
     resolution_schedule: List = field(default_factory=list)  # List of {until_step, scale} dicts
     

@@ -32,6 +32,10 @@ class TimestepEmbedder(nn.Module):
             nn.Linear(hidden_size, hidden_size, bias=True),
         )
         self.frequency_embedding_size = frequency_embedding_size
+        # Pre-compute frequency table for timestep embedding
+        half = frequency_embedding_size // 2
+        freqs = torch.exp(-math.log(10000.0) * torch.arange(half, dtype=torch.float32) / half)
+        self.register_buffer('freqs', freqs)
 
     @staticmethod
     def timestep_embedding(t, dim, max_period=10000):
@@ -47,7 +51,14 @@ class TimestepEmbedder(nn.Module):
         return embedding
 
     def forward(self, t):
-        t_freq = self.timestep_embedding(t * 1000.0, self.frequency_embedding_size)
+        if self.freqs is not None:
+            # Use pre-cached frequency table (avoids recomputing exp/arange each call)
+            args = t.float()[:, None] * 1000.0 * self.freqs[None]
+            t_freq = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+            if self.frequency_embedding_size % 2:
+                t_freq = torch.cat([t_freq, torch.zeros_like(t_freq[:, :1])], dim=-1)
+        else:
+            t_freq = self.timestep_embedding(t * 1000.0, self.frequency_embedding_size)
         t_emb = self.mlp(t_freq)
         return t_emb
 
@@ -435,6 +446,10 @@ class NanoDiT(nn.Module):
         self.null_text = nn.Parameter(torch.zeros(1, 1, text_dim))
         # [NULL_POSE]: learned token the model sees when pose is dropped during CFG
         self.null_pose = nn.Parameter(torch.zeros(1, num_pose_joints, hidden_size))
+        
+        # Embedding caching for throughput optimization (fixed bucket dimensions)
+        self._pos_embed_cache = {}
+        self.cache_embeddings = False  # Set to True to enable caching
     
     def get_pos_embed(self, h, w, device):
         """Generate 2D sinusoidal positional embeddings for given spatial size.
@@ -447,8 +462,16 @@ class NanoDiT(nn.Module):
         Returns:
             pos_embed: (1, h*w, hidden_size)
         """
+        if self.cache_embeddings:
+            key = (h, w)
+            if key in self._pos_embed_cache:
+                return self._pos_embed_cache[key]
+        
         pos_embed = get_2d_sincos_pos_embed(self.hidden_size, (h, w))
         pos_embed = pos_embed.to(device).float().unsqueeze(0)
+        
+        if self.cache_embeddings:
+            self._pos_embed_cache[key] = pos_embed
         return pos_embed
 
     def initialize_weights(self):
