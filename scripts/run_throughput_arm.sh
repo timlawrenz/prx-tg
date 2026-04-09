@@ -47,8 +47,7 @@ export PYTHONHASHSEED="$SEED"
 
 # Run training
 CUDA_VISIBLE_DEVICES="$GPU" python -m production.train_production \
-  --config "$CONFIG" \
-  --seed "$SEED"
+  --config "$CONFIG"
 
 echo ""
 echo "$ARM_NAME complete: $(date '+%Y-%m-%d %H:%M:%S')"
