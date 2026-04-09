@@ -1,0 +1,4 @@
+commit	val_loss	reconstruction_lpips	text_only_lpips	samp_per_sec	peak_vram_gb	status	description	checkpoint_path
+50bd9e8	0.161300	1.298500	0.963300	3.9	5.5	keep	baseline	experiments/2026-04-06_0123/checkpoints/checkpoint_final.pt
+50bd9e8	0.149300	1.295900	0.963800	3.4	5.6	keep	mask_ratio 0.6	experiments/2026-04-06_2150/checkpoints/checkpoint_final.pt
+50bd9e8	0.154300	1.297700	0.957700	3.9	5.5	keep	LR 8e-3	experiments/2026-04-07_1927/checkpoints/checkpoint_final.pt

@@ -2,5 +2,9 @@ commitval_lossreconstruction_lpipstext_only_lpipssamp_per_secpeak_vram_gbstatusd
 cc93735	0.203500	1.307525	0.969215	3.9	5.5	keep	baseline	experiments/2026-04-03_0959/checkpoints/checkpoint_final.pt
 cc93735	0.199300	1.308200	0.969400	3.4	5.6	discard	mask_ratio 0.6	experiments/2026-04-03_2020/checkpoints/checkpoint_final.pt
 cc93735	0.204000	1.308100	0.969300	3.9	5.5	discard	ema_decay 0.999	experiments/2026-04-04_0709/checkpoints/checkpoint_final.pt
+cc93735	0.203100	1.308100	0.969400	3.9	5.5	discard	tread_routing 0.5	experiments/2026-04-04_1944/checkpoints/checkpoint_final.pt
+cc93735	0.214700	1.307900	0.966800	4.8	6.6	discard	LR 8e-3	experiments/2026-04-05_1618/checkpoints/checkpoint_final.pt
 cc93735				0.0	5.6	crash	mask_ratio 0.6	experiments/2026-04-03_2020/checkpoints/checkpoint_final.pt
 cc93735				0.0	5.5	crash	ema_decay 0.999	experiments/2026-04-04_0709/checkpoints/checkpoint_final.pt
+50bd9e8				0.0	5.0	crash	tread_routing 0.5	experiments/2026-04-04_1944/checkpoints/checkpoint_final.pt
+50bd9e8				0.0	6.6	crash	LR 8e-3	experiments/2026-04-05_1618/checkpoints/checkpoint_final.pt
