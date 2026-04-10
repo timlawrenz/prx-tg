@@ -52,9 +52,11 @@ class TimestepEmbedder(nn.Module):
 
     def forward(self, t):
         if self.freqs is not None:
-            # Use pre-cached frequency table (avoids recomputing exp/arange each call)
-            freqs = self.freqs.to(t.device)
-            args = t.float()[:, None] * 1000.0 * freqs[None]
+            # Use pre-cached frequency table directly — no .to(t.device) call.
+            # The buffer follows model.to(device), so it's already on the correct
+            # device. Calling .to() inside forward breaks torch.compile's Inductor
+            # tracer (FakeTensor sees CPU→CUDA transition and raises RuntimeError).
+            args = t.float()[:, None] * 1000.0 * self.freqs[None]
             t_freq = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
             if self.frequency_embedding_size % 2:
                 t_freq = torch.cat([t_freq, torch.zeros_like(t_freq[:, :1])], dim=-1)
