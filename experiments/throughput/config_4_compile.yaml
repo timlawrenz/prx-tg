@@ -1,5 +1,5 @@
 # Arm 4: torch.compile
-# + torch.compile(mode="max-autotune") — kernel fusion and reduced overhead
+# + torch.compile(mode="default") — kernel fusion and reduced overhead
 # Measures reference it/s on a 4090
 
 model:
@@ -67,7 +67,7 @@ training:
   mixed_precision: true
   precision: "bfloat16"
   compile: true
-  compile_mode: "max-autotune"
+  compile_mode: "default"
 
   # Throughput flags — all OFF for baseline
   tf32_matmul: true
