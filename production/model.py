@@ -50,12 +50,14 @@ class TimestepEmbedder(nn.Module):
             embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
         return embedding
 
+    @torch.compiler.disable
     def forward(self, t):
         if self.freqs is not None:
-            # Use pre-cached frequency table directly — no .to(t.device) call.
-            # The buffer follows model.to(device), so it's already on the correct
-            # device. Calling .to() inside forward breaks torch.compile's Inductor
-            # tracer (FakeTensor sees CPU→CUDA transition and raises RuntimeError).
+            # Use pre-cached frequency table. The buffer follows model.to(device).
+            # torch.compiler.disable is needed because Inductor's FakeTensor tracer
+            # misattributes the MLP weights as CPU during max-autotune tracing,
+            # causing "Unhandled FakeTensor Device Propagation" errors. Excluding
+            # this tiny module (~0.4M params) has negligible throughput impact.
             args = t.float()[:, None] * 1000.0 * self.freqs[None]
             t_freq = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
             if self.frequency_embedding_size % 2:
@@ -454,16 +456,12 @@ class NanoDiT(nn.Module):
         self._pos_embed_cache = {}
         self.cache_embeddings = False  # Set to True to enable caching
     
+    @torch.compiler.disable
     def get_pos_embed(self, h, w, device):
         """Generate 2D sinusoidal positional embeddings for given spatial size.
         
-        Args:
-            h: height in patches
-            w: width in patches
-            device: torch device
-        
-        Returns:
-            pos_embed: (1, h*w, hidden_size)
+        Excluded from torch.compile because it creates CPU tensors (via numpy)
+        then moves to device, which confuses Inductor's FakeTensor tracer.
         """
         if self.cache_embeddings:
             key = (h, w)
