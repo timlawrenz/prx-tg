@@ -27,7 +27,8 @@ def _setup_device(device_arg: str, gpu_idx: int) -> torch.device:
     """Setup compute device with CUDA/ROCm auto-detection.
     
     For ROCm (AMD GPUs): sets HSA_OVERRIDE_GFX_VERSION if needed for
-    Strix Halo (gfx1151) compatibility with older ROCm builds.
+    Strix Halo (gfx1151) compatibility. ROCm 7.2+ has native gfx1151
+    support, but the override is set as a safety net.
     """
     if device_arg == 'cpu':
         print("Using device: CPU")
@@ -47,8 +48,8 @@ def _setup_device(device_arg: str, gpu_idx: int) -> torch.device:
         print(f"Using device: {device} (ROCm {torch.version.hip})")
         print(f"GPU: {gpu_name}")
         
-        # Strix Halo (gfx1151) may not be recognized by older ROCm builds.
-        # Setting HSA_OVERRIDE_GFX_VERSION maps it to the closest supported target (Navi 31).
+        # Strix Halo (gfx1151): ROCm 7.2+ has native support, but set
+        # HSA_OVERRIDE_GFX_VERSION as a safety net for kernel dispatch.
         gcn_arch = torch.cuda.get_device_properties(device).gcnArchName if hasattr(torch.cuda.get_device_properties(device), 'gcnArchName') else ''
         if 'gfx1151' in gcn_arch or 'strix' in gpu_name.lower():
             if 'HSA_OVERRIDE_GFX_VERSION' not in os.environ:

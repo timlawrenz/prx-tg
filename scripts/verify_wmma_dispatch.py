@@ -105,7 +105,7 @@ def verify_wmma(device: str = 'cuda', size: int = 1024):
         print("✗ No WMMA/MFMA kernels detected — matmuls may be using scalar ALUs")
         print("\nPossible fixes:")
         print("  1. Set HSA_OVERRIDE_GFX_VERSION=11.0.0")
-        print("  2. Upgrade to TheROCk stack (ROCm 7.9+/8.0)")
+        print("  2. Upgrade to ROCm 7.2+ (https://rocm.docs.amd.com/en/docs-7.2.0/)")
         print("  3. Ensure PyTorch ROCm nightly supports gfx1151")
         print(f"\nNote: Kernel names seen: {kernel_names[:5]}")
         print("  Look for 'wmma', 'mfma', or 'dot' in kernel names for confirmation")

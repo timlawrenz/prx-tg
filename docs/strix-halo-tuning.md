@@ -4,7 +4,7 @@ System-level optimizations for running the prx-tg NanoDiT training pipeline on A
 
 ## Table of Contents
 
-- [TheROCk Stack Installation](#therock-stack-installation)
+- [ROCm 7.2 Stack Installation](#rocm-72-stack-installation)
 - [GTT/Shared Memory Configuration](#gttshared-memory-configuration)
 - [Power Budget Rebalancing](#power-budget-rebalancing)
 - [WMMA Dispatch Verification](#wmma-dispatch-verification)
@@ -13,43 +13,28 @@ System-level optimizations for running the prx-tg NanoDiT training pipeline on A
 
 ---
 
-## TheROCk Stack Installation
+## ROCm 7.2 Stack Installation
 
-Standard ROCm 7.2 has known performance issues and broken FlashAttention for gfx1151. The "TheROCk" preview stack (ROCm 7.9+/8.0) is recommended.
+ROCm 7.2 is the current stable release with official Strix Halo (gfx1151) support. PyTorch nightly builds are available targeting this stack.
 
-### Why TheROCk?
+### Why ROCm 7.2?
 
-- **FlashAttention**: Restored for Strix Halo — critical for the quad-conditioned NanoDiT's dense sequence lengths
-- **Faster Inductor/Dynamo**: Significantly reduced cold-start compilation times for torch.compile
-- **gfx1151 support**: Better hardware detection and dispatch for RDNA 3.5
+- **FlashAttention**: Supported for Strix Halo — critical for the quad-conditioned NanoDiT's dense sequence lengths
+- **Faster Inductor/Dynamo**: Improved cold-start compilation times for torch.compile
+- **gfx1151 support**: Official hardware detection and dispatch for RDNA 3.5
+- **Release notes**: https://rocm.docs.amd.com/en/docs-7.2.0/about/release-notes.html
 
 ### Installation
 
 ```bash
-# TheROCk nightlies (check https://github.com/ROCm/TheROCk for latest)
-# These instructions will evolve as TheROCk stabilizes
+# 1. Install ROCm 7.2
+# Follow official instructions at https://rocm.docs.amd.com/en/docs-7.2.0/
 
-# 1. Remove existing ROCm (if installed)
-sudo apt purge rocm-* hip-* 2>/dev/null
+# 2. Install PyTorch nightly with ROCm 7.2 support
+pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/rocm7.2
 
-# 2. Add TheROCk repository
-# (Follow latest instructions at https://github.com/ROCm/TheROCk/releases)
-
-# 3. Install PyTorch with TheROCk support
-pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/rocm6.3
-# OR build from source against TheROCk headers
-
-# 4. Verify
+# 3. Verify
 python -c "import torch; print(torch.version.hip); print(torch.cuda.is_available())"
-```
-
-### PyTorch "TheRock" Builds
-
-AMD maintains custom PyTorch builds optimized for TheROCk:
-
-```bash
-# Check https://github.com/ROCm/pytorch for latest compatible builds
-# These may include patches for FlashAttention on gfx1151
 ```
 
 ---
