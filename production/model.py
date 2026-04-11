@@ -76,12 +76,13 @@ class PatchEmbed(nn.Module):
         return x
 
 
-def get_2d_sincos_pos_embed(embed_dim, grid_size):
+def get_2d_sincos_pos_embed(embed_dim, grid_size, device=None):
     """Generate 2D sinusoidal positional embeddings.
     
     Args:
         embed_dim: embedding dimension (must be even)
         grid_size: int or tuple (H, W)
+        device: torch device to create tensors on
     
     Returns:
         pos_embed: (H*W, embed_dim)
@@ -91,28 +92,29 @@ def get_2d_sincos_pos_embed(embed_dim, grid_size):
     else:
         grid_h, grid_w = grid_size
     
-    grid_h_coords = torch.arange(grid_h, dtype=torch.float32)
-    grid_w_coords = torch.arange(grid_w, dtype=torch.float32)
+    grid_h_coords = torch.arange(grid_h, dtype=torch.float32, device=device)
+    grid_w_coords = torch.arange(grid_w, dtype=torch.float32, device=device)
     grid = torch.meshgrid(grid_h_coords, grid_w_coords, indexing='ij')
     grid = torch.stack(grid, dim=0)  # (2, H, W)
     grid = grid.reshape(2, -1).T  # (H*W, 2)
     
-    pos_embed = get_1d_sincos_pos_embed_from_grid(embed_dim, grid)
+    pos_embed = get_1d_sincos_pos_embed_from_grid(embed_dim, grid, device=device)
     return pos_embed
 
 
-def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
+def get_1d_sincos_pos_embed_from_grid(embed_dim, pos, device=None):
     """Generate 1D sinusoidal embeddings from position grid.
     
     Args:
         embed_dim: output dimension for each position
         pos: (M, 2) array of positions
+        device: torch device to create tensors on
     
     Returns:
         emb: (M, embed_dim)
     """
     assert embed_dim % 2 == 0
-    omega = torch.arange(embed_dim // 4, dtype=torch.float32)
+    omega = torch.arange(embed_dim // 4, dtype=torch.float32, device=device)
     omega /= embed_dim / 4.
     omega = 1. / 10000**omega  # (embed_dim/4,)
     
@@ -436,7 +438,6 @@ class NanoDiT(nn.Module):
         # [NULL_POSE]: learned token the model sees when pose is dropped during CFG
         self.null_pose = nn.Parameter(torch.zeros(1, num_pose_joints, hidden_size))
     
-    @torch.compiler.disable
     def get_pos_embed(self, h, w, device):
         """Generate 2D sinusoidal positional embeddings for given spatial size.
         
@@ -448,8 +449,8 @@ class NanoDiT(nn.Module):
         Returns:
             pos_embed: (1, h*w, hidden_size)
         """
-        pos_embed = get_2d_sincos_pos_embed(self.hidden_size, (h, w))
-        pos_embed = pos_embed.to(device).float().unsqueeze(0)
+        pos_embed = get_2d_sincos_pos_embed(self.hidden_size, (h, w), device=device)
+        pos_embed = pos_embed.float().unsqueeze(0)
         return pos_embed
 
     def initialize_weights(self):
