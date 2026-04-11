@@ -4,10 +4,10 @@
 
 Creates/updates an extension-correct symlinked view of the approved photo list:
 
-- Source of truth: `https://crawlr.lawrenz.com/photos.json?page=N` (paginate until empty)
-- Raw files: `data/raw/<filename>` (no extension)
-- Output symlinks: `data/approved/<filename>.<ext>` pointing to `../raw/<filename>`
-- **Automatic download**: If raw file is missing, downloads from `exportable_url` in JSON
+- Source of truth: `http://192.168.86.162:3003/photos.json?page=N` (paginate until empty)
+- Raw files: `data/raw/<fn[0:2]>/<fn[2:4]>/<filename>` (no extension; sharded by first four characters)
+- Output symlinks: `data/approved/<filename>.<ext>` pointing to `../raw/<fn[0:2]>/<fn[2:4]>/<filename>`
+- **Automatic download**: If raw file is missing and `exportable_url` is set in the JSON, downloads from that URL
 
 Pruning is **not** performed in this change (stale entries in `data/approved/` are left as-is).
 
@@ -43,21 +43,17 @@ python3 scripts/sync_approved_photos.py --progress-every 0
 ### How It Works
 
 1. **Fetch photo list**: Paginates through `photos.json` API
-2. **Check raw file**: Looks for `data/raw/<filename>`
-3. **Download if missing**: Fetches from `exportable_url` in JSON (CDN)
+2. **Check raw file**: Looks for `data/raw/<fn[0:2]>/<fn[2:4]>/<filename>`
+3. **Download if missing**: Fetches from `exportable_url` in JSON if available
 4. **Detect type**: Reads magic bytes to determine extension (jpg/png/webp/gif)
-5. **Create symlink**: `data/approved/<filename>.<ext>` → `../raw/<filename>`
+5. **Create symlink**: `data/approved/<filename>.<ext>` → `../raw/<fn[0:2]>/<fn[2:4]>/<filename>`
 
 ### Output Example
 
 ```
-page 1: fetching https://crawlr.lawrenz.com/photos.json?page=1
+page 1: fetching http://192.168.86.162:3003/photos.json?page=1
 page 1: 14 items
-downloading: abc123xyz from https://crawlr-assets.lawrenz.com/abc123xyz
-downloaded: abc123xyz (847.3 KB)
-downloading: def456uvw from https://crawlr-assets.lawrenz.com/def456uvw
-downloaded: def456uvw (1203.5 KB)
-progress: processed=1000 downloaded=45 missing_raw=2 download_failed=1 unknown_type=0 created=997 updated=0
+progress: processed=1000 missing_raw=0 unknown_type=0 created=997 updated=0
 
 Summary:
   processed:        2500

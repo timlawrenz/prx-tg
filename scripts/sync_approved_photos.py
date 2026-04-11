@@ -2,16 +2,17 @@
 """Sync approved photos to `data/approved/`.
 
 Fetches the paginated approved photo list from:
-  https://crawlr.lawrenz.com/photos.json?page=N
+  http://192.168.86.162:3003/photos.json?page=N
 
 For each item:
-1. Checks for raw file at `data/raw/<filename>` (no extension)
-2. If missing, downloads from `exportable_url` to `data/raw/<filename>`
+1. Checks for raw file at `data/raw/<fn[0:2]>/<fn[2:4]>/<filename>` (no extension)
+2. If missing (and exportable_url is available), downloads from `exportable_url`
 3. Detects file type from magic bytes
-4. Creates/updates symlink: data/approved/<filename>.<ext> -> ../raw/<filename>
+4. Creates/updates symlink: data/approved/<filename>.<ext> -> ../raw/<fn[0:2]>/<fn[2:4]>/<filename>
 
 Notes:
-- Automatically downloads missing files from exportable_url (CDN)
+- Raw files are sharded into two levels of subdirectory by the first four characters of the filename
+- Automatically downloads missing files from exportable_url when available
 - In dry-run mode, downloads are skipped (only reported)
 - Use --no-prune to skip removal of stale symlinks and their derived data
 - Does NOT enumerate `data/raw/`; uses per-filename path lookups
@@ -34,7 +35,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-DEFAULT_BASE_URL = "https://crawlr.lawrenz.com/photos.json"
+DEFAULT_BASE_URL = "http://192.168.86.162:3003/photos.json"
 
 
 @dataclass
@@ -50,6 +51,15 @@ class Counters:
     stale_symlinks: int = 0
     stale_records: int = 0
     stale_npy: int = 0
+
+
+def raw_file_path(raw_dir: str, filename: str) -> str:
+    """Return the sharded raw file path for a given filename.
+
+    Files are nested two levels deep using the first four characters of the
+    filename: data/raw/<fn[0:2]>/<fn[2:4]>/<filename>.
+    """
+    return os.path.join(raw_dir, filename[:2], filename[2:4], filename)
 
 
 def build_page_url(base_url: str, page: int) -> str:
@@ -265,7 +275,7 @@ def main(argv: list[str]) -> int:
 
             approved_filenames.add(filename)
 
-            raw_path = os.path.join(raw_dir, filename)
+            raw_path = raw_file_path(raw_dir, filename)
             
             # Download missing raw file if possible
             if not os.path.exists(raw_path):
