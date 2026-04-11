@@ -479,6 +479,22 @@ class NanoDiT(nn.Module):
         if self.repa_block_idx is not None:
             nn.init.xavier_uniform_(self.repa_proj.weight)
 
+    def compile_blocks(self, fullgraph=False, mode='default'):
+        """Compile individual DiTBlocks with torch.compile.
+        
+        Use when full-model torch.compile fails due to graph breaks in the
+        outer control flow (TREAD routing, MaskDiT). Compiling individual
+        blocks still captures operation fusion within each transformer layer.
+        """
+        for i, block in enumerate(self.blocks):
+            self.blocks[i] = torch.compile(block, dynamic=True, fullgraph=fullgraph, mode=mode)
+        if hasattr(self, 'maskdit_decoder'):
+            for i, block in enumerate(self.maskdit_decoder.blocks):
+                self.maskdit_decoder.blocks[i] = torch.compile(
+                    block, dynamic=True, fullgraph=fullgraph, mode=mode
+                )
+        print(f"  Compiled {len(self.blocks)} DiTBlocks individually (fullgraph={fullgraph}, mode='{mode}')")
+
     def unpatchify(self, x, h, w):
         """Convert patch tokens back to spatial latents.
         
