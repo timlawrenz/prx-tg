@@ -90,19 +90,21 @@ training:
   inductor_max_autotune: true
 
   # Resolution schedule — start lower to validate pipeline, ramp to full res
+  # Memory budget: ~90 GB usable of 118 GB (leave headroom for OS/system)
+  # Profiled: BS=4 @ 1024px = 15.7 GB peak → scale up aggressively
   resolution_schedule:
     - until_step: 500
       scale: 0.25
-      batch_size: 16                     # 256×256: more samples fit
-      grad_accumulation_steps: 16
+      batch_size: 64                     # 256×256: ~15 GB, effective=64×4=256
+      grad_accumulation_steps: 4
     - until_step: 3000
       scale: 0.5
-      batch_size: 8                      # 512×512: moderate batches
-      grad_accumulation_steps: 32
+      batch_size: 32                     # 512×512: ~40 GB, effective=32×8=256
+      grad_accumulation_steps: 8
     - until_step: 6000
       scale: 1.0
-      batch_size: 4                      # 1024×1024: full resolution
-      grad_accumulation_steps: 64
+      batch_size: 16                     # 1024×1024: ~55 GB, effective=16×16=256
+      grad_accumulation_steps: 16
 
   perceptual:
     enabled: false
