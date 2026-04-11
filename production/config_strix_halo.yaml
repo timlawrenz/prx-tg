@@ -1,0 +1,159 @@
+# Strix Halo APU Training Configuration
+# Targets AMD Strix Halo (RDNA 3.5 / gfx1151) with 128GB unified LPDDR5X memory
+#
+# Key differences from production config (RTX 4090):
+#   - No gradient checkpointing: 128GB unified memory can hold all activations
+#   - No MaskDiT: Not needed when memory is abundant
+#   - torch.compile enabled: Graph fusion is critical for bandwidth-constrained APU
+#   - Zero-copy data loading: mmap .npy files directly (unified memory = no PCIe transfer)
+#   - Larger micro-batches: Memory headroom allows batch_size > 1
+#   - bfloat16 precision: RDNA 3.5 supports native bf16 via WMMA instructions
+#   - Inductor max-autotune: Optimizes Triton kernels for RDNA 3.5 cache hierarchy
+
+model:
+  hidden_size: 768
+  depth: 18
+  num_heads: 12
+  patch_size: 16
+  mlp_ratio: 4.0
+  in_channels: 3
+  prediction_type: x_prediction
+  input_size: 1024
+  num_pose_joints: 133
+  pose_confidence_threshold: 0.05
+
+training:
+  total_steps: 6000
+  warmup_steps: 500
+  batch_size: 4                          # Larger micro-batch (128GB allows it)
+  grad_accumulation_steps: 64            # Effective batch = 4 × 64 = 256
+
+  optimizer:
+    type: "Muon"
+    lr: 3.0e-4
+    min_lr: 1.0e-6
+    betas: [0.9, 0.95]
+    weight_decay: 0.03
+    eps: 1.0e-8
+    muon:
+      momentum: 0.95
+      nesterov: true
+      ns_steps: 5
+      adjust_lr_fn: "match_rms_adamw"
+
+  grad_clip: 1.0
+  ema_decay: 0.9999
+  ema_warmup_steps: 500
+
+  cfg_dropout:
+    p_uncond: 0.1
+    p_text_only: 0.25
+    p_dino_cls_only: 0.05
+    p_dino_patches_only: 0.05
+    p_drop_pose: 0.10
+    p_pose_only: 0.05
+
+  repa:
+    enabled: true
+    weight: 0.5
+    block_index: -1
+    loss_type: "cosine"
+
+  tread:
+    enabled: true
+    routing_probability: 0.5
+    route_start: 1
+    route_end: -1
+    self_guidance: true
+    guidance_scale: 3.0
+
+  timestep_sampling: "logit_normal"
+  logit_normal_loc: 0.0
+  logit_normal_scale: 1.0
+
+  # Strix Halo: NO gradient checkpointing — 128GB unified memory holds all activations
+  gradient_checkpointing: false
+
+  # bfloat16: RDNA 3.5 supports native bf16, required for flow matching stability
+  mixed_precision: true
+  precision: "bfloat16"
+
+  # torch.compile with ROCm Inductor backend — critical for bandwidth-bound APU
+  compile: true
+  inductor_max_autotune: true
+
+  # Resolution schedule — start lower to validate pipeline, ramp to full res
+  resolution_schedule:
+    - until_step: 500
+      scale: 0.25
+      batch_size: 16                     # 256×256: more samples fit
+      grad_accumulation_steps: 16
+    - until_step: 3000
+      scale: 0.5
+      batch_size: 8                      # 512×512: moderate batches
+      grad_accumulation_steps: 32
+    - until_step: 6000
+      scale: 1.0
+      batch_size: 4                      # 1024×1024: full resolution
+      grad_accumulation_steps: 64
+
+  perceptual:
+    enabled: false
+
+data:
+  shard_base_dir: "data/shards/faces7k"
+  derived_dir: "data/derived"
+  metadata_jsonl: "data/derived/approved_image_dataset.jsonl"
+  buckets:
+    - "bucket_1024x1024"
+    - "bucket_1216x832"
+    - "bucket_1280x768"
+    - "bucket_1344x704"
+    - "bucket_704x1344"
+    - "bucket_768x1280"
+    - "bucket_832x1216"
+  bucket_sampling: "proportional"
+
+  # Zero-copy mmap loading: .npy files are memory-mapped into unified address space
+  # GPU compute units access them directly without host-to-device transfer
+  zero_copy: true
+
+  num_workers: 2                         # Fewer workers — mmap reduces loader overhead
+  prefetch_factor: 2
+  pin_memory: false                      # Unnecessary on unified memory (no PCIe transfer)
+
+sampling:
+  num_steps: 35
+  text_scale: 3.0
+  dino_scale: 2.5
+  self_guidance: true
+  guidance_scale: 3.0
+
+validation:
+  enabled: true
+  interval_steps: 100
+  num_samples: 25
+  output_dir: "validation_outputs"
+  run_reconstruction: true
+  run_dino_swap: true
+  run_text_manip: true
+  visual_debug_interval: 10
+  visual_debug_num_samples: 4
+  visual_debug_dir: "visual_debug"
+
+checkpoint:
+  save_every: 100
+  keep_last_n: 3
+  output_dir: "checkpoints"
+  save_optimizer: true
+
+logging:
+  log_every: 2
+  log_file: "training.log"
+  monitor_velocity_norm: true
+  monitor_grad_norm: true
+  velocity_norm_warning: 10.0
+  grad_norm_warning: 10.0
+
+paths:
+  t5_path: "models/t5xxl_fp16.safetensors"

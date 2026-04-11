@@ -1210,8 +1210,10 @@ class ProductionTrainer(Trainer):
         
         # torch.compile
         if training.compile:
-            print("  Compiling model with torch.compile(dynamic=True)...")
-            self.model = torch.compile(self.model, dynamic=True)
+            fullgraph = training.compile_fullgraph
+            mode = 'max-autotune' if training.inductor_max_autotune else 'default'
+            print(f"  Compiling model with torch.compile(dynamic=True, fullgraph={fullgraph}, mode='{mode}')...")
+            self.model = torch.compile(self.model, dynamic=True, fullgraph=fullgraph, mode=mode)
             print("  Model compiled (first few steps will be slow due to JIT warmup)")
         
         # Perceptual loss (LPIPS)

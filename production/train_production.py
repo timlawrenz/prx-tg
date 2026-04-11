@@ -6,6 +6,7 @@ Usage:
     python -m production.train_production --resume checkpoints/checkpoint_step010000.pt
 """
 
+import os
 import argparse
 import sys
 from pathlib import Path
@@ -20,6 +21,67 @@ from .config_loader import load_config
 from .model import NanoDiT
 from .data import get_production_dataloader
 from .train import ProductionTrainer
+
+
+def _setup_device(device_arg: str, gpu_idx: int) -> torch.device:
+    """Setup compute device with CUDA/ROCm auto-detection.
+    
+    For ROCm (AMD GPUs): sets HSA_OVERRIDE_GFX_VERSION if needed for
+    Strix Halo (gfx1151) compatibility with older ROCm builds.
+    """
+    if device_arg == 'cpu':
+        print("Using device: CPU")
+        return torch.device('cpu')
+    
+    if not torch.cuda.is_available():
+        print("CUDA/ROCm not available, falling back to CPU")
+        return torch.device('cpu')
+    
+    device = torch.device(f'cuda:{gpu_idx}')
+    torch.cuda.set_device(device)
+    gpu_name = torch.cuda.get_device_name(device)
+    
+    is_rocm = hasattr(torch.version, 'hip') and torch.version.hip is not None
+    
+    if is_rocm:
+        print(f"Using device: {device} (ROCm {torch.version.hip})")
+        print(f"GPU: {gpu_name}")
+        
+        # Strix Halo (gfx1151) may not be recognized by older ROCm builds.
+        # Setting HSA_OVERRIDE_GFX_VERSION maps it to the closest supported target (Navi 31).
+        gcn_arch = torch.cuda.get_device_properties(device).gcnArchName if hasattr(torch.cuda.get_device_properties(device), 'gcnArchName') else ''
+        if 'gfx1151' in gcn_arch or 'strix' in gpu_name.lower():
+            if 'HSA_OVERRIDE_GFX_VERSION' not in os.environ:
+                print("  Strix Halo detected — setting HSA_OVERRIDE_GFX_VERSION=11.0.0")
+                os.environ['HSA_OVERRIDE_GFX_VERSION'] = '11.0.0'
+        
+        # Report unified memory info if available
+        total_mem = torch.cuda.get_device_properties(device).total_mem / 1024**3
+        print(f"  GPU memory: {total_mem:.1f} GB")
+    else:
+        print(f"Using device: {device} (CUDA {torch.version.cuda})")
+        print(f"GPU: {gpu_name}")
+    
+    return device
+
+
+def _setup_inductor(config) -> None:
+    """Configure torch.compile Inductor backend settings."""
+    if not config.training.compile:
+        return
+    
+    if config.training.inductor_max_autotune:
+        import torch._inductor.config as inductor_config
+        inductor_config.max_autotune = True
+        inductor_config.max_autotune_gemm = True
+        print("  Inductor max-autotune: ENABLED (first run will be slow)")
+    
+    # Persistent Triton cache for faster restarts
+    cache_dir = os.environ.get('TORCHINDUCTOR_CACHE_DIR')
+    if cache_dir is None:
+        cache_dir = os.path.expanduser('~/.cache/torch_inductor')
+        os.environ['TORCHINDUCTOR_CACHE_DIR'] = cache_dir
+        print(f"  Inductor cache: {cache_dir}")
 
 
 def parse_args():
@@ -41,9 +103,9 @@ def parse_args():
     parser.add_argument(
         '--device',
         type=str,
-        default='cuda',
-        choices=['cuda', 'cpu'],
-        help='Device to use'
+        default='auto',
+        choices=['auto', 'cuda', 'cpu'],
+        help='Device to use (auto detects CUDA/ROCm)'
     )
     parser.add_argument(
         '--gpu',
@@ -90,9 +152,22 @@ def print_config_summary(config):
     print(f"  Warmup: {config.training.warmup_steps} steps")
     print(f"  Peak LR: {config.training.optimizer.lr}")
     print(f"  Precision: {config.training.precision}")
+    if config.training.compile:
+        extras = []
+        if config.training.compile_fullgraph:
+            extras.append("fullgraph")
+        if config.training.inductor_max_autotune:
+            extras.append("max-autotune")
+        print(f"  torch.compile: ENABLED ({', '.join(extras) if extras else 'default'})")
+    if not config.training.gradient_checkpointing:
+        print(f"  Gradient checkpointing: DISABLED (full activation caching)")
     print("\nData:")
     print(f"  Shard dir: {config.data.shard_base_dir}")
     print(f"  Buckets: {len(config.data.buckets)}")
+    if config.data.zero_copy:
+        print(f"  Data loading: ZERO-COPY (mmap from {config.data.derived_dir})")
+    else:
+        print(f"  Data loading: WebDataset (streaming)")
     print(f"  Flip prob: {config.data.horizontal_flip_prob}")
     print("\nCheckpoints:")
     print(f"  Save every: {config.checkpoint.save_every} steps")
@@ -228,19 +303,11 @@ def main():
     print(f"Experiment directory: {experiment_dir}")
     print("="*60 + "\n")
     
-    # Setup device
-    if args.device == 'cuda':
-        if not torch.cuda.is_available():
-            print("CUDA not available, falling back to CPU")
-            device = torch.device('cpu')
-        else:
-            device = torch.device(f'cuda:{args.gpu}')
-            torch.cuda.set_device(device)
-            print(f"Using device: {device}")
-            print(f"GPU: {torch.cuda.get_device_name(device)}")
-    else:
-        device = torch.device('cpu')
-        print("Using device: CPU")
+    # Setup device (supports CUDA, ROCm, and CPU)
+    device = _setup_device(args.device, args.gpu)
+    
+    # Configure Inductor backend if torch.compile is enabled
+    _setup_inductor(config)
     
     print_config_summary(config)
     

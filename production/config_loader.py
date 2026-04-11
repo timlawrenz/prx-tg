@@ -159,6 +159,9 @@ class TrainingConfig:
     mixed_precision: bool = True
     precision: Literal["float32", "bfloat16", "float16"] = "bfloat16"
     compile: bool = False  # torch.compile the model for ~20-40% speedup
+    compile_fullgraph: bool = False   # torch.compile with fullgraph=True (stricter, faster)
+    inductor_max_autotune: bool = False  # Enable Inductor max_autotune for kernel optimization
+    cpu_offload_optimizer: bool = False   # Offload optimizer step to CPU (useful on APU)
     time_budget_minutes: float = 0  # 0 = disabled, >0 = stop after N minutes
     
     resolution_schedule: List = field(default_factory=list)  # List of {until_step, scale} dicts
@@ -172,6 +175,8 @@ class TrainingConfig:
 class DataConfig:
     """Data loading configuration."""
     shard_base_dir: str = "data/shards"
+    derived_dir: str = "data/derived"    # Directory with pre-computed .npy files (for zero-copy mode)
+    metadata_jsonl: str = "data/derived/approved_image_dataset.jsonl"  # Dataset index
     buckets: List[str] = field(default_factory=lambda: [
         "1024x1024", "832x1216", "1216x832", "768x1280", "1280x768"
     ])
@@ -183,6 +188,7 @@ class DataConfig:
     num_workers: int = 4
     prefetch_factor: int = 2
     pin_memory: bool = True
+    zero_copy: bool = False              # Use mmap zero-copy data loading (for unified memory / APU)
 
 
 @dataclass
