@@ -92,7 +92,10 @@ def _setup_inductor(config) -> None:
         import torch._inductor.config as inductor_config
         inductor_config.max_autotune = True
         inductor_config.max_autotune_gemm = True
-        print("  Inductor max-autotune: ENABLED (first run will be slow)")
+        # Disable CUDA graphs — causes InductorError on ROCm/gfx1151 due to
+        # DeviceCopy ops triggering assertion in tiling_utils.py
+        inductor_config.triton.cudagraphs = False
+        print("  Inductor max-autotune: ENABLED (cudagraphs disabled for ROCm compatibility)")
     
     # Persistent Triton cache for faster restarts
     cache_dir = os.environ.get('TORCHINDUCTOR_CACHE_DIR')

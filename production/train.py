@@ -1283,7 +1283,7 @@ class ProductionTrainer(Trainer):
         # torch.compile
         if training.compile:
             fullgraph = training.compile_fullgraph
-            mode = 'max-autotune' if training.inductor_max_autotune else 'default'
+            mode = 'max-autotune-no-cudagraphs' if training.inductor_max_autotune else 'default'
             if fullgraph:
                 # Try full model compilation; fall back to per-block on failure
                 print(f"  Compiling model with torch.compile(dynamic=True, fullgraph=True, mode='{mode}')...")
