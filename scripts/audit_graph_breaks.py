@@ -71,16 +71,16 @@ def run_audit(config_path: str, quick: bool = False, device: str = 'cuda'):
 
     # Build model
     model = NanoDiT(
-        in_channels=3,
+        in_channels=model_cfg.in_channels,
         hidden_size=model_cfg.hidden_size,
         depth=model_cfg.depth,
         num_heads=model_cfg.num_heads,
         patch_size=model_cfg.patch_size,
-        max_seq_len=model_cfg.max_seq_len,
         mlp_ratio=model_cfg.mlp_ratio,
         use_gradient_checkpointing=False,  # Never checkpoint during audit
-        prediction_type=model_cfg.prediction_type,
-        dino_patches_dim=model_cfg.hidden_size,
+        bottleneck_size=model_cfg.bottleneck_size,
+        num_pose_joints=model_cfg.num_pose_joints,
+        pose_confidence_threshold=model_cfg.pose_confidence_threshold,
     ).to(device)
 
     print(f"Model: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M params")
