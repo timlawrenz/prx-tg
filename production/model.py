@@ -436,6 +436,7 @@ class NanoDiT(nn.Module):
         # [NULL_POSE]: learned token the model sees when pose is dropped during CFG
         self.null_pose = nn.Parameter(torch.zeros(1, num_pose_joints, hidden_size))
     
+    @torch.compiler.disable
     def get_pos_embed(self, h, w, device):
         """Generate 2D sinusoidal positional embeddings for given spatial size.
         
