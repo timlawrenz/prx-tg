@@ -36,7 +36,7 @@ def verify_wmma(device: str = 'cuda', size: int = 1024):
     print(f"GPU: {props.name}")
     gcn = getattr(props, 'gcnArchName', 'N/A')
     print(f"GCN Arch: {gcn}")
-    print(f"Total Memory: {props.total_mem / 1e9:.1f} GB")
+    print(f"Total Memory: {props.total_memory / 1e9:.1f} GB")
     print()
 
     # Check if this is a Strix Halo / RDNA 3.5

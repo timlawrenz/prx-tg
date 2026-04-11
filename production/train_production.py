@@ -74,7 +74,7 @@ def _setup_device(device_arg: str, gpu_idx: int) -> torch.device:
                 print(f"  HSA_OVERRIDE_GFX_VERSION={os.environ['HSA_OVERRIDE_GFX_VERSION']} (user-set)")
         
         # Report unified memory info if available
-        total_mem = torch.cuda.get_device_properties(device).total_mem / 1024**3
+        total_mem = torch.cuda.get_device_properties(device).total_memory / 1024**3
         print(f"  GPU memory: {total_mem:.1f} GB")
     else:
         print(f"Using device: {device} (CUDA {torch.version.cuda})")
