@@ -19,7 +19,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def profile_step(config_path: str, device: str, num_steps: int, use_torch_profile: bool):
+def profile_step(config_path: str, device: str, num_steps: int, use_torch_profile: bool, resolution: int = 256):
     import torch
     from production.config_loader import load_config
     from production.model import NanoDiT
@@ -81,7 +81,7 @@ def profile_step(config_path: str, device: str, num_steps: int, use_torch_profil
     dtype = torch.bfloat16 if training_cfg.precision == 'bfloat16' else torch.float16
 
     # Synthetic data at target resolution
-    H, W = 256, 256
+    H, W = resolution, resolution
     patch_size = model_cfg.patch_size
     B = training_cfg.batch_size
     hidden = model_cfg.hidden_size
@@ -250,7 +250,8 @@ if __name__ == '__main__':
     parser.add_argument('--config', default='production/config_strix_halo.yaml')
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--steps', type=int, default=5)
+    parser.add_argument('--resolution', type=int, default=256, help='Image resolution (e.g. 256, 512, 1024)')
     parser.add_argument('--torch-profile', action='store_true')
     args = parser.parse_args()
 
-    profile_step(args.config, args.device, args.steps, args.torch_profile)
+    profile_step(args.config, args.device, args.steps, args.torch_profile, args.resolution)
