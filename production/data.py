@@ -516,12 +516,21 @@ def _bucket_target_pixel_size(bucket_name: str) -> tuple[int, int]:
 
 
 def get_production_dataloader(config, device='cuda'):
-    """Create production dataloader from config (bucket-aware, per-bucket target sizes)."""
+    """Create production dataloader from config (bucket-aware, per-bucket target sizes).
+    
+    Dispatches to zero-copy mmap loader when config.data.zero_copy is True
+    (optimal for unified memory architectures like AMD Strix Halo APU).
+    """
     from .config_loader import Config
 
     data_cfg = config.data
     training_cfg = config.training
     pixel_space = getattr(config.model, 'prediction_type', 'v_prediction') == 'x_prediction'
+
+    # Zero-copy mmap path: memory-map .npy files directly (for unified memory / APU)
+    if data_cfg.zero_copy:
+        from .data_mmap import get_mmap_dataloader
+        return get_mmap_dataloader(config)
 
     shard_dir = Path(data_cfg.shard_base_dir)
 
