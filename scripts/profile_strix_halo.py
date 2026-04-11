@@ -42,7 +42,7 @@ def profile_step(config_path: str, device: str, num_steps: int, use_torch_profil
         print(f"GCN Arch: {arch}")
     if torch.cuda.is_available():
         print(f"GPU: {torch.cuda.get_device_name(device)}")
-        mem_gb = torch.cuda.get_device_properties(device).total_mem / 1e9
+        mem_gb = torch.cuda.get_device_properties(device).total_memory / 1e9
         print(f"Memory: {mem_gb:.1f} GB")
     print(f"Steps to profile: {num_steps}")
     print(f"Batch size: {training_cfg.batch_size}")
