@@ -214,11 +214,11 @@ RDNA 3.5 supports WMMA (Wave Matrix Multiply Accumulate) for bfloat16 matrix mat
 python scripts/verify_wmma_dispatch.py
 ```
 
-### Manual Verification with rocprof
+### Manual Verification with rocprofv3
 
 ```bash
 # Profile a single training step
-rocprof --hip-trace --hsa-trace python scripts/profile_strix_halo.py --steps 1
+rocprofv3 --hip-trace --hsa-trace -- python scripts/profile_strix_halo.py --steps 1
 
 # Look for WMMA kernels in the trace:
 grep -i "wmma\|mfma\|matrix" results.csv
@@ -301,12 +301,12 @@ python scripts/audit_graph_breaks.py --quick
 python scripts/estimate_memory_strix.py
 ```
 
-### Kernel-Level with rocprof
+### Kernel-Level with rocprofv3
 
 ```bash
 # Full kernel trace
-rocprof --hip-trace python scripts/profile_strix_halo.py --steps 1
+rocprofv3 --hip-trace -- python scripts/profile_strix_halo.py --steps 1
 
 # Specific counters (memory bandwidth)
-rocprof --timestamp on -i counters.txt python scripts/profile_strix_halo.py --steps 1
+rocprofv3 -i counters.txt -- python scripts/profile_strix_halo.py --steps 1
 ```
