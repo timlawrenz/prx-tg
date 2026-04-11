@@ -39,12 +39,16 @@ def create_dummy_batch(config, device, batch_size=2):
     num_patches = h_patches * w_patches
 
     B = batch_size
+    # Conditioning dims match NanoDiT defaults (not hidden_size)
+    dino_dim = 1024
+    dino_patch_dim = 1024
+    text_dim = 1024
     return {
         'image_data': torch.randn(B, 3, H, W, device=device),
-        'dino_embedding': torch.randn(B, hidden, device=device),
-        'dinov3_patches': torch.randn(B, num_patches, hidden, device=device),
+        'dino_embedding': torch.randn(B, dino_dim, device=device),
+        'dinov3_patches': torch.randn(B, num_patches, dino_patch_dim, device=device),
         'dinov3_patches_mask': torch.ones(B, num_patches, dtype=torch.long, device=device),
-        't5_hidden': torch.randn(B, 512, hidden, device=device),
+        't5_hidden': torch.randn(B, 512, text_dim, device=device),
         't5_mask': torch.ones(B, 512, dtype=torch.long, device=device),
         'pose_keypoints': torch.randn(B, 133, 3, device=device),
     }

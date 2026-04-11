@@ -87,14 +87,18 @@ def profile_step(config_path: str, device: str, num_steps: int, use_torch_profil
     hidden = model_cfg.hidden_size
     h_p, w_p = H // patch_size, W // patch_size
     n_patches = h_p * w_p
+    # Conditioning dims match NanoDiT defaults (not hidden_size)
+    dino_dim = 1024
+    dino_patch_dim = 1024
+    text_dim = 1024
 
     def make_batch():
         return {
             'image_data': torch.randn(B, 3, H, W, device=device),
-            'dino_embedding': torch.randn(B, hidden, device=device),
-            'dinov3_patches': torch.randn(B, n_patches, hidden, device=device),
+            'dino_embedding': torch.randn(B, dino_dim, device=device),
+            'dinov3_patches': torch.randn(B, n_patches, dino_patch_dim, device=device),
             'dinov3_patches_mask': torch.ones(B, n_patches, dtype=torch.long, device=device),
-            't5_hidden': torch.randn(B, 512, hidden, device=device),
+            't5_hidden': torch.randn(B, 512, text_dim, device=device),
             't5_mask': torch.ones(B, 512, dtype=torch.long, device=device),
             'pose_keypoints': torch.randn(B, 133, 3, device=device),
         }
