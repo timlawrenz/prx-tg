@@ -178,7 +178,47 @@ def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="c
     return per_token_loss.mean()
 
 
-def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, pose_kpts=None, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05, maskdit_config=None):
+def precompute_cfg_masks(batch_size: int, cfg_probs: dict, device='cpu'):
+    """Pre-compute CFG dropout masks outside the compiled forward pass.
+    
+    On APU unified memory, these masks are immediately GPU-accessible.
+    Extracting this from flow_matching_loss avoids graph breaks from
+    the branch-heavy categorical sampling logic during torch.compile.
+    
+    Returns:
+        dict of boolean masks: drop_text, drop_dino_cls, drop_dino_patches, drop_pose
+    """
+    rand = torch.rand(batch_size, device=device)
+    p_both = cfg_probs['p_uncond']
+    p_text = cfg_probs['p_text_only']
+    p_dino_cls = cfg_probs['p_dino_cls_only']
+    p_dino_patches = cfg_probs['p_dino_patches_only']
+    p_drop_pose = cfg_probs.get('p_drop_pose', 0.0)
+    p_pose_only = cfg_probs.get('p_pose_only', 0.0)
+
+    t1 = p_both
+    t2 = t1 + p_text
+    t3 = t2 + p_dino_cls
+    t4 = t3 + p_dino_patches
+    t5 = t4 + p_drop_pose
+    t6 = t5 + p_pose_only
+
+    drop_both = rand < t1
+    drop_dino = (rand >= t1) & (rand < t2)
+    drop_text_and_patches = (rand >= t2) & (rand < t3)
+    drop_text_and_cls = (rand >= t3) & (rand < t4)
+    cat_drop_pose = (rand >= t4) & (rand < t5)
+    cat_pose_only = (rand >= t5) & (rand < t6)
+
+    return {
+        'drop_text': drop_both | drop_text_and_patches | drop_text_and_cls | cat_pose_only,
+        'drop_dino_cls': drop_both | drop_dino | drop_text_and_cls | cat_pose_only,
+        'drop_dino_patches': drop_both | drop_dino | drop_text_and_patches | cat_pose_only,
+        'drop_pose': drop_both | drop_dino | drop_text_and_patches | drop_text_and_cls | cat_drop_pose,
+    }
+
+
+def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, pose_kpts=None, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05, maskdit_config=None, precomputed_masks=None):
     """Compute flow matching loss with mutually exclusive CFG dropout.
     
     Supports two prediction modes:
@@ -204,6 +244,8 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
         micro_step: current micro-step (for every-N gating)
         prediction_type: "v_prediction" or "x_prediction"
         t_clamp_min: minimum t for x→v conversion (avoids div-by-zero)
+        precomputed_masks: optional dict from precompute_cfg_masks() — avoids
+            graph breaks from CFG dropout logic when using torch.compile
     
     Returns:
         loss: scalar tensor, or (loss, v_pred, repa_loss, lpips_loss, mae_loss) if return_v_pred=True
@@ -229,38 +271,40 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     # Integrating backward in time (sampling): z_t -> z_{t-dt} moves toward data
     v_target = z1 - x0
     
-    # Mutually exclusive CFG dropout (categorical sampling)
-    # Categories: uncond, text-only, dino-cls-only, dino-patches-only,
-    #             drop-pose-only, pose-only, all-present
-    rand = torch.rand(B, device=device)
-    p_both = cfg_probs['p_uncond']
-    p_text = cfg_probs['p_text_only']
-    p_dino_cls = cfg_probs['p_dino_cls_only']
-    p_dino_patches = cfg_probs['p_dino_patches_only']
-    p_drop_pose = cfg_probs.get('p_drop_pose', 0.0)
-    p_pose_only = cfg_probs.get('p_pose_only', 0.0)
-    
-    # Assign to exclusive categories (thresholds accumulate)
-    t1 = p_both
-    t2 = t1 + p_text
-    t3 = t2 + p_dino_cls
-    t4 = t3 + p_dino_patches
-    t5 = t4 + p_drop_pose
-    t6 = t5 + p_pose_only
-    
-    drop_both = rand < t1                       # fully unconditional
-    drop_dino = (rand >= t1) & (rand < t2)      # text-only (drop DINO + pose)
-    drop_text_and_patches = (rand >= t2) & (rand < t3)  # DINO-CLS-only
-    drop_text_and_cls = (rand >= t3) & (rand < t4)      # DINO-patches-only
-    cat_drop_pose = (rand >= t4) & (rand < t5)          # drop only pose
-    cat_pose_only = (rand >= t5) & (rand < t6)          # pose only (drop text + DINO)
-    # Remainder has all conditionings present
-    
-    # Combine masks for specific components
-    drop_text = drop_both | drop_text_and_patches | drop_text_and_cls | cat_pose_only
-    drop_dino_cls = drop_both | drop_dino | drop_text_and_cls | cat_pose_only
-    drop_dino_patches_mask = drop_both | drop_dino | drop_text_and_patches | cat_pose_only
-    drop_pose = drop_both | drop_dino | drop_text_and_patches | drop_text_and_cls | cat_drop_pose
+    # CFG dropout masks — use precomputed if available (avoids graph breaks)
+    if precomputed_masks is not None:
+        drop_text = precomputed_masks['drop_text'].to(device)
+        drop_dino_cls = precomputed_masks['drop_dino_cls'].to(device)
+        drop_dino_patches_mask = precomputed_masks['drop_dino_patches'].to(device)
+        drop_pose = precomputed_masks['drop_pose'].to(device)
+    else:
+        # Mutually exclusive CFG dropout (categorical sampling)
+        rand = torch.rand(B, device=device)
+        p_both = cfg_probs['p_uncond']
+        p_text = cfg_probs['p_text_only']
+        p_dino_cls = cfg_probs['p_dino_cls_only']
+        p_dino_patches = cfg_probs['p_dino_patches_only']
+        p_drop_pose = cfg_probs.get('p_drop_pose', 0.0)
+        p_pose_only = cfg_probs.get('p_pose_only', 0.0)
+        
+        t1 = p_both
+        t2 = t1 + p_text
+        t3 = t2 + p_dino_cls
+        t4 = t3 + p_dino_patches
+        t5 = t4 + p_drop_pose
+        t6 = t5 + p_pose_only
+        
+        drop_both = rand < t1
+        drop_dino = (rand >= t1) & (rand < t2)
+        drop_text_and_patches = (rand >= t2) & (rand < t3)
+        drop_text_and_cls = (rand >= t3) & (rand < t4)
+        cat_drop_pose = (rand >= t4) & (rand < t5)
+        cat_pose_only = (rand >= t5) & (rand < t6)
+        
+        drop_text = drop_both | drop_text_and_patches | drop_text_and_cls | cat_pose_only
+        drop_dino_cls = drop_both | drop_dino | drop_text_and_cls | cat_pose_only
+        drop_dino_patches_mask = drop_both | drop_dino | drop_text_and_patches | cat_pose_only
+        drop_pose = drop_both | drop_dino | drop_text_and_patches | drop_text_and_cls | cat_drop_pose
     
     # Determine if we need REPA hidden states or MaskDiT info
     use_repa = repa_config is not None and repa_config.enabled
@@ -749,6 +793,11 @@ class Trainer:
             dino_patches_mask = dino_patches_mask.to(self.device)
         pose_kpts = batch['pose_keypoints'].to(self.device)
         
+        # Pre-compute CFG masks outside the compiled region.
+        # On APU unified memory, CPU-created masks are GPU-accessible at zero cost.
+        # This avoids graph breaks from the branch-heavy categorical sampling logic.
+        cfg_masks = precompute_cfg_masks(x0.shape[0], self.cfg_probs, device=self.device)
+        
         # Determine autocast dtype
         amp_dtype = getattr(self, '_amp_dtype', None)
         use_amp = amp_dtype is not None
@@ -767,6 +816,7 @@ class Trainer:
                 prediction_type=getattr(self, 'prediction_type', 'v_prediction'),
                 t_clamp_min=getattr(self, 't_clamp_min', 0.05),
                 maskdit_config=getattr(self, 'maskdit_config', None),
+                precomputed_masks=cfg_masks,
             )
         
         # Scale loss by accumulation steps
