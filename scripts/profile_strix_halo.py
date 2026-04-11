@@ -19,7 +19,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def profile_step(config_path: str, device: str, num_steps: int, use_torch_profile: bool, resolution: int = 256):
+def profile_step(config_path: str, device: str, num_steps: int, use_torch_profile: bool, resolution: int = 256, batch_size_override: int = None):
     import torch
     from production.config_loader import load_config
     from production.model import NanoDiT
@@ -83,7 +83,7 @@ def profile_step(config_path: str, device: str, num_steps: int, use_torch_profil
     # Synthetic data at target resolution
     H, W = resolution, resolution
     patch_size = model_cfg.patch_size
-    B = training_cfg.batch_size
+    B = batch_size_override if batch_size_override is not None else training_cfg.batch_size
     hidden = model_cfg.hidden_size
     h_p, w_p = H // patch_size, W // patch_size
     n_patches = h_p * w_p
@@ -251,7 +251,8 @@ if __name__ == '__main__':
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--steps', type=int, default=5)
     parser.add_argument('--resolution', type=int, default=256, help='Image resolution (e.g. 256, 512, 1024)')
+    parser.add_argument('--batch-size', type=int, default=None, help='Override batch size from config')
     parser.add_argument('--torch-profile', action='store_true')
     args = parser.parse_args()
 
-    profile_step(args.config, args.device, args.steps, args.torch_profile, args.resolution)
+    profile_step(args.config, args.device, args.steps, args.torch_profile, args.resolution, args.batch_size)
