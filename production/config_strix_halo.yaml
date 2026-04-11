@@ -1,6 +1,10 @@
 # Strix Halo APU Training Configuration
 # Targets AMD Strix Halo (RDNA 3.5 / gfx1151) with 128GB unified LPDDR5X memory
 #
+# Requires AMD gfx1151 nightly PyTorch:
+#   pip install -U --pre torch torchvision torchaudio \
+#       --index-url https://rocm.nightlies.amd.com/v2/gfx1151/
+#
 # Key differences from production config (RTX 4090):
 #   - No gradient checkpointing: 128GB unified memory can hold all activations
 #   - No MaskDiT: Not needed when memory is abundant
@@ -9,6 +13,7 @@
 #   - Larger micro-batches: Memory headroom allows batch_size > 1
 #   - bfloat16 precision: RDNA 3.5 supports native bf16 via WMMA instructions
 #   - Inductor max-autotune: Optimizes Triton kernels for RDNA 3.5 cache hierarchy
+#   - AOTriton: 19× SDPA speedup (set automatically by train_production.py)
 
 model:
   hidden_size: 768

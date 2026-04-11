@@ -26,9 +26,10 @@ from .train import ProductionTrainer
 def _setup_device(device_arg: str, gpu_idx: int) -> torch.device:
     """Setup compute device with CUDA/ROCm auto-detection.
     
-    For ROCm (AMD GPUs): sets HSA_OVERRIDE_GFX_VERSION if needed for
-    Strix Halo (gfx1151) compatibility. ROCm 7.2+ has native gfx1151
-    support, but the override is set as a safety net.
+    For ROCm (AMD GPUs) on Strix Halo (gfx1151):
+    - Enables AOTriton experimental kernels (19× SDPA speedup)
+    - Clears PYTORCH_HIP_ALLOC_CONF if set to crash-inducing 'backend:malloc'
+    - gfx1151 nightly builds ship native kernels; HSA_OVERRIDE is no longer needed
     """
     if device_arg == 'cpu':
         print("Using device: CPU")
@@ -48,13 +49,29 @@ def _setup_device(device_arg: str, gpu_idx: int) -> torch.device:
         print(f"Using device: {device} (ROCm {torch.version.hip})")
         print(f"GPU: {gpu_name}")
         
-        # Strix Halo (gfx1151): ROCm 7.2+ has native support, but set
-        # HSA_OVERRIDE_GFX_VERSION as a safety net for kernel dispatch.
         gcn_arch = torch.cuda.get_device_properties(device).gcnArchName if hasattr(torch.cuda.get_device_properties(device), 'gcnArchName') else ''
+        
         if 'gfx1151' in gcn_arch or 'strix' in gpu_name.lower():
-            if 'HSA_OVERRIDE_GFX_VERSION' not in os.environ:
-                print("  Strix Halo detected — setting HSA_OVERRIDE_GFX_VERSION=11.0.0")
-                os.environ['HSA_OVERRIDE_GFX_VERSION'] = '11.0.0'
+            print(f"  Strix Halo detected (GCN: {gcn_arch})")
+            
+            # AOTriton: ahead-of-time compiled Triton kernels for FlashAttention/SDPA.
+            # Gives ~19× speedup on SDPA (44ms → 2.3ms per call).
+            # See https://github.com/ROCm/ROCm/issues/6034
+            if 'TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL' not in os.environ:
+                os.environ['TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL'] = '1'
+                print("  AOTriton experimental kernels: ENABLED (critical for SDPA performance)")
+            
+            # Clear crash-inducing HIP allocator config set by some ROCm shell profiles
+            hip_alloc = os.environ.get('PYTORCH_HIP_ALLOC_CONF', '')
+            if 'backend:malloc' in hip_alloc:
+                del os.environ['PYTORCH_HIP_ALLOC_CONF']
+                print("  Cleared PYTORCH_HIP_ALLOC_CONF=backend:malloc (causes crashes)")
+            
+            # Note: gfx1151 nightly builds (rocm.nightlies.amd.com/v2/gfx1151/)
+            # ship native kernels. HSA_OVERRIDE_GFX_VERSION is no longer needed
+            # and may cause issues. Only set as fallback for older ROCm builds.
+            if 'HSA_OVERRIDE_GFX_VERSION' in os.environ:
+                print(f"  HSA_OVERRIDE_GFX_VERSION={os.environ['HSA_OVERRIDE_GFX_VERSION']} (user-set)")
         
         # Report unified memory info if available
         total_mem = torch.cuda.get_device_properties(device).total_mem / 1024**3

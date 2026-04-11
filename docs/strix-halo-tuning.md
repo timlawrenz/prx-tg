@@ -4,7 +4,9 @@ System-level optimizations for running the prx-tg NanoDiT training pipeline on A
 
 ## Table of Contents
 
-- [ROCm 7.2 Stack Installation](#rocm-72-stack-installation)
+- [PyTorch Installation (AMD gfx1151 Nightlies)](#pytorch-installation-amd-gfx1151-nightlies)
+- [AOTriton — Critical for FlashAttention Performance](#aotriton--critical-for-flashattention-performance)
+- [Known bf16 Bugs on gfx1151](#known-bf16-bugs-on-gfx1151)
 - [GTT/Shared Memory Configuration](#gttshared-memory-configuration)
 - [Power Budget Rebalancing](#power-budget-rebalancing)
 - [WMMA Dispatch Verification](#wmma-dispatch-verification)
@@ -13,29 +15,91 @@ System-level optimizations for running the prx-tg NanoDiT training pipeline on A
 
 ---
 
-## ROCm 7.2 Stack Installation
+## PyTorch Installation (AMD gfx1151 Nightlies)
 
-ROCm 7.2 is the current stable release with official Strix Halo (gfx1151) support. PyTorch nightly builds are available targeting this stack.
+AMD publishes nightly PyTorch builds compiled specifically for Strix Halo (gfx1151)
+with native AOTriton kernels. These ship ahead of the stable ROCm releases and
+include critical performance fixes not yet available in mainline wheels.
 
-### Why ROCm 7.2?
-
-- **FlashAttention**: Supported for Strix Halo — critical for the quad-conditioned NanoDiT's dense sequence lengths
-- **Faster Inductor/Dynamo**: Improved cold-start compilation times for torch.compile
-- **gfx1151 support**: Official hardware detection and dispatch for RDNA 3.5
-- **Release notes**: https://rocm.docs.amd.com/en/docs-7.2.0/about/release-notes.html
+As of April 2026, the nightlies provide:
+- **PyTorch 2.10+** with ROCm 7.12 backend
+- **Triton 3.4+** with gfx1151-specific kernel compilation
+- **AOTriton** — ahead-of-time compiled FlashAttention/SDPA kernels
+- **Native gfx1151 support** — `HSA_OVERRIDE_GFX_VERSION` is no longer needed
 
 ### Installation
 
 ```bash
-# 1. Install ROCm 7.2
-# Follow official instructions at https://rocm.docs.amd.com/en/docs-7.2.0/
+# Clean install (recommended)
+pip uninstall torch torchvision torchaudio -y
+pip install -U --pre torch torchvision torchaudio \
+    --index-url https://rocm.nightlies.amd.com/v2/gfx1151/
 
-# 2. Install PyTorch nightly with ROCm 7.2 support
-pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/rocm7.2
-
-# 3. Verify
-python -c "import torch; print(torch.version.hip); print(torch.cuda.is_available())"
+# Verify
+python -c "import torch; print(f'PyTorch {torch.__version__}'); print(f'HIP: {torch.version.hip}'); print(f'CUDA available: {torch.cuda.is_available()}')"
 ```
+
+> **Note**: These nightlies are built against a newer ROCm than stable releases.
+> The `PYTORCH_HIP_ALLOC_CONF=backend:malloc` variable set by some ROCm shell
+> profiles will crash PyTorch — `unset` it or let `train_production.py` handle it.
+
+---
+
+## AOTriton — Critical for FlashAttention Performance
+
+AOTriton (Ahead-of-Time Triton) pre-compiles GPU kernels for gfx1151, eliminating
+JIT compilation overhead. **This is the single most impactful optimization** — it
+gives a **19× speedup on SDPA** (44ms → 2.3ms per call).
+
+### Enable AOTriton
+
+```bash
+export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+```
+
+This is set automatically by `train_production.py` when Strix Halo is detected.
+Without this flag, FlashAttention falls back to a naive implementation that makes
+training unviably slow.
+
+**Benchmark** (from [ROCm/ROCm#6034](https://github.com/ROCm/ROCm/issues/6034)):
+| SDPA Mode         | Time per call | Speedup |
+|-------------------|--------------|---------|
+| Without AOTriton  | 44.0 ms      | 1×      |
+| With AOTriton     | 2.3 ms       | **19×** |
+
+### Verify AOTriton is Active
+
+```python
+import torch, os
+os.environ['TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL'] = '1'
+x = torch.randn(2, 12, 256, 64, device='cuda', dtype=torch.bfloat16)
+# This should complete in < 5ms, not 40ms+
+with torch.no_grad():
+    out = torch.nn.functional.scaled_dot_product_attention(x, x, x)
+print("SDPA completed — AOTriton active")
+```
+
+---
+
+## Known bf16 Bugs on gfx1151
+
+Community testing ([ROCm/ROCm#6034](https://github.com/ROCm/ROCm/issues/6034),
+93 experiments) has identified several bf16 precision boundaries on Strix Halo.
+These affect training stability and must be worked around:
+
+| Bug | Symptom | Workaround |
+|-----|---------|------------|
+| Small batch accumulation | NaN within 15 steps at effective batch < 2^15 | Use effective batch ≥ 32768 tokens |
+| Small head dim (32) | NaN crash | Use `HEAD_DIM ≥ 64` (NanoDiT uses 64 ✓) |
+| Deep networks (depth > 12) | Non-deterministic NaN/timeout | Monitor loss early; our depth=18 needs testing |
+| Wide aspect ratios (>64) | Timeout/crash | Keep aspect ratio ≤ 64 (our buckets are ≤ 2:1 ✓) |
+| High Muon matrix LR (>0.15) | Sharp NaN cliff | Keep Muon LR ≤ 0.15 |
+
+**Our NanoDiT (hidden=768, depth=18, head_dim=64) hits the "deep network" boundary.**
+This means you should:
+1. Monitor for NaN in early training steps
+2. Consider starting at depth=10-12 and scaling up
+3. Use gradient clipping (already configured at 1.0)
 
 ---
 
@@ -164,15 +228,12 @@ grep -i "wmma\|mfma\|matrix" results.csv
 
 ### Forcing Correct Dispatch
 
-If WMMA is not engaged:
+If WMMA is not engaged and you're on an older ROCm build without native gfx1151 kernels:
 
 ```bash
 # Force GFX version mapping (treat gfx1151 as gfx1100/Navi 31)
+# NOTE: Not needed with AMD gfx1151 nightlies (rocm.nightlies.amd.com/v2/gfx1151/)
 export HSA_OVERRIDE_GFX_VERSION=11.0.0
-
-# This is set automatically by production/train_production.py when it
-# detects a Strix Halo (gfx1151) architecture, but you can set it
-# manually for testing.
 ```
 
 ---
@@ -182,14 +243,17 @@ export HSA_OVERRIDE_GFX_VERSION=11.0.0
 Key environment variables for Strix Halo training:
 
 ```bash
-# ROCm device targeting (set automatically by train_production.py)
-export HSA_OVERRIDE_GFX_VERSION=11.0.0
+# AOTriton experimental kernels — CRITICAL for FlashAttention/SDPA performance
+# (set automatically by train_production.py on Strix Halo detection)
+export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+
+# Clear crash-inducing HIP allocator config (set by some ROCm shell profiles)
+unset PYTORCH_HIP_ALLOC_CONF
 
 # Triton cache (persist compiled kernels across runs)
 export TORCHINDUCTOR_CACHE_DIR=~/.cache/torch_inductor
 
 # Inductor settings (set automatically when inductor_max_autotune=true)
-# These maximize kernel autotuning for the specific hardware
 export TORCH_INDUCTOR_MAX_AUTOTUNE=1
 
 # Disable NUMA balancing (can cause latency spikes on APU)
@@ -200,6 +264,9 @@ export HIP_VISIBLE_DEVICES=0
 
 # Increase file descriptor limit (for mmap data loading with many .npy files)
 ulimit -n 65536
+
+# NOTE: HSA_OVERRIDE_GFX_VERSION is NOT needed with gfx1151 nightlies.
+# Only set it if you're on an older ROCm build without native gfx1151 support.
 ```
 
 ---

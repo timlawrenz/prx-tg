@@ -105,8 +105,8 @@ def verify_wmma(device: str = 'cuda', size: int = 1024):
         print("✗ No WMMA/MFMA kernels detected — matmuls may be using scalar ALUs")
         print("\nPossible fixes:")
         print("  1. Set HSA_OVERRIDE_GFX_VERSION=11.0.0")
-        print("  2. Upgrade to ROCm 7.2+ (https://rocm.docs.amd.com/en/docs-7.2.0/)")
-        print("  3. Ensure PyTorch ROCm nightly supports gfx1151")
+        print("  2. Install gfx1151 nightlies: pip install --pre torch --index-url https://rocm.nightlies.amd.com/v2/gfx1151/")
+        print("  3. Enable AOTriton: export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1")
         print(f"\nNote: Kernel names seen: {kernel_names[:5]}")
         print("  Look for 'wmma', 'mfma', or 'dot' in kernel names for confirmation")
         return False
