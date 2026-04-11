@@ -626,6 +626,12 @@ class Trainer:
             adjust_lr_fn=muon_cfg.adjust_lr_fn,
         )
         
+        # Newton-Schulz warmup: use fewer iterations early in training
+        self._ns_warmup_steps = muon_cfg.ns_warmup_steps
+        self._ns_warmup_value = muon_cfg.ns_warmup_value
+        self._ns_full_value = muon_cfg.ns_steps
+        self._ns_warmup_logged = False
+        
         if adam_params:
             self.optimizer_adam = torch.optim.AdamW(
                 adam_params,
@@ -639,8 +645,24 @@ class Trainer:
         self._adam_param_count = sum(p.numel() for p in adam_params)
     
     def _step_optimizers(self):
-        """Step all active optimizers."""
+        """Step all active optimizers.
+        
+        Handles Newton-Schulz warmup: uses fewer NS iterations during early
+        training steps (when weight geometry matters less), then transitions
+        to full NS iterations for precise orthogonalization.
+        """
         if self.optimizer_muon is not None:
+            # Newton-Schulz warmup: dynamically adjust ns_steps
+            ns_warmup = getattr(self, '_ns_warmup_steps', 0)
+            if ns_warmup > 0:
+                if self.step < ns_warmup:
+                    for pg in self.optimizer_muon.param_groups:
+                        pg['ns_steps'] = self._ns_warmup_value
+                elif not self._ns_warmup_logged:
+                    for pg in self.optimizer_muon.param_groups:
+                        pg['ns_steps'] = self._ns_full_value
+                    print(f"  NS warmup complete: ns_steps {self._ns_warmup_value} → {self._ns_full_value} at step {self.step}")
+                    self._ns_warmup_logged = True
             self.optimizer_muon.step()
         if self.optimizer_adam is not None:
             self.optimizer_adam.step()

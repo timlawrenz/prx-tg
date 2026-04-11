@@ -32,6 +32,8 @@ class MuonConfig:
     momentum: float = 0.95
     nesterov: bool = True
     ns_steps: int = 5
+    ns_warmup_steps: int = 0  # Use fewer NS steps during warmup (0 = disabled)
+    ns_warmup_value: int = 2  # NS steps to use during warmup period
     adjust_lr_fn: str = "match_rms_adamw"  # Matches AdamW RMS, reuses same LR
 
 
