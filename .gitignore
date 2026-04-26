@@ -38,6 +38,8 @@ visual_debug
 visual_debug/  # Generated images from training
 experiments/*/  # Experiment tracking directories (config snapshots)
 !experiments/README.md  # But keep the README
+!experiments/ablations/
+!experiments/ablations/*.yaml
 *.csv  # Tuning results
 
 # OS files
@@ -56,4 +58,4 @@ Thumbs.db
 .ipynb_checkpoints/
 *.ipynb
 .latent_stats.json
-experiments/
+
