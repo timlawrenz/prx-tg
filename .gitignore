@@ -59,3 +59,4 @@ Thumbs.db
 *.ipynb
 .latent_stats.json
 
+visual_debug/
