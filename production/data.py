@@ -523,6 +523,10 @@ def get_production_dataloader(config, device='cuda'):
     training_cfg = config.training
     pixel_space = getattr(config.model, 'prediction_type', 'v_prediction') == 'x_prediction'
 
+    # ── Stratum source branch ──
+    if data_cfg.source == "stratum":
+        return get_stratum_production_dataloader(config, device)
+
     shard_dir = Path(data_cfg.shard_base_dir)
 
     print(f"  Shard base dir: {shard_dir}")
@@ -564,6 +568,50 @@ def get_production_dataloader(config, device='cuda'):
         bucket_weights = [1.0 for _ in bucket_weights]
 
     return BucketAwareDataLoader(bucket_datasets, bucket_weights, pixel_space=pixel_space)
+
+
+def get_stratum_production_dataloader(config, device='cuda'):
+    """Create production dataloader from stratum-ffhq format (local or HF).
+
+    Returns a StratumDataset or StratumHFDataset — same batch dict format
+    as the WebDataset pipeline, so it drops into BucketAwareDataLoader.
+    """
+    from .stratum_data import StratumDataset, StratumHFDataset
+
+    data_cfg = config.data
+    training_cfg = config.training
+    pixel_space = getattr(config.model, 'prediction_type', 'v_prediction') == 'x_prediction'
+
+    image_base = Path(data_cfg.image_base) if data_cfg.image_base else None
+
+    if data_cfg.stratum_source == "huggingface":
+        print(f"  Stratum source: HuggingFace ({data_cfg.stratum_repo})")
+        return StratumHFDataset(
+            repo=data_cfg.stratum_repo,
+            batch_size=training_cfg.batch_size,
+            shuffle=True,
+            flip_prob=data_cfg.horizontal_flip_prob,
+            target_latent_size=64 if not pixel_space else 1024,
+            image_base=image_base,
+            pixel_space=pixel_space,
+        )
+    else:
+        stratum_dir = Path(data_cfg.stratum_dir) if data_cfg.stratum_dir else None
+        if stratum_dir is None or not stratum_dir.is_dir():
+            raise ValueError(
+                f"stratum_dir not found: {data_cfg.stratum_dir}. "
+                f"Set data.stratum_dir in config or use data.stratum_source: huggingface."
+            )
+        print(f"  Stratum source: local ({stratum_dir})")
+        return StratumDataset(
+            dataset_dir=stratum_dir,
+            batch_size=training_cfg.batch_size,
+            shuffle=True,
+            flip_prob=data_cfg.horizontal_flip_prob,
+            target_latent_size=64 if not pixel_space else 1024,
+            image_base=image_base,
+            pixel_space=pixel_space,
+        )
 
 
 if __name__ == "__main__":

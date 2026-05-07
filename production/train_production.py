@@ -91,8 +91,14 @@ def print_config_summary(config):
     print(f"  Peak LR: {config.training.optimizer.lr}")
     print(f"  Precision: {config.training.precision}")
     print("\nData:")
-    print(f"  Shard dir: {config.data.shard_base_dir}")
-    print(f"  Buckets: {len(config.data.buckets)}")
+    if config.data.source == "stratum":
+        print(f"  Source: stratum")
+        print(f"  Stratum dir: {config.data.stratum_dir}")
+        if config.data.stratum_source == "huggingface":
+            print(f"  HF repo: {config.data.stratum_repo}")
+    else:
+        print(f"  Shard dir: {config.data.shard_base_dir}")
+        print(f"  Buckets: {len(config.data.buckets)}")
     print(f"  Flip prob: {config.data.horizontal_flip_prob}")
     print("\nCheckpoints:")
     print(f"  Save every: {config.checkpoint.save_every} steps")

@@ -135,6 +135,61 @@ Each shard contains:
 
 ### Storage Requirements
 
+#### Alternative: stratum-ffhq Format (Per-Image Directories)
+
+In addition to the WebDataset shards, prx-tg can also consume data in the **stratum-ffhq** per-image directory format — the same format produced by [stratum-hq](https://github.com/timlawrenz/stratum-hq) and published on HuggingFace as [timlawrenz/stratum-ffhq](https://huggingface.co/datasets/timlawrenz/stratum-ffhq).
+
+stratum-ffhq stores each image as its own directory with individual `.npy` files for each modality:
+
+```
+stratum-ffhq/
+  00001/
+    metadata.json       # width, height, aspect_bucket
+    caption.txt         # dense objective description
+    dinov3_cls.npy      # (1024,)   float16 — global style embedding
+    dinov3_patches.npy  # (N, 1024) float16 — spatial patch tokens
+    t5_hidden.npy       # (512, 1024) float16 — T5 hidden states
+    t5_mask.npy         # (512,)    uint8   — attention mask
+    pose.npy            # (133, 3)  float16 — DWPose whole-body keypoints
+    pixel.npy           # (3, H, W) float16 — bucketed RGB crop (opt-in)
+  00002/
+    ...
+```
+
+**Key difference from WebDataset shards**: stratum-ffhq does NOT bundle the original images by default (licensing constraint). For pixel-space training, use either:
+- The opt-in `pixel.npy` layer (enable with `--passes pixel` in stratum-hq)
+- A separate directory of FFHQ originals matched by image ID (`image_base` config)
+
+**Using stratum as a data source**:
+
+```yaml
+# config.yaml
+data:
+  source: stratum                    # Switch from "shards" to "stratum"
+  stratum_dir: /path/to/stratum-ffhq # Local dataset
+  stratum_source: local              # or "huggingface" for streaming
+  image_base: /path/to/ffhq/images   # Original images (only needed without pixel.npy)
+```
+
+**HuggingFace streaming** (no local download needed):
+
+```yaml
+data:
+  source: stratum
+  stratum_source: huggingface
+  stratum_repo: timlawrenz/stratum-ffhq
+  image_base: /path/to/ffhq/images
+```
+
+**Downloading stratum-ffhq locally**:
+
+```bash
+python scripts/download_stratum.py \
+  --output ./stratum-ffhq \
+  --layers caption,dinov3,t5,pose,pixel \
+  --max-samples 1000
+```
+
 **Per image**:
 - Pixel data: ~6 MB (depends on bucket)
 - T5 embeddings: ~1 MB
@@ -342,7 +397,8 @@ prx-tg/
 ├── production/              # Core training code
 │   ├── train.py            # Training loop (optimizer-step based)
 │   ├── model.py            # NanoDiT with SDPA & high-freq timesteps
-│   ├── data.py             # WebDataset loading, bucket-specific stats
+│   ├── data.py             # WebDataset + stratum loading, bucket stats
+│   ├── stratum_data.py     # stratum-ffhq dataset loader (local + HF streaming)
 │   ├── validate.py         # Validation suite
 │   ├── visual_debug.py     # Quick sample generation
 │   ├── sample.py           # Inference sampler (Euler)
@@ -350,7 +406,12 @@ prx-tg/
 │
 ├── scripts/
 │   ├── generate_approved_image_dataset.py  # Data preprocessing
+│   ├── download_stratum.py                 # Download stratum-ffhq from HF
 │   └── test_*.py           # Diagnostic scripts
+│
+├── configs/
+│   ├── stratum_example.yaml    # Example stratum data source config
+│   └── stratum_tiny_test.yaml  # Tiny config for pipeline validation
 │
 ├── data/
 │   ├── approved/           # Original images

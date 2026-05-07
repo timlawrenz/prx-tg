@@ -1,0 +1,87 @@
+# Tiny stratum validation config — 16 samples, tiny model, ~50 steps
+# Usage: python -m production.train_production --config configs/stratum_tiny_test.yaml
+
+model:
+  hidden_size: 128
+  depth: 4
+  num_heads: 4
+  patch_size: 16
+  mlp_ratio: 2.0
+  in_channels: 3
+  prediction_type: x_prediction
+  input_size: 64
+  num_pose_joints: 133
+  pose_confidence_threshold: 0.05
+
+training:
+  total_steps: 50
+  warmup_steps: 10
+  batch_size: 2
+  grad_accumulation_steps: 1
+  optimizer:
+    type: AdamW
+    lr: 0.001
+    min_lr: 1.0e-06
+    betas:
+    - 0.9
+    - 0.95
+    weight_decay: 0.01
+    eps: 1.0e-08
+  grad_clip: 1.0
+  ema_decay: 0.9999
+  ema_warmup_steps: 10
+  cfg_dropout:
+    p_uncond: 0.1
+    p_text_only: 0.0
+    p_dino_cls_only: 0.0
+    p_dino_patches_only: 0.0
+    p_drop_pose: 0.0
+    p_pose_only: 0.0
+  repa:
+    enabled: false
+  tread:
+    enabled: false
+  timestep_sampling: uniform
+  gradient_checkpointing: false
+  mixed_precision: false
+  precision: float32
+  compile: false
+  resolution_schedule:
+  - until_step: 50
+    scale: 1.0
+  perceptual:
+    enabled: false
+
+data:
+  source: stratum
+  stratum_dir: /tmp/stratum_ds_25
+  stratum_source: local
+  # No image_base needed — pixel.npy is available in stratum dir
+  horizontal_flip_prob: 0.0
+  num_workers: 0
+  prefetch_factor: 1
+  pin_memory: false
+
+sampling:
+  num_steps: 10
+  text_scale: 1.0
+  dino_scale: 1.0
+
+validation:
+  enabled: false
+  visual_debug_interval: 0
+
+checkpoint:
+  save_every: 100
+  keep_last_n: 1
+  output_dir: /tmp/stratum_checkpoints
+  save_optimizer: false
+
+logging:
+  log_every: 10
+  log_file: /tmp/stratum_test_training.log
+  monitor_velocity_norm: false
+  monitor_grad_norm: false
+
+paths:
+  t5_path: /dev/null

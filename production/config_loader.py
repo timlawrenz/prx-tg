@@ -171,15 +171,24 @@ class TrainingConfig:
 @dataclass
 class DataConfig:
     """Data loading configuration."""
+    # Data source: "shards" (WebDataset) or "stratum" (stratum-ffhq format)
+    source: str = "shards"
+
     shard_base_dir: str = "data/shards"
     buckets: List[str] = field(default_factory=lambda: [
         "1024x1024", "832x1216", "1216x832", "768x1280", "1280x768"
     ])
     bucket_sampling: Literal["proportional", "uniform"] = "proportional"
-    
+
+    # Stratum-specific options
+    stratum_dir: str = ""             # Local stratum dataset path
+    stratum_repo: str = "timlawrenz/stratum-ffhq"  # HF repo
+    stratum_source: str = "local"     # "local" or "huggingface"
+    image_base: str = ""              # Original images directory
+
     horizontal_flip_prob: float = 0.5
     # swap_caption_lr removed - caption text is unused during training
-    
+
     num_workers: int = 4
     prefetch_factor: int = 2
     pin_memory: bool = True
