@@ -60,3 +60,18 @@ Thumbs.db
 .latent_stats.json
 
 visual_debug/
+
+# Scratch / debug scripts (one-off experiment tools)
+debug_load.py
+debug_load_A.py
+download_A.py
+download_and_validate.py
+eval_C_D.py
+test_download.py
+val_B.log
+
+# Validation eval artifacts
+validation_evals/
+
+# Environment
+.env
