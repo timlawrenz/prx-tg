@@ -49,16 +49,26 @@ def main():
     
     # Create model
     print("Creating model architecture...")
-    model = NanoDiT(
-        input_size=config.model.input_size,
-        patch_size=config.model.patch_size,
-        in_channels=config.model.in_channels,
-        hidden_size=config.model.hidden_size,
-        depth=config.model.depth,
-        num_heads=config.model.num_heads,
-        mlp_ratio=config.model.mlp_ratio,
-        use_gradient_checkpointing=False, # Not needed for inference
-    )
+    kwargs = {
+        'input_size': config.model.input_size,
+        'patch_size': config.model.patch_size,
+        'in_channels': config.model.in_channels,
+        'hidden_size': config.model.hidden_size,
+        'depth': config.model.depth,
+        'num_heads': config.model.num_heads,
+        'mlp_ratio': config.model.mlp_ratio,
+        'use_gradient_checkpointing': False,
+    }
+    
+    # Handle optional REPA and TREAD settings
+    if hasattr(config.training, 'repa') and getattr(config.training.repa, 'enabled', False):
+        kwargs['repa_block_idx'] = getattr(config.training.repa, 'block_index', -1)
+    if hasattr(config.training, 'tread') and getattr(config.training.tread, 'enabled', False):
+        kwargs['tread_route_start'] = getattr(config.training.tread, 'route_start', 1)
+        kwargs['tread_route_end'] = getattr(config.training.tread, 'route_end', -1)
+        kwargs['tread_routing_prob'] = getattr(config.training.tread, 'routing_probability', 0.5)
+
+    model = NanoDiT(**kwargs)
     
     # Create EMA container
     ema = EMAModel(
@@ -91,7 +101,10 @@ def main():
         tensorboard_writer=writer,
         text_scale=config.sampling.text_scale,
         dino_scale=config.sampling.dino_scale,
-        num_steps=config.sampling.num_steps
+        num_steps=config.sampling.num_steps,
+        prediction_type=getattr(config.model, 'prediction_type', 'v_prediction'),
+        self_guidance=getattr(config.sampling, 'self_guidance', False),
+        guidance_scale=getattr(config.sampling, 'guidance_scale', 3.0)
     )
     
     # Run validation
