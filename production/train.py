@@ -178,7 +178,7 @@ def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="c
     return per_token_loss.mean()
 
 
-def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, pose_kpts=None, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05, maskdit_config=None):
+def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, pose_kpts=None, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05, maskdit_config=None, global_step=0):
     """Compute flow matching loss with mutually exclusive CFG dropout.
     
     Supports two prediction modes:
@@ -314,7 +314,8 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
             repa_hidden, dino_patches, dino_patches_mask, repa_config.loss_type,
             visible_idx=tread_visible_idx if tread_enabled else None,
         )
-        loss = loss + repa_config.weight * repa_loss
+        effective_repa_weight = repa_config.get_weight(global_step)
+        loss = loss + effective_repa_weight * repa_loss
     
     # Perceptual (LPIPS) loss — computed every N micro-steps
     lpips_loss = None
@@ -742,6 +743,7 @@ class Trainer:
                 perceptual_module=getattr(self, 'perceptual_module', None),
                 perceptual_config=getattr(self, 'perceptual_config', None),
                 micro_step=getattr(self, 'micro_step', 0),
+                global_step=self.step,
                 prediction_type=getattr(self, 'prediction_type', 'v_prediction'),
                 t_clamp_min=getattr(self, 't_clamp_min', 0.05),
                 maskdit_config=getattr(self, 'maskdit_config', None),
@@ -821,6 +823,8 @@ class Trainer:
         # REPA loss logging
         if repa_loss is not None:
             metrics['repa_loss'] = repa_loss.item()
+            if self.repa_config is not None:
+                metrics['repa_weight'] = self.repa_config.get_weight(self.step)
         
         # LPIPS perceptual loss logging
         if lpips_loss is not None:
@@ -1347,6 +1351,8 @@ class ProductionTrainer(Trainer):
                 self.writer.add_scalar('train/ema_decay', metrics['ema_decay'], step)
             if 'repa_loss' in metrics:
                 self.writer.add_scalar('train/repa_loss', metrics['repa_loss'], step)
+                if 'repa_weight' in metrics:
+                    self.writer.add_scalar('train/repa_weight', metrics['repa_weight'], step)
             if 'lpips_loss' in metrics:
                 self.writer.add_scalar('train/lpips_loss', metrics['lpips_loss'], step)
             if 'mae_loss' in metrics:

@@ -96,11 +96,29 @@ class TREADConfig:
 
 @dataclass
 class REPAConfig:
-    """REPA (REPresentation Alignment) configuration."""
+    """REPA (REPresentation Alignment) configuration.
+
+    Stage-wise decay: REPA weight is held at `weight` until `decay_start_step`,
+    then linearly annealed to 0 by `decay_end_step`.  Set both to 0 (default)
+    to disable decay and keep weight constant for the entire run.
+    """
     enabled: bool = False
     weight: float = 0.5
     block_index: int = -1  # -1 means depth // 2
     loss_type: Literal["cosine", "mse"] = "cosine"
+    decay_start_step: int = 0   # 0 = no decay
+    decay_end_step: int = 0     # 0 = no decay
+
+    def get_weight(self, step: int) -> float:
+        """Return effective REPA weight at the given optimizer step."""
+        if self.decay_end_step <= 0 or self.decay_start_step >= self.decay_end_step:
+            return self.weight  # decay disabled
+        if step <= self.decay_start_step:
+            return self.weight
+        if step >= self.decay_end_step:
+            return 0.0
+        progress = (step - self.decay_start_step) / (self.decay_end_step - self.decay_start_step)
+        return self.weight * (1.0 - progress)
 
 
 @dataclass

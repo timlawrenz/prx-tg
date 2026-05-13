@@ -55,8 +55,8 @@ training:
     weight: 0.5                    # REPA loss weight (per PRX Part 3)
     block_index: -1                # Block to align at (-1 = depth // 2)
     loss_type: "cosine"            # "cosine" or "mse"
-    decay_start_step: 1000         # Begin decaying REPA weight toward 0 at this step (TODO: implement)
-    decay_end_step: 2000           # REPA weight reaches 0 at this step (TODO: implement)
+    decay_start_step: 1000         # Begin decaying REPA weight linearly toward 0 at this step
+    decay_end_step: 2000           # REPA weight reaches 0 at this step
 
   # TREAD (Token Routing) — route 50% of tokens past middle blocks for throughput
   tread:
