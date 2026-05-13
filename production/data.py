@@ -1,4 +1,4 @@
-"""Dataloader for validation shards."""
+"""Dataloader for pixel-space WebDataset shards."""
 
 import re
 import random
@@ -8,147 +8,6 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import webdataset as wds
-
-
-# VAE latent normalization — disabled (pixel-space mode, no VAE latents)
-USE_LATENT_NORMALIZATION = False
-
-
-def compute_latent_stats(shard_dir, num_samples=1000):
-    """Compute global mean and std for VAE latents from dataset.
-    
-    Args:
-        shard_dir: Path to directory containing bucket_*/shard-*.tar files
-        num_samples: Number of samples to process
-    
-    Returns:
-        dict with 'mean' and 'std' keys
-    """
-    import json
-    from pathlib import Path
-    from tqdm import tqdm
-    
-    print(f"\n{'='*60}")
-    print("COMPUTING VAE LATENT STATISTICS")
-    print(f"{'='*60}")
-    
-    path = Path(shard_dir)
-    shards = list(path.glob('bucket_*/shard-*.tar'))
-    if not shards:
-        raise ValueError(f"No shards found in {shard_dir}")
-    
-    print(f"Found {len(shards)} shards")
-    print(f"Computing stats from first {num_samples} samples...")
-    
-    # Create dataset
-    dataset = (
-        wds.WebDataset([str(s) for s in shards], shardshuffle=False, handler=wds.warn_and_continue)
-        .decode(handler=wds.warn_and_continue)
-        .to_tuple("vae.npy", handler=wds.warn_and_continue)
-    )
-    
-    # Accumulate pixel values
-    pixels = []
-    count = 0
-    
-    for (vae,) in tqdm(dataset, desc="Loading samples", total=num_samples):
-        pixels.append(vae.flatten())
-        count += 1
-        if count >= num_samples:
-            break
-    
-    if not pixels:
-        raise ValueError("No samples found in dataset")
-    
-    print("Concatenating data...")
-    all_pixels = np.concatenate(pixels)
-    
-    print("Computing statistics...")
-    # Convert to float64 to avoid overflow in variance computation
-    all_pixels_f64 = all_pixels.astype(np.float64)
-    mean = float(np.mean(all_pixels_f64))
-    std = float(np.std(all_pixels_f64))
-    
-    print(f"\nResults:")
-    print(f"  Samples: {count}")
-    print(f"  Values: {len(all_pixels):,}")
-    print(f"  Mean: {mean:.6f}")
-    print(f"  Std: {std:.6f}")
-    print(f"{'='*60}\n")
-    
-    return {'mean': mean, 'std': std, 'num_samples': count}
-
-
-def load_or_compute_latent_stats(shard_dir, num_samples=1000, force_recompute=False):
-    """Load cached latent stats or compute them if not available.
-    
-    Args:
-        shard_dir: Path to shard directory
-        num_samples: Number of samples to use for computation
-        force_recompute: If True, recompute even if cache exists
-    
-    Returns:
-        dict with 'mean' and 'std' keys
-    """
-    import json
-    from pathlib import Path
-    
-    # Store the cache file inside the specific shard directory
-    cache_path = Path(shard_dir) / ".latent_stats.json"
-    
-    # Try to load from cache
-    if not force_recompute and cache_path.exists():
-        try:
-            with open(cache_path, 'r') as f:
-                stats = json.load(f)
-            print(f"Loaded latent stats from cache: {cache_path}")
-            print(f"  Mean: {stats['mean']:.6f}, Std: {stats['std']:.6f}")
-            return stats
-        except Exception as e:
-            print(f"Warning: Failed to load stats cache: {e}")
-            print("Will recompute statistics...")
-    
-    # Compute statistics
-    stats = compute_latent_stats(shard_dir, num_samples)
-    
-    # Save to cache
-    try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_path, 'w') as f:
-            json.dump(stats, f, indent=2)
-        print(f"Saved latent stats to cache: {cache_path}")
-    except Exception as e:
-        print(f"Warning: Failed to save stats cache: {e}")
-    
-    return stats
-
-
-def normalize_vae_latent(latent):
-    """Normalize VAE latent to zero mean, unit variance.
-    
-    Args:
-        latent: torch.Tensor, VAE latent
-    
-    Returns:
-        normalized: torch.Tensor, normalized latent
-    """
-    if not USE_LATENT_NORMALIZATION:
-        return latent
-    return (latent - FLUX_LATENT_MEAN) / FLUX_LATENT_STD
-
-
-def denormalize_vae_latent(latent):
-    """Denormalize VAE latent back to original scale.
-    
-    Args:
-        latent: torch.Tensor, normalized latent
-    
-    Returns:
-        denormalized: torch.Tensor, original scale latent
-    """
-    if not USE_LATENT_NORMALIZATION:
-        return latent
-    return latent * FLUX_LATENT_STD + FLUX_LATENT_MEAN
 
 
 def swap_left_right(caption):
@@ -161,39 +20,37 @@ def swap_left_right(caption):
     return caption
 
 
-def resize_vae_latent(latent, target_size=64):
-    """Resize VAE latent to target spatial size using bilinear interpolation.
+def resize_image(image, target_size=1024):
+    """Resize image to target spatial size using bilinear interpolation.
 
     Args:
-        latent: (C, H, W) numpy array
-        target_size: int or (H, W) tuple in latent-space
+        image: (C, H, W) numpy array
+        target_size: int or (H, W) tuple in pixels
 
     Returns:
         resized: (C, H, W) torch tensor
     """
-    # Convert to torch and add batch dimension
-    latent_t = torch.from_numpy(latent).unsqueeze(0)  # (1, C, H, W)
-    
+    image_t = torch.from_numpy(image).unsqueeze(0)  # (1, C, H, W)
+
     if isinstance(target_size, tuple):
         target_h, target_w = target_size
     else:
         target_h, target_w = target_size, target_size
 
-    # Resize using bilinear interpolation if needed
-    if latent_t.shape[2] != target_h or latent_t.shape[3] != target_w:
-        latent_t = F.interpolate(
-            latent_t,
+    if image_t.shape[2] != target_h or image_t.shape[3] != target_w:
+        image_t = F.interpolate(
+            image_t,
             size=(target_h, target_w),
             mode='bilinear',
             align_corners=False
         )
-    
-    return latent_t.squeeze(0)  # (C, H, W)
+
+    return image_t.squeeze(0)  # (C, H, W)
 
 
 class ValidationDataset:
-    """Dataset loader for WebDataset shards."""
-    
+    """Dataset loader for pixel-space WebDataset shards."""
+
     def __init__(
         self,
         shard_dir,
@@ -203,25 +60,22 @@ class ValidationDataset:
         target_latent_size=64,
         shard_files=None,
         deterministic=False,
-        pixel_space=False,
     ):
         """
         Args:
-            shard_dir: Path to validation shards (e.g., 'data/shards/validation')
+            shard_dir: Path to shards (e.g., 'data/shards/faces7k/bucket_1024x1024')
             batch_size: Number of samples per batch
             shuffle: Whether to shuffle between epochs
             flip_prob: Probability of horizontal flip augmentation
-            target_latent_size: Target spatial size for VAE latents (64 = 512x512 image)
+            target_latent_size: Target spatial size in pixels
             deterministic: If True, set seeds for reproducible sample ordering
-            pixel_space: If True, load image.npy (RGB) instead of vae.npy (VAE latents)
         """
         self.shard_dir = Path(shard_dir)
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.flip_prob = flip_prob
         self.target_latent_size = target_latent_size
-        self.pixel_space = pixel_space
-        
+
         # Set seeds for deterministic behavior
         if deterministic:
             import random
@@ -229,7 +83,7 @@ class ValidationDataset:
             torch.manual_seed(42)
             random.seed(42)
             np.random.seed(42)
-        
+
         # Find shard files
         if shard_files is None:
             self.shard_files = sorted(self.shard_dir.glob('bucket_*/shard-*.tar'))
@@ -238,113 +92,109 @@ class ValidationDataset:
             self.shard_files = sorted(self.shard_files)
         if not self.shard_files:
             raise ValueError(f"No shard files found in {shard_dir}")
-        
+
         print(f"Found {len(self.shard_files)} shard files")
-    
+
     def process_sample(self, sample):
         """Process a raw WebDataset sample into model inputs.
-        
+
         Args:
-            sample: dict with keys: __key__, json, dinov3.npy, dinov3_patches.npy, image.npy, t5h.npy, t5m.npy, pose.npy
-        
+            sample: dict with keys: __key__, json, dinov3.npy, dinov3_patches.npy,
+                    image.npy, t5h.npy, t5m.npy, pose.npy
+
         Returns:
-            dict with keys: image_data, dino_embedding, dinov3_patches, t5_hidden, t5_mask, pose_keypoints, caption, image_id
+            dict with keys: image_data, dino_embedding, dinov3_patches, t5_hidden,
+                            t5_mask, pose_keypoints, caption, image_id
         """
         # Parse metadata (webdataset already decoded JSON)
         metadata = sample['json']
         image_id = metadata['image_id']
         caption = metadata['caption']
-        
+
         # Load embeddings (webdataset already decoded .npy files to numpy arrays)
-        dino_emb = sample['dinov3.npy']  # (1024,)
+        dino_emb = sample['dinov3.npy']         # (1024,)
         dino_patches = sample['dinov3_patches.npy']  # (num_patches, 1024) - variable length!
-        t5_hidden = sample['t5h.npy']  # (512, 1024) - T5-XXL supports 512 tokens
-        t5_mask = sample['t5m.npy']  # (512,)
-        pose_kpts = sample['pose.npy']  # (133, 3) — [x_norm, y_norm, confidence] per joint
-        
+        t5_hidden = sample['t5h.npy']           # (512, 1024) - T5-XXL supports 512 tokens
+        t5_mask = sample['t5m.npy']             # (512,)
+        pose_kpts = sample['pose.npy']          # (133, 3) — [x_norm, y_norm, confidence] per joint
+
         # Load pixel-space RGB image
-        image_data = sample['image.npy']  # (3, H, W) float16, range [0, 1]
-        
+        image_data = sample['image.npy']        # (3, H, W) float16, range [0, 1]
+
         # Resize to target size if specified
         if self.target_latent_size is None:
             image_data = torch.from_numpy(image_data)
         else:
-            image_data = resize_vae_latent(image_data, self.target_latent_size)
-        
+            image_data = resize_image(image_data, self.target_latent_size)
+
         # Convert to tensors
         return {
-            'image_data': image_data.float(),  # (3, H, W) RGB [0, 1]
-            'dino_embedding': torch.from_numpy(dino_emb).float(),  # (1024,)
+            'image_data': image_data.float(),                          # (3, H, W) RGB [0, 1]
+            'dino_embedding': torch.from_numpy(dino_emb).float(),      # (1024,)
             'dinov3_patches': torch.from_numpy(dino_patches).float(),  # (num_patches, 1024) - VARIABLE!
-            't5_hidden': torch.from_numpy(t5_hidden).float(),  # (512, 1024)
-            't5_mask': torch.from_numpy(t5_mask).long(),  # (512,)
-            'pose_keypoints': torch.from_numpy(pose_kpts).float(),  # (133, 3)
+            't5_hidden': torch.from_numpy(t5_hidden).float(),          # (512, 1024)
+            't5_mask': torch.from_numpy(t5_mask).long(),               # (512,)
+            'pose_keypoints': torch.from_numpy(pose_kpts).float(),     # (133, 3)
             'caption': caption,
             'image_id': image_id,
         }
-    
+
     def collate_fn(self, batch):
         """Collate batch of samples into batched tensors.
-        
+
         Pads variable-length dinov3_patches to the max length in the batch.
         """
-        # Find max patch length in this batch
         max_patches = max(s['dinov3_patches'].shape[0] for s in batch)
-        
+
         padded_patches = []
         patch_masks = []
         for s in batch:
             patches = s['dinov3_patches']
             num_patches = patches.shape[0]
-            
-            # Create mask (1 for valid, 0 for padding)
+
             mask = torch.zeros(max_patches, dtype=torch.long)
             mask[:num_patches] = 1
             patch_masks.append(mask)
-            
+
             if num_patches < max_patches:
-                # Pad with zeros
                 pad = torch.zeros(max_patches - num_patches, patches.shape[1], dtype=patches.dtype)
                 padded = torch.cat([patches, pad], dim=0)
             else:
                 padded = patches
             padded_patches.append(padded)
-            
+
         return {
             'image_data': torch.stack([s['image_data'] for s in batch]),
             'dino_embedding': torch.stack([s['dino_embedding'] for s in batch]),
-            'dinov3_patches': torch.stack(padded_patches),  # (B, max_patches, 1024)
-            'dinov3_patches_mask': torch.stack(patch_masks), # (B, max_patches)
+            'dinov3_patches': torch.stack(padded_patches),       # (B, max_patches, 1024)
+            'dinov3_patches_mask': torch.stack(patch_masks),     # (B, max_patches)
             't5_hidden': torch.stack([s['t5_hidden'] for s in batch]),
             't5_mask': torch.stack([s['t5_mask'] for s in batch]),
             'pose_keypoints': torch.stack([s['pose_keypoints'] for s in batch]),  # (B, 133, 3)
             'captions': [s['caption'] for s in batch],
             'image_ids': [s['image_id'] for s in batch],
         }
-    
+
     def create_dataloader(self):
         """Create WebDataset dataloader.
-        
+
         If shuffle=True: Creates infinite dataloader with repeat() for training
         If shuffle=False: Creates finite dataloader for deterministic validation
         """
-        # Convert Path objects to strings for webdataset
         shard_urls = [str(f) for f in self.shard_files]
-        
-        # Create WebDataset pipeline
+
         dataset = (
             wds.WebDataset(shard_urls, shardshuffle=1000 if self.shuffle else False, handler=wds.warn_and_continue)
             .decode(handler=wds.warn_and_continue)
             .map(self.process_sample, handler=wds.warn_and_continue)
             .batched(self.batch_size, collation_fn=self.collate_fn, partial=False)
         )
-        
-        # Make infinite by repeating (only for training)
+
         if self.shuffle:
             dataset = dataset.repeat()
-        
+
         return dataset
-    
+
     def __iter__(self):
         """Iterate over batches."""
         dataloader = self.create_dataloader()
@@ -359,14 +209,14 @@ def get_validation_dataloader(
     target_latent_size=64,
 ):
     """Convenience function to create validation dataloader for training.
-    
+
     Args:
         shard_dir: Path to validation shards
         batch_size: Number of samples per batch
         shuffle: Whether to shuffle between epochs
         flip_prob: Probability of horizontal flip augmentation
-        target_latent_size: Target spatial size for VAE latents
-    
+        target_latent_size: Target spatial size in pixels
+
     Returns:
         iterable dataloader yielding batches
     """
@@ -384,33 +234,30 @@ def get_deterministic_validation_dataloader(
     shard_dir='data/shards/validation',
     batch_size=1,
     target_latent_size=64,
-    pixel_space=False,
 ):
     """Create deterministic validation dataloader for consistent testing.
-    
+
     This dataloader:
     - Does NOT shuffle (stable sample ordering)
     - Does NOT flip (no augmentation)
     - Does NOT repeat (finite, single pass)
     - Sets seeds for reproducible sample selection
-    
+
     Args:
         shard_dir: Path to validation shards
         batch_size: Number of samples per batch (default 1 for validation)
-        target_latent_size: Target spatial size for VAE latents (or pixel size)
-        pixel_space: If True, load image.npy instead of vae.npy
-    
+        target_latent_size: Target spatial size in pixels
+
     Returns:
         iterable dataloader yielding batches
     """
     dataset = ValidationDataset(
         shard_dir=shard_dir,
         batch_size=batch_size,
-        shuffle=False,  # CRITICAL: no shuffle for deterministic ordering
-        flip_prob=0.0,   # CRITICAL: no augmentation for consistency
+        shuffle=False,      # CRITICAL: no shuffle for deterministic ordering
+        flip_prob=0.0,      # CRITICAL: no augmentation for consistency
         target_latent_size=target_latent_size,
-        deterministic=True,  # CRITICAL: set seeds for reproducible sampling
-        pixel_space=pixel_space,
+        deterministic=True, # CRITICAL: set seeds for reproducible sampling
     )
     return dataset
 
@@ -418,38 +265,35 @@ def get_deterministic_validation_dataloader(
 class BucketAwareDataLoader:
     """Sample whole batches from a single aspect-ratio bucket."""
 
-    def __init__(self, bucket_datasets, bucket_weights, pixel_space=False):
+    def __init__(self, bucket_datasets, bucket_weights):
         self.bucket_datasets = bucket_datasets  # dict[name -> ValidationDataset]
         self.bucket_names = list(bucket_datasets.keys())
         self.bucket_weights = bucket_weights
         self._logged = set()
         self._resolution_scale = 1.0
-        self._pixel_space = pixel_space
         # Store original (full-res) target sizes per bucket
         self._base_target_sizes = {
             name: ds.target_latent_size for name, ds in bucket_datasets.items()
         }
-    
+
     @property
     def resolution_scale(self):
         return self._resolution_scale
-    
+
     @resolution_scale.setter
     def resolution_scale(self, scale):
-        """Update resolution scale, adjusting target_latent_size on all bucket datasets."""
+        """Update resolution scale, adjusting target size on all bucket datasets."""
         if scale == self._resolution_scale:
             return
         self._resolution_scale = scale
-        # Align to patch_size grid: 32 for pixel-space, 2 for latent-space
-        align = 32 if self._pixel_space else 2
         for name, ds in self.bucket_datasets.items():
             base = self._base_target_sizes[name]
             if isinstance(base, tuple):
-                h = max(align, (int(base[0] * scale) // align) * align)
-                w = max(align, (int(base[1] * scale) // align) * align)
+                h = max(32, (int(base[0] * scale) // 32) * 32)
+                w = max(32, (int(base[1] * scale) // 32) * 32)
                 ds.target_latent_size = (h, w)
             else:
-                ds.target_latent_size = max(align, (int(base * scale) // align) * align)
+                ds.target_latent_size = max(32, (int(base * scale) // 32) * 32)
         self._logged.clear()  # Re-log shapes at new resolution
 
     @property
@@ -498,14 +342,6 @@ def _normalize_bucket_name(name: str) -> str:
     return name if name.startswith('bucket_') else f"bucket_{name}"
 
 
-def _bucket_target_latent_size(bucket_name: str) -> tuple[int, int]:
-    m = re.search(r"(\d+)x(\d+)$", bucket_name)
-    if not m:
-        raise ValueError(f"Invalid bucket name (expected ..._<W>x<H>): {bucket_name}")
-    w_px, h_px = int(m.group(1)), int(m.group(2))
-    return (h_px // 8, w_px // 8)
-
-
 def _bucket_target_pixel_size(bucket_name: str) -> tuple[int, int]:
     """Get target pixel dimensions (H, W) from bucket name."""
     m = re.search(r"(\d+)x(\d+)$", bucket_name)
@@ -521,7 +357,6 @@ def get_production_dataloader(config, device='cuda'):
 
     data_cfg = config.data
     training_cfg = config.training
-    pixel_space = getattr(config.model, 'prediction_type', 'v_prediction') == 'x_prediction'
 
     shard_dir = Path(data_cfg.shard_base_dir)
 
@@ -531,8 +366,6 @@ def get_production_dataloader(config, device='cuda'):
     print(f"  Flip prob: {data_cfg.horizontal_flip_prob}")
     print(f"  Bucket-aware batching: ENABLED")
     print(f"  Bucket sampling: {data_cfg.bucket_sampling}")
-    if pixel_space:
-        print(f"  Pixel-space mode: ENABLED (loading image.npy)")
 
     bucket_datasets = {}
     bucket_weights = []
@@ -544,7 +377,7 @@ def get_production_dataloader(config, device='cuda'):
             print(f"  warning: skipping bucket with no shards: {bucket_name}")
             continue
 
-        target_size = _bucket_target_pixel_size(bucket_name) if pixel_space else _bucket_target_latent_size(bucket_name)
+        target_size = _bucket_target_pixel_size(bucket_name)
 
         bucket_datasets[bucket_name] = ValidationDataset(
             shard_dir=str(shard_dir / bucket_name),
@@ -553,7 +386,6 @@ def get_production_dataloader(config, device='cuda'):
             shuffle=True,
             flip_prob=data_cfg.horizontal_flip_prob,
             target_latent_size=target_size,
-            pixel_space=pixel_space,
         )
         bucket_weights.append(len(shard_files))
 
@@ -563,22 +395,21 @@ def get_production_dataloader(config, device='cuda'):
     if data_cfg.bucket_sampling == 'uniform':
         bucket_weights = [1.0 for _ in bucket_weights]
 
-    return BucketAwareDataLoader(bucket_datasets, bucket_weights, pixel_space=pixel_space)
+    return BucketAwareDataLoader(bucket_datasets, bucket_weights)
 
 
 if __name__ == "__main__":
     # Test dataloader
     print("Testing validation dataloader...")
-    
+
     dataloader = get_validation_dataloader(
         shard_dir='data/shards/validation',
         batch_size=4,
         shuffle=True,
     )
-    
-    # Get one batch
+
     batch = next(iter(dataloader))
-    
+
     print(f"Batch keys: {batch.keys()}")
     print(f"Image data shape: {batch['image_data'].shape}")
     print(f"DINO embedding shape: {batch['dino_embedding'].shape}")

@@ -938,10 +938,10 @@ def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=
     pixel_space = prediction_type == "x_prediction"
     runner = None
     val_dataloader = None
-    
+
     def validation_fn(model, ema, step, device):
         nonlocal runner, val_dataloader
-        
+
         # Create deterministic validation dataloader (first call only)
         # Always load at full resolution; tests resize dynamically per resolution schedule
         if val_dataloader is None:
@@ -950,7 +950,6 @@ def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=
                 shard_dir=shard_dir,
                 batch_size=1,  # Process one at a time for validation
                 target_latent_size=getattr(model, 'input_size', 128),
-                pixel_space=pixel_space,
             )
         
         if runner is None:

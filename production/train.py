@@ -64,20 +64,15 @@ class PerceptualLossModule:
             lpips_loss: scalar tensor with gradient
         """
         self._ensure_loaded()
-        from .data import denormalize_vae_latent
-        
+
         B, C, H, W = x0.shape
         cs = min(crop_size, H, W)
-        
+
         # Random crop (same location for x0 and x0_hat)
         top = random.randint(0, H - cs)
         left = random.randint(0, W - cs)
         x0_crop = x0[:, :, top:top+cs, left:left+cs]
         x0_hat_crop = x0_hat[:, :, top:top+cs, left:left+cs]
-        
-        # Denormalize for VAE decode
-        x0_crop = denormalize_vae_latent(x0_crop)
-        x0_hat_crop = denormalize_vae_latent(x0_hat_crop)
         
         # Decode ground truth (no grad needed)
         with torch.no_grad():
