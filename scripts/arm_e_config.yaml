@@ -98,7 +98,7 @@ training:
 
 data:
   source: "stratum"
-  stratum_dir: "/mnt/nas-ai-models/training-data/ffhq/stratum"
+  stratum_dir: "$STRATUM_DIR"
   shard_base_dir: "data/shards/faces7k"
   buckets:
     - "bucket_1024x1024"
@@ -128,7 +128,7 @@ validation:
   run_reconstruction: true
   run_dino_swap: true
   run_text_manip: true
-  visual_debug_interval: 10
+  visual_debug_interval: 500
   visual_debug_num_samples: 4
   visual_debug_dir: "visual_debug"
 

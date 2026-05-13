@@ -6,6 +6,7 @@ Loads YAML config and provides structured access to all hyperparameters.
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Literal, Optional
+import os
 import yaml
 
 
@@ -336,6 +337,17 @@ def load_config(config_path: str | Path) -> Config:
                 if hasattr(field_type, '__dataclass_fields__'):
                     kwargs[key] = build_dataclass(field_type, value)
                 else:
+                    # Expand $ENV_VAR references in string values (e.g. $STRATUM_DIR).
+                    # If the var is unset, expandvars leaves $VAR as-is; fall back to
+                    # the field's dataclass default so local dev works without the env var.
+                    if isinstance(value, str) and '$' in value:
+                        expanded = os.path.expandvars(value)
+                        if expanded.startswith('$'):
+                            # var unset — use the field's declared default
+                            field_obj = cls.__dataclass_fields__.get(key)
+                            if field_obj is not None and field_obj.default is not field_obj.default_factory:  # type: ignore[misc]
+                                expanded = field_obj.default
+                        value = expanded
                     kwargs[key] = value
         
         return cls(**kwargs)
