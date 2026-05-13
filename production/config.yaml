@@ -1,5 +1,6 @@
-# Production Training Configuration
-# Based on the-plan.md Part D specifications
+# Production Training Configuration — Full Stack
+# Architecture: NanoDiT + TREAD + Muon + REPA (Arm D, v1.0-ablation-study baseline)
+# Next focus: data augmentation (see docs/augmentation_roadmap.md)
 
 model:
   hidden_size: 768             # Hidden dimension (scale to 768-1024 for production)
@@ -47,11 +48,15 @@ training:
     # Remaining 40% keeps all signals (text + DINO + pose)
 
   # REPA (REPresentation Alignment) — align hidden states with DINOv3 patches
+  # NOTE: Stage-wise decay is critical for extended training (see docs/augmentation_roadmap.md §REPA)
+  # The HASTE trap: REPA helps burn-in but becomes a straitjacket for high-freq detail after ~20-30% of run.
   repa:
     enabled: true
     weight: 0.5                    # REPA loss weight (per PRX Part 3)
     block_index: -1                # Block to align at (-1 = depth // 2)
     loss_type: "cosine"            # "cosine" or "mse"
+    decay_start_step: 1000         # Begin decaying REPA weight toward 0 at this step (TODO: implement)
+    decay_end_step: 2000           # REPA weight reaches 0 at this step (TODO: implement)
 
   # TREAD (Token Routing) — route 50% of tokens past middle blocks for throughput
   tread:
@@ -109,9 +114,13 @@ data:
   bucket_sampling: "proportional"    # "proportional" or "uniform"
 
   # Augmentation
-  # horizontal_flip_prob: 0.5          # Flip probability
-  # NOTE: Caption swapping (left↔right) is NOT supported because T5 embeddings
-  # are pre-computed. Caption text is unused during training (only T5 embeddings matter).
+  # BLOCKED: Horizontal flip requires DWPose 133-keypoint left↔right index swap.
+  # See docs/augmentation_roadmap.md before enabling any spatial augmentation.
+  # horizontal_flip_prob: 0.5
+  #
+  # Color jitter: safe for pixel path but creates DINO mismatch (embeddings are pre-computed).
+  # Decision required before enabling. See augmentation_roadmap.md §3.
+  # color_jitter_prob: 0.0
   
   # DataLoader settings
   num_workers: 4                     # Parallel workers

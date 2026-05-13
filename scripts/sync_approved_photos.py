@@ -35,7 +35,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-DEFAULT_BASE_URL = "http://192.168.86.162:3003/photos.json"
+DEFAULT_BASE_URL = "http://192.168.86.49:3003/photos.json"
 
 
 @dataclass
