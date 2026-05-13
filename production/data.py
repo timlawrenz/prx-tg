@@ -352,11 +352,28 @@ def _bucket_target_pixel_size(bucket_name: str) -> tuple[int, int]:
 
 
 def get_production_dataloader(config, device='cuda'):
-    """Create production dataloader from config (bucket-aware, per-bucket target sizes)."""
+    """Create production dataloader from config.
+
+    Dispatches on data.source:
+      "webdataset" (default) — bucket-aware loader from shard tars
+      "stratum"              — flat loader from per-image stratum dirs
+    """
     from .config_loader import Config
 
     data_cfg = config.data
     training_cfg = config.training
+
+    if getattr(data_cfg, 'source', 'webdataset') == 'stratum':
+        from .data_stratum import get_stratum_dataloader
+        print(f"  Data source: stratum")
+        print(f"  Stratum dir: {data_cfg.stratum_dir}")
+        print(f"  Batch size: {training_cfg.batch_size}")
+        return get_stratum_dataloader(
+            stratum_dir=data_cfg.stratum_dir,
+            batch_size=training_cfg.batch_size,
+            shuffle=True,
+            target_latent_size=1024,
+        )
 
     shard_dir = Path(data_cfg.shard_base_dir)
 

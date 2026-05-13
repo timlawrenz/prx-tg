@@ -98,6 +98,8 @@ training:
     crop_size: 256                   # Pixel crop size for LPIPS comparison
 
 data:
+  source: "stratum"                                                # "webdataset" | "stratum"
+  stratum_dir: "/mnt/nas-ai-models/training-data/ffhq/stratum"   # used when source=stratum
   shard_base_dir: "data/shards/faces7k"      # Base directory for WebDataset shards
   
   # Aspect ratio buckets to read (each bucket is a subdirectory with tar files)

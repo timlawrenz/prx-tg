@@ -189,15 +189,24 @@ class TrainingConfig:
 @dataclass
 class DataConfig:
     """Data loading configuration."""
+    # --- source selection ---
+    # "webdataset" (default): read from shard tars under shard_base_dir
+    # "stratum":              read from per-image dirs under stratum_dir
+    source: str = "webdataset"
+
+    # WebDataset options (used when source="webdataset")
     shard_base_dir: str = "data/shards"
     buckets: List[str] = field(default_factory=lambda: [
         "1024x1024", "832x1216", "1216x832", "768x1280", "1280x768"
     ])
     bucket_sampling: Literal["proportional", "uniform"] = "proportional"
-    
+
+    # Stratum options (used when source="stratum")
+    stratum_dir: str = "/mnt/nas-ai-models/training-data/ffhq/stratum"
+
     horizontal_flip_prob: float = 0.5
     # swap_caption_lr removed - caption text is unused during training
-    
+
     num_workers: int = 4
     prefetch_factor: int = 2
     pin_memory: bool = True
