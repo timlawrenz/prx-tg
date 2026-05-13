@@ -131,6 +131,34 @@ class PerceptualLossConfig:
 
 
 @dataclass
+class SegWeightConfig:
+    """Segmentation-based spatial loss weighting.
+
+    Seg map is downsampled to the token grid (64×64 at patch_size=16 / 1024px)
+    via nearest-neighbor, then class weights are broadcast back to pixel space.
+
+    Sapiens Goliath 28-class schema:
+        0  = Background      → bg_weight
+        2  = Face_Neck       → face_weight
+        3  = Hair            → face_weight
+        23 = Lower_Lip       → face_weight
+        24 = Upper_Lip       → face_weight
+        25 = Lower_Teeth     → face_weight
+        26 = Upper_Teeth     → face_weight
+        27 = Tongue          → face_weight
+        *  = all others      → other_weight
+
+    normalize=True (recommended): per-sample mean normalisation so the
+    expected loss magnitude stays comparable to an unweighted baseline.
+    """
+    enabled: bool = False
+    face_weight: float = 2.0
+    bg_weight: float = 0.5
+    other_weight: float = 1.0
+    normalize: bool = True      # normalise per-sample so mean weight = 1
+
+
+@dataclass
 class MaskDiTConfig:
     """MaskDiT masked training configuration (Operation Turbo)."""
     enabled: bool = False
@@ -168,6 +196,7 @@ class TrainingConfig:
     perceptual: PerceptualLossConfig = field(default_factory=PerceptualLossConfig)
     maskdit: MaskDiTConfig = field(default_factory=MaskDiTConfig)
     galore: GaLoreConfig = field(default_factory=GaLoreConfig)
+    seg_weight: SegWeightConfig = field(default_factory=SegWeightConfig)
     
     timestep_sampling: Literal["uniform", "logit_normal"] = "logit_normal"
     logit_normal_loc: float = 0.0

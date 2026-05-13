@@ -81,6 +81,7 @@ def _collate(batch: list[dict]) -> dict:
         't5_hidden':           torch.stack([s['t5_hidden']        for s in batch]),
         't5_mask':             torch.stack([s['t5_mask']          for s in batch]),
         'pose_keypoints':      torch.stack([s['pose_keypoints']   for s in batch]),
+        'seg_map':             torch.stack([s['seg_map']          for s in batch]),
         'captions':            [s['caption']   for s in batch],
         'image_ids':           [s['image_id']  for s in batch],
     }
@@ -139,6 +140,15 @@ class StratumDataset:
 
         image_data = _resize_image(pixel, self.target_latent_size)
 
+        # Seg map: load uint8 (1024×1024), downsample to token grid (nearest-neighbor).
+        # patch_size=16, input=1024px → token grid = 64×64.
+        seg_raw = np.load(d / 'seg.npy')                # (H, W) uint8
+        seg_t   = torch.from_numpy(seg_raw.astype(np.int16)).unsqueeze(0).unsqueeze(0)  # (1,1,H,W)
+        token_size = self.target_latent_size // 16 if isinstance(self.target_latent_size, int) else 64
+        seg_grid = F.interpolate(
+            seg_t.float(), size=(token_size, token_size), mode='nearest'
+        ).squeeze(0).squeeze(0).to(torch.int16)         # (TG, TG) int16
+
         return {
             'image_data':     image_data,                                       # (3, H, W) f32
             'dino_embedding': torch.from_numpy(dino_cls.astype(np.float32)),   # (1024,)
@@ -146,6 +156,7 @@ class StratumDataset:
             't5_hidden':      torch.from_numpy(t5_hidden.astype(np.float32)),  # (512, 1024)
             't5_mask':        torch.from_numpy(t5_mask.astype(np.int64)),      # (512,)
             'pose_keypoints': torch.from_numpy(pose.astype(np.float32)),       # (133, 3)
+            'seg_map':        seg_grid,                                         # (TG, TG) int16
             'caption':        caption,
             'image_id':       meta.get('image_id', d.name),
         }

@@ -173,7 +173,7 @@ def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="c
     return per_token_loss.mean()
 
 
-def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, pose_kpts=None, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05, maskdit_config=None, global_step=0):
+def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, pose_kpts=None, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05, maskdit_config=None, global_step=0, seg_map=None, seg_weight_config=None):
     """Compute flow matching loss with mutually exclusive CFG dropout.
     
     Supports two prediction modes:
@@ -297,10 +297,22 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
         x0_pred = v_pred  # model output is x0 in x-prediction mode
         v_pred_converted = (zt - x0_pred) / t_clamped
         v_target_converted = (zt - x0) / t_clamped
-        loss = F.mse_loss(v_pred_converted, v_target_converted)
+        sq_err = (v_pred_converted - v_target_converted) ** 2
     else:
         # Standard v-prediction: MSE on velocity directly
-        loss = F.mse_loss(v_pred, v_target)
+        sq_err = (v_pred - v_target) ** 2
+
+    # Segmentation spatial loss weighting
+    use_seg_weight = (
+        seg_map is not None
+        and seg_weight_config is not None
+        and seg_weight_config.enabled
+    )
+    if use_seg_weight:
+        seg_w = build_seg_weight(seg_map.to(x0.device), x0.shape, seg_weight_config)
+        loss = (sq_err * seg_w).mean()
+    else:
+        loss = sq_err.mean()
     
     # REPA alignment loss
     repa_loss = None
@@ -350,6 +362,49 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     if return_v_pred:
         return loss, v_pred, repa_loss, lpips_loss, mae_loss
     return loss
+
+
+def build_seg_weight(seg_map, x0_shape, seg_weight_config):
+    """Build a spatial loss weight tensor from a segmentation token-grid map.
+
+    Args:
+        seg_map: (B, TG, TG) int16 tensor — Sapiens Goliath class IDs at token resolution
+        x0_shape: tuple (B, C, H, W) — used to derive patch_size and pixel grid
+        seg_weight_config: SegWeightConfig instance
+
+    Returns:
+        weight: (B, 1, H, W) float32 tensor broadcastable onto (B, C, H, W) loss
+
+    Class mapping (Sapiens Goliath 28-class):
+        0            → bg_weight
+        2,3,23-27    → face_weight
+        *            → other_weight
+
+    normalize=True: divide each sample's weight map by its mean so the
+    expected loss value equals the unweighted baseline.
+    """
+    B, C, H, W = x0_shape
+    cfg = seg_weight_config
+
+    FACE_CLASSES = {2, 3, 23, 24, 25, 26, 27}
+
+    # Build per-token weight (B, TG, TG) float32
+    seg_f = seg_map.float()                           # (B, TG, TG)
+    weight = torch.full_like(seg_f, cfg.other_weight)
+    weight[seg_f == 0] = cfg.bg_weight
+    for cls in FACE_CLASSES:
+        weight[seg_f == cls] = cfg.face_weight
+
+    # Upsample token grid → pixel grid (nearest-neighbor, preserves hard boundaries)
+    weight = weight.unsqueeze(1)                      # (B, 1, TG, TG)
+    weight = F.interpolate(weight, size=(H, W), mode='nearest')  # (B, 1, H, W)
+
+    if cfg.normalize:
+        # Per-sample mean normalisation: keeps expected magnitude == unweighted MSE
+        mean = weight.mean(dim=[1, 2, 3], keepdim=True).clamp(min=1e-6)
+        weight = weight / mean
+
+    return weight
 
 
 @torch.no_grad()
@@ -722,6 +777,7 @@ class Trainer:
         if dino_patches_mask is not None:
             dino_patches_mask = dino_patches_mask.to(self.device)
         pose_kpts = batch['pose_keypoints'].to(self.device)
+        seg_map = batch.get('seg_map')  # (B, TG, TG) int16 — may be absent in webdataset path
         
         # Determine autocast dtype
         amp_dtype = getattr(self, '_amp_dtype', None)
@@ -742,6 +798,8 @@ class Trainer:
                 prediction_type=getattr(self, 'prediction_type', 'v_prediction'),
                 t_clamp_min=getattr(self, 't_clamp_min', 0.05),
                 maskdit_config=getattr(self, 'maskdit_config', None),
+                seg_map=seg_map,
+                seg_weight_config=getattr(self, 'seg_weight_config', None),
             )
         
         # Scale loss by accumulation steps
@@ -1184,6 +1242,9 @@ class ProductionTrainer(Trainer):
         
         # MaskDiT config
         self.maskdit_config = training.maskdit if training.maskdit.enabled else None
+
+        # Seg weight config
+        self.seg_weight_config = training.seg_weight if training.seg_weight.enabled else None
         
         # AMP (Automatic Mixed Precision) setup
         if training.mixed_precision and training.precision == "float16":
