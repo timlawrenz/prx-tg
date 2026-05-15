@@ -234,6 +234,8 @@ def get_deterministic_validation_dataloader(
     shard_dir='data/shards/validation',
     batch_size=1,
     target_latent_size=64,
+    source="webdataset",
+    stratum_dir="/workspace/stratum",
 ):
     """Create deterministic validation dataloader for consistent testing.
 
@@ -251,6 +253,18 @@ def get_deterministic_validation_dataloader(
     Returns:
         iterable dataloader yielding batches
     """
+    if source == "stratum":
+        from .data_stratum import StratumDataset
+        print(f"  Validation data source: stratum")
+        print(f"  Validation Stratum dir: {stratum_dir}")
+        return StratumDataset(
+            stratum_dir=stratum_dir,
+            batch_size=batch_size,
+            shuffle=False,  # deterministic
+            target_latent_size=target_latent_size,
+            max_samples=100,  # use first 100 for validation
+        )
+    
     dataset = ValidationDataset(
         shard_dir=shard_dir,
         batch_size=batch_size,
