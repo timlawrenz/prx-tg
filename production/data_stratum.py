@@ -200,6 +200,7 @@ def get_stratum_dataloader(
     batch_size: int = 4,
     shuffle: bool = True,
     target_latent_size=1024,
+    max_samples: Optional[int] = None,
 ) -> StratumDataset:
     """Create a StratumDataset dataloader.
 
@@ -212,10 +213,12 @@ def get_stratum_dataloader(
         batch_size: Samples per batch
         shuffle: Randomise order each pass
         target_latent_size: Resize pixel to this size (int or (H, W))
+        max_samples: If set, only iterate up to this many samples
     """
     return StratumDataset(
         stratum_dir=stratum_dir,
         batch_size=batch_size,
         shuffle=shuffle,
         target_latent_size=target_latent_size,
+        max_samples=max_samples,
     )
