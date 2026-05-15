@@ -911,7 +911,7 @@ class ValidationRunner:
 
 def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=None, text_scale=3.0, dino_scale=2.0, num_steps=50,
                          self_guidance=False, guidance_scale=3.0, prediction_type="v_prediction",
-                         get_resolution_scale=None):
+                         get_resolution_scale=None, source="webdataset", stratum_dir="/workspace/stratum"):
     """Create validation function for training loop.
     
     IMPORTANT: This creates its own deterministic dataloader internally,
@@ -950,6 +950,8 @@ def create_validation_fn(shard_dir, output_dir='validation', tensorboard_writer=
                 shard_dir=shard_dir,
                 batch_size=1,  # Process one at a time for validation
                 target_latent_size=getattr(model, 'input_size', 128),
+                source=source,
+                stratum_dir=stratum_dir,
             )
         
         if runner is None:
