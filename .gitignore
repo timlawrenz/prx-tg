@@ -75,3 +75,4 @@ validation_evals/
 
 # Environment
 .env
+.worktrees/

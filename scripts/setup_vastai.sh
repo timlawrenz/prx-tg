@@ -115,6 +115,13 @@ for layer, files in LAYERS.items():
     for s in range(needed_shards):
         lo = s * 1000
         hi = lo + 999
+        
+        if layer == "dinov3":
+            # DINOv3 is sharded by 7 samples instead of 1000
+            # For Arm E, skip DINOv3 in this general download loop and handle specially
+            print("[dinov3] Skipping general 1000-shard download; must be handled per 7-samples")
+            break
+            
         tar_name = f"{layer}/{lo:05d}-{hi:05d}.tar"
         local_tar = hf_hub_download(hf_repo, tar_name, repo_type="dataset", token=token)
         with tarfile.open(local_tar) as tf:
@@ -122,6 +129,23 @@ for layer, files in LAYERS.items():
             members = [m for m in tf.getmembers()
                        if any(m.name.endswith(fn) for fn in files)]
             tf.extractall(path=stratum_dir, members=members)
+
+    if layer == "dinov3":
+        import math
+        needed_7_shards = math.ceil(n_samples / 7)
+        print(f"[dinov3] Downloading {needed_7_shards} 7-sample shards...")
+        for s in range(needed_7_shards):
+            lo = s * 7
+            hi = lo + 6
+            if lo >= n_samples:
+                break
+            tar_name = f"dinov3/{lo:05d}-{hi:05d}.tar"
+            try:
+                local_tar = hf_hub_download(hf_repo, tar_name, repo_type="dataset", token=token)
+                with tarfile.open(local_tar) as tf:
+                    tf.extractall(path=stratum_dir)
+            except Exception as e:
+                print(f"Failed to fetch {tar_name}: {e}")
     print(f"[{layer}] Done.")
 
 print("[npy_tar] All layers extracted.")

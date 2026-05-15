@@ -372,7 +372,8 @@ def get_production_dataloader(config, device='cuda'):
             stratum_dir=data_cfg.stratum_dir,
             batch_size=training_cfg.batch_size,
             shuffle=True,
-            target_latent_size=1024,
+            target_latent_size=config.model.input_size,
+            max_samples=data_cfg.stratum_max_samples,
         )
 
     shard_dir = Path(data_cfg.shard_base_dir)

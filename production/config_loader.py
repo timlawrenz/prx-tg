@@ -231,8 +231,9 @@ class DataConfig:
     ])
     bucket_sampling: Literal["proportional", "uniform"] = "proportional"
 
-    # Stratum options (used when source="stratum")
+    # Stratum-specific options (used when source="stratum")
     stratum_dir: str = "/mnt/nas-ai-models/training-data/ffhq/stratum"
+    stratum_max_samples: Optional[int] = None
 
     horizontal_flip_prob: float = 0.5
     # swap_caption_lr removed - caption text is unused during training

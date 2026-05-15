@@ -18,7 +18,7 @@ model:
   pose_confidence_threshold: 0.05
 
 training:
-  total_steps: 6000
+  total_steps: 5000
   warmup_steps: 500
   batch_size: 1
   grad_accumulation_steps: 256
@@ -78,7 +78,7 @@ training:
       scale: 0.25
     - until_step: 3000
       scale: 0.5
-    - until_step: 6000
+    - until_step: 5000
       scale: 1.0
 
   perceptual:
@@ -99,6 +99,7 @@ training:
 data:
   source: "stratum"
   stratum_dir: "$STRATUM_DIR"
+  stratum_max_samples: 7000
   shard_base_dir: "data/shards/faces7k"
   buckets:
     - "bucket_1024x1024"
@@ -128,7 +129,7 @@ validation:
   run_reconstruction: true
   run_dino_swap: true
   run_text_manip: true
-  visual_debug_interval: 500
+  visual_debug_interval: 0
   visual_debug_num_samples: 4
   visual_debug_dir: "visual_debug"
 

@@ -27,6 +27,7 @@ no changes:
 import json
 import random
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
@@ -101,6 +102,7 @@ class StratumDataset:
         shuffle: bool = True,
         target_latent_size=1024,
         num_workers: int = 0,
+        max_samples: Optional[int] = None,
     ):
         """
         Args:
@@ -109,6 +111,7 @@ class StratumDataset:
             shuffle: Randomise sample order each epoch
             target_latent_size: Resize pixel.npy to this spatial size (int or (H,W))
             num_workers: Reserved for future DataLoader integration; ignored for now
+            max_samples: If set, only iterate up to this many samples instead of 70000
         """
         self.stratum_dir = Path(stratum_dir)
         self.batch_size = batch_size
@@ -118,13 +121,20 @@ class StratumDataset:
         # Generate paths directly from the known naming convention (00000–69999).
         # Avoids scandir/iterdir over NAS which can block for several seconds on
         # 70k entries. Corrupt/missing dirs are handled gracefully in _load_sample.
-        self._dirs = [self.stratum_dir / f"{i:05d}" for i in range(70000)]
-        if not self._dirs:
-            raise ValueError(f"No stratum sample dirs found under {stratum_dir}")
-        print(f"[StratumDataset] {len(self._dirs)} samples in {stratum_dir}")
+        limit = max_samples if max_samples is not None else 70000
+        self._dirs = [self.stratum_dir / f"{i:05d}" for i in range(limit)]
+        print(f"[StratumDataset] {len(self._dirs)} samples in {self.stratum_dir}")
 
-    # ------------------------------------------------------------------
-    # Sample loading
+    @property
+    def resolution_scale(self):
+        # Tie latent target to network patch size dynamically. For pixel space, 
+        # the model patch_size dictates the alignment requirement.
+        return 1.0
+
+    @resolution_scale.setter
+    def resolution_scale(self, value):
+        pass  # Handled statically per batch context.
+
     # ------------------------------------------------------------------
 
     def _load_sample(self, d: Path) -> dict:
