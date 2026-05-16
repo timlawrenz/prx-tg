@@ -164,10 +164,9 @@ def auto_tune_config(config_path, device='cuda:0'):
     print("  Auto-tuning throughput...", flush=True)
     results = quick_tune(config, dev)
 
-    for scale, r in sorted(results.items()):
-        res = int(config.model.input_size * scale)
-        print(f"    {res}×{res}: bs={r['batch_size']}, ga={r['grad_accumulation_steps']}, "
-              f"{r['samples_per_sec']:.1f} samp/s")
+    res = config.model.input_size
+    print(f"    {res}×{res}: bs={results['batch_size']}, ga={results['grad_accumulation_steps']}, "
+          f"{results['samples_per_sec']:.1f} samp/s")
 
     apply_tune_results(config_path, results, config_path)
     torch.cuda.empty_cache()

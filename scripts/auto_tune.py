@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Auto-tuner: find optimal batch_size & grad_accumulation_steps per resolution phase.
+"""Auto-tuner: find optimal batch_size & grad_accumulation_steps.
 
-Uses a Micro Genetic Algorithm to maximize measured samples/second at each resolution,
-respecting GPU memory limits. Bigger batch != faster — the GA finds the true throughput
-peak by measuring actual it/s, not by maximizing batch size.
+Uses a Micro Genetic Algorithm to maximize measured samples/second,
+respecting GPU memory limits. Bigger batch != faster — the GA finds the
+true throughput peak by measuring actual it/s, not by maximizing batch size.
 
 Usage:
     python scripts/auto_tune.py --config production/config_turbo.yaml
@@ -20,7 +20,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 # Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -399,23 +399,13 @@ def find_max_batch(runner: BenchmarkRunner, h_px: int, w_px: int) -> int:
     return max_ok
 
 
-# ---------------------------------------------------------------------------
-# Resolution → pixel size helper
-# ---------------------------------------------------------------------------
-
-def scale_to_pixel_size(scale: float, base_size: int = 1024, patch_size: int = 16) -> Tuple[int, int]:
-    """Convert a resolution scale factor to aligned pixel dimensions."""
-    align = 32  # pixel-space alignment
-    size = max(align, (int(base_size * scale) // align) * align)
-    return (size, size)
-
 
 # ---------------------------------------------------------------------------
 # Auto-tuner orchestrator
 # ---------------------------------------------------------------------------
 
 class AutoTuner:
-    """Runs per-resolution throughput optimization."""
+    """Runs throughput optimization at native resolution."""
 
     def __init__(self, config, device: torch.device, pop_size: int = 12,
                  generations: int = 8, warmup_steps: int = 8, timed_steps: int = 16):
@@ -425,12 +415,14 @@ class AutoTuner:
         self.generations = generations
         self.runner = BenchmarkRunner(config, device, warmup_steps, timed_steps)
 
-    def tune_phase(self, scale: float) -> BenchmarkResult:
-        """Find optimal config for a single resolution phase."""
-        h, w = scale_to_pixel_size(scale, self.config.model.input_size,
-                                   self.config.model.patch_size)
+    def tune(self) -> BenchmarkResult:
+        """Find optimal config for native resolution."""
+        base = self.config.model.input_size
+        align = 32
+        size = max(align, (base // align) * align)
+        h, w = size, size
         print(f"\n{'='*60}")
-        print(f"  Resolution: {h}×{w} (scale={scale})")
+        print(f"  Resolution: {h}×{w}")
         print(f"{'='*60}")
 
         # Phase 1: find OOM boundary
@@ -470,65 +462,45 @@ class AutoTuner:
         results = ga.run(seeds=seeds)
         return results[0]  # best
 
-    def tune_all(self) -> dict:
-        """Tune at full scale. Returns {scale: BenchmarkResult}."""
-        phases = [type('Phase', (), {'scale': 1.0, 'until_step': 99999})]
-
-        results = {}
-        for phase in phases:
-            best = self.tune_phase(phase.scale)
-            results[phase.scale] = best
-
-        return results
-
 
 # ---------------------------------------------------------------------------
 # Output formatting
 # ---------------------------------------------------------------------------
 
-def print_results(results: dict, config):
-    """Print a summary table of tuning results."""
+def print_results(result: BenchmarkResult, config):
+    """Print a summary table of the tuning result."""
     print(f"\n{'='*70}")
     print(f"  AUTO-TUNE RESULTS")
     print(f"{'='*70}")
-    print(f"  {'Scale':<8} {'Resolution':<12} {'batch':<7} {'accum':<7} {'ckpt':<6} {'samp/s':<10} {'VRAM GB'}")
-    print(f"  {'-'*8} {'-'*12} {'-'*7} {'-'*7} {'-'*6} {'-'*10} {'-'*7}")
+    print(f"  {'batch':<7} {'accum':<7} {'ckpt':<6} {'samp/s':<10} {'VRAM GB'}")
+    print(f"  {'-'*7} {'-'*7} {'-'*6} {'-'*10} {'-'*7}")
 
-    for scale, r in sorted(results.items()):
-        if r is None:
-            continue
-        h, w = scale_to_pixel_size(scale, config.model.input_size, config.model.patch_size)
-        c = r.candidate
-        print(f"  {scale:<8.3f} {h}×{w:<8} {c.batch_size:<7d} "
-              f"{c.grad_accumulation_steps:<7d} {'Y' if c.gradient_checkpointing else 'N':<6} "
-              f"{r.samples_per_sec:<10.1f} {r.peak_vram_gb:.2f}")
+    c = result.candidate
+    print(f"  {c.batch_size:<7d} "
+          f"{c.grad_accumulation_steps:<7d} {'Y' if c.gradient_checkpointing else 'N':<6} "
+          f"{result.samples_per_sec:<10.1f} {result.peak_vram_gb:.2f}")
 
     # Comparison with original config
     orig_bs = config.training.batch_size
     orig_ga = config.training.grad_accumulation_steps
-    print(f"\n  Original config: batch_size={orig_bs}, grad_accumulation={orig_ga} (all phases)")
+    print(f"\n  Original config: batch_size={orig_bs}, grad_accumulation={orig_ga}")
     print(f"{'='*70}")
 
 
-def generate_yaml_snippet(results: dict, config) -> str:
+def generate_yaml_snippet(result: BenchmarkResult) -> str:
     """Generate a YAML snippet with tuned batch parameters."""
-    lines = ["# Auto-tuned batch parameters"]
-    for scale, r in sorted(results.items()):
-        if r and not r.oom:
-            c = r.candidate
-            lines.append(f"# scale={scale}: batch_size={c.batch_size}, grad_accumulation_steps={c.grad_accumulation_steps}")
-    return "\n".join(lines)
+    c = result.candidate
+    return (f"# Auto-tuned batch parameters\n"
+            f"# batch_size={c.batch_size}, grad_accumulation_steps={c.grad_accumulation_steps}")
 
 
-def write_tuned_config(results: dict, config, config_path: str, output_path: str):
+def write_tuned_config(result: BenchmarkResult, config_path: str, output_path: str):
     """Write a complete config with tuned batch parameters."""
     with open(config_path) as f:
         raw = yaml.safe_load(f)
 
-    # Pick the best result (scale=1.0 since we always train at native resolution)
-    r = results.get(1.0)
-    if r and not r.oom:
-        c = r.candidate
+    if not result.oom:
+        c = result.candidate
         raw.setdefault('training', {})['batch_size'] = c.batch_size
         raw['training']['grad_accumulation_steps'] = c.grad_accumulation_steps
 
@@ -545,29 +517,25 @@ def write_tuned_config(results: dict, config, config_path: str, output_path: str
 def quick_tune(config, device, generations=2, population=4, warmup_steps=2, timed_steps=4):
     """Fast auto-tune for use inside the experiment loop.
     
-    Returns dict mapping each resolution phase to its optimal config:
-    {scale: {'batch_size': int, 'grad_accumulation_steps': int, 'samples_per_sec': float}}
+    Returns dict with optimal config:
+    {'batch_size': int, 'grad_accumulation_steps': int, 'samples_per_sec': float}
     
     Default params (~2 min total) find good-enough throughput settings.
     """
     tuner = AutoTuner(config, device,
                       pop_size=population, generations=generations,
                       warmup_steps=warmup_steps, timed_steps=timed_steps)
-    raw_results = tuner.tune_all()
+    result = tuner.tune()
     
     # Convert to simple dict
     effective_batch = config.training.batch_size * config.training.grad_accumulation_steps
-    out = {}
-    for scale, result in raw_results.items():
-        if result.oom or result.samples_per_sec == 0:
-            out[scale] = {'batch_size': 1, 'grad_accumulation_steps': effective_batch,
-                          'samples_per_sec': 0.0}
-        else:
-            bs = result.candidate.batch_size
-            ga = max(1, effective_batch // bs)
-            out[scale] = {'batch_size': bs, 'grad_accumulation_steps': ga,
-                          'samples_per_sec': result.samples_per_sec}
-    return out
+    if result.oom or result.samples_per_sec == 0:
+        return {'batch_size': 1, 'grad_accumulation_steps': effective_batch,
+                'samples_per_sec': 0.0}
+    bs = result.candidate.batch_size
+    ga = max(1, effective_batch // bs)
+    return {'batch_size': bs, 'grad_accumulation_steps': ga,
+            'samples_per_sec': result.samples_per_sec}
 
 
 def apply_tune_results(config_path, tune_results, output_path=None):
@@ -575,11 +543,8 @@ def apply_tune_results(config_path, tune_results, output_path=None):
     with open(config_path) as f:
         raw = yaml.safe_load(f)
     
-    # Use scale=1.0 result since we always train at native resolution
-    r = tune_results.get(1.0)
-    if r:
-        raw.setdefault('training', {})['batch_size'] = r['batch_size']
-        raw['training']['grad_accumulation_steps'] = r['grad_accumulation_steps']
+    raw.setdefault('training', {})['batch_size'] = tune_results['batch_size']
+    raw['training']['grad_accumulation_steps'] = tune_results['grad_accumulation_steps']
     
     out = output_path or config_path
     with open(out, 'w') as f:
@@ -593,7 +558,7 @@ def apply_tune_results(config_path, tune_results, output_path=None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Auto-tune batch_size & grad_accumulation_steps per resolution phase',
+        description='Auto-tune batch_size & grad_accumulation_steps',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -635,15 +600,15 @@ def main():
         warmup_steps=args.warmup_steps,
         timed_steps=args.timed_steps,
     )
-    results = tuner.tune_all()
+    result = tuner.tune()
 
     # Output
-    print_results(results, config)
+    print_results(result, config)
     print(f"\nYAML snippet:\n")
-    print(generate_yaml_snippet(results, config))
+    print(generate_yaml_snippet(result))
 
     if args.output:
-        write_tuned_config(results, config, args.config, args.output)
+        write_tuned_config(result, args.config, args.output)
 
 
 if __name__ == '__main__':
