@@ -183,6 +183,7 @@ class AsymFlowConfig:
     enabled: bool = False
     rank: int = 8  # Subspace rank (e.g. 8 for ImageNet)
 
+@dataclass
 class TrainingConfig:
     """Training loop configuration."""
     total_steps: int = 50000
@@ -346,19 +347,44 @@ def load_config(config_path: str | Path) -> Config:
                 is_dataclass = False
                 base_type = field_type
                 
-                # Handle typing.Optional, typing.Union by extracting actual types
-                if getattr(field_type, '__origin__', None) is not None:
-                    # It's a generic type like Union or Optional
+                # Handle Python 3.10+ Union syntax (Type1 | Type2)
+                import types
+                origin = getattr(field_type, '__origin__', None)
+                if origin is not None or isinstance(field_type, types.UnionType) or str(type(field_type)) == "<class 'types.UnionType'>":
+                    # It's a generic type like Union or Optional, or a new-style Union
                     args = getattr(field_type, '__args__', [])
                     for arg in args:
                         if hasattr(arg, '__dataclass_fields__'):
                             is_dataclass = True
                             base_type = arg
                             break
+                    # If we couldn't resolve it via __args__, it might be a generic alias 
+                    # whose __origin__ itself is a dataclass (e.g. list[dataclass] isn't our case here,
+                    # but just in case). But for things like TrainingConfig | dict on older typing versions,
+                    # args is sometimes lost. We'll explicitly check the field's annotation string below.
                 elif hasattr(field_type, '__dataclass_fields__'):
                     is_dataclass = True
                     base_type = field_type
 
+                # Fallback: if it's not detected as a dataclass yet but we KNOW it's a dict,
+                # let's check if the field itself specifies a default_factory that returns a dataclass
+                # or if the config key corresponds to one of our main Config dataclass fields.
+                # Since we are recursively building Config, we can explicitly map known config keys.
+                if not is_dataclass and isinstance(value, dict):
+                    # Hardcoded fallback map for the root Config object fields
+                    if cls.__name__ == 'Config':
+                        known_dataclass_fields = {
+                            'model': ModelConfig,
+                            'training': TrainingConfig,
+                            'data': DataConfig,
+                            'checkpoint': CheckpointConfig,
+                            'validation': ValidationConfig,
+                            'sampling': SamplingConfig,
+                        }
+                        if key in known_dataclass_fields:
+                            is_dataclass = True
+                            base_type = known_dataclass_fields[key]
+                            
                 if is_dataclass and isinstance(value, dict):
                     kwargs[key] = build_dataclass(base_type, value)
                 else:
