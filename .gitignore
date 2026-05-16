@@ -76,3 +76,9 @@ validation_evals/
 # Environment
 .env
 .worktrees/
+
+# Local agent/session files
+.hermes/
+
+# Run logs
+sync_vast_arm_e.log

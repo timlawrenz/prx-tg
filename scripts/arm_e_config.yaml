@@ -123,7 +123,7 @@ sampling:
 
 validation:
   enabled: true
-  interval_steps: 100
+  interval_steps: 500
   num_samples: 25
   output_dir: "validation_outputs"
   run_reconstruction: true
@@ -134,8 +134,8 @@ validation:
   visual_debug_dir: "visual_debug"
 
 checkpoint:
-  save_every: 100
-  keep_last_n: 3
+  save_every: 500
+  keep_last_n: 10
   output_dir: "checkpoints"
   save_optimizer: true
 

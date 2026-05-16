@@ -997,6 +997,7 @@ class Trainer:
             'model': self.model.state_dict(),
             'ema': self.ema.state_dict(),
             'optimizer_type': self.optimizer_type,
+            'elapsed_training_sec': getattr(self, '_total_training_time', 0.0),
             'rng_state': {
                 'python': random.getstate(),
                 'numpy': np.random.get_state(),
@@ -1067,12 +1068,18 @@ class Trainer:
                 torch.cuda.set_rng_state(cuda_state)
         
         print(f"Loaded checkpoint from {path} (step {self.step})")
+        # Restore accumulated training time so wall-clock is continuous across resumes
+        self._total_training_time = checkpoint.get('elapsed_training_sec', 0.0)
+        if self._total_training_time > 0:
+            print(f"  Resuming with {self._total_training_time / 3600:.2f}h of accumulated training time")
     
     def log(self, metrics):
         """Log metrics to file and console."""
         metrics['step'] = self.step
         metrics['epoch'] = self.epoch
-        
+        metrics['elapsed_sec'] = getattr(self, '_total_training_time', 0.0)
+        metrics['utc_timestamp'] = time.time()
+
         # Write to JSONL file
         with open(self.log_file, 'a') as f:
             f.write(json.dumps(metrics) + '\n')
@@ -1103,7 +1110,7 @@ class Trainer:
         _training_start = time.monotonic()
         _gc_frozen = False
         _timing_warmup = 10  # skip first N steps for torch.compile warmup
-        _total_training_time = 0.0
+        _total_training_time = getattr(self, '_total_training_time', 0.0)
         
         while self.step < self.total_steps:
             # Update resolution schedule if configured
