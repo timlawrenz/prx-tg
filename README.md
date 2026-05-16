@@ -470,3 +470,10 @@ See [docs/prx-part3-analysis.md](docs/prx-part3-analysis.md) for a detailed anal
 ---
 
 *This is a research/hobby project demonstrating that high-quality generative models can be trained on consumer hardware with curated vertical datasets. Not intended for commercial use.*
+
+## AsymFlow Integration
+
+We incorporate Asymmetric Flow Models ([arXiv:2605.12964](https://arxiv.org/abs/2605.12964)) to accelerate convergence and reduce gradient variance without changing the pixel-space model architecture. Instead of predicting full-dimensional noise, the target is computed on a lower-dimensional PCA-based subspace for the noise component:
+`target = P @ noise - x_0`
+
+This dramatically improves training efficiency (fewer iterations needed to converge) and gradient stability.

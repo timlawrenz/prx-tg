@@ -178,6 +178,11 @@ class GaLoreConfig:
 
 
 @dataclass
+@dataclass
+class AsymFlowConfig:
+    enabled: bool = False
+    rank: int = 8  # Subspace rank (e.g. 8 for ImageNet)
+
 class TrainingConfig:
     """Training loop configuration."""
     total_steps: int = 50000
@@ -198,6 +203,7 @@ class TrainingConfig:
     maskdit: MaskDiTConfig = field(default_factory=MaskDiTConfig)
     galore: GaLoreConfig = field(default_factory=GaLoreConfig)
     seg_weight: SegWeightConfig = field(default_factory=SegWeightConfig)
+    asymflow: AsymFlowConfig = field(default_factory=AsymFlowConfig)
     
     timestep_sampling: Literal["uniform", "logit_normal"] = "logit_normal"
     logit_normal_loc: float = 0.0

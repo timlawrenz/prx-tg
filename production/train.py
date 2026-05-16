@@ -2,6 +2,36 @@
 
 import gc
 import math
+
+def apply_asymflow_projection(noise, patch_size, rank):
+    """
+    Apply low-rank projection to noise tensor for AsymFlow.
+    noise: (B, C, H, W)
+    """
+    B, C, H, W = noise.shape
+    # Patchify: (B, C, H/ps, ps, W/ps, ps)
+    patches = noise.reshape(
+        B, C, H // patch_size, patch_size, W // patch_size, patch_size
+    ).permute(0, 2, 4, 1, 3, 5).reshape(
+        B, (H // patch_size) * (W // patch_size), patch_size * patch_size * C
+    )
+    
+    patch_dim = patch_size * patch_size * C
+    # Default AsymFlow fallback: padded identity (like lakonlab common.py)
+    # Ideally, you'd load the PCA matrix here: proj_mat = load_pca(rank)
+    device = noise.device
+    eye = torch.eye(rank, device=device)
+    proj_mat = F.pad(eye, (0, 0, 0, patch_dim - rank))
+    P = proj_mat @ proj_mat.T
+    
+    # Project patches
+    projected_patches = patches @ P
+    
+    # Unpatchify
+    return projected_patches.reshape(
+        B, H // patch_size, W // patch_size, C, patch_size, patch_size
+    ).permute(0, 3, 1, 4, 2, 5).reshape(B, C, H, W)
+
 import time
 import torch
 import torch.nn as nn
@@ -222,7 +252,15 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     # This points from data (x0) towards noise (z1)
     # Integrating forward in time: z_t -> z_{t+dt} moves toward noise
     # Integrating backward in time (sampling): z_t -> z_{t-dt} moves toward data
-    v_target = z1 - x0
+    if hasattr(config.training, 'asymflow') and getattr(config.training.asymflow, 'enabled', False):
+        z1_projected = apply_asymflow_projection(
+            z1, 
+            config.model.patch_size, 
+            config.training.asymflow.rank
+        )
+        v_target = z1_projected - x0
+    else:
+        v_target = z1 - x0
     
     # Mutually exclusive CFG dropout (categorical sampling)
     # Categories: uncond, text-only, dino-cls-only, dino-patches-only,

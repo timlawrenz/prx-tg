@@ -171,3 +171,8 @@ logging:
 # Paths (relative to project root)
 paths:
   t5_path: "models/t5xxl_fp16.safetensors"   # T5-XXL encoder (for validation)
+
+  # AsymFlow configuration
+  asymflow:
+    enabled: true
+    rank: 8 # Rank of the noise subspace (typically 8 for 1024-dim patches)
