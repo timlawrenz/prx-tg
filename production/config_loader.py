@@ -340,9 +340,27 @@ def load_config(config_path: str | Path) -> Config:
         for key, value in data.items():
             if key in field_types:
                 field_type = field_types[key]
-                # Check if field type is a dataclass
-                if hasattr(field_type, '__dataclass_fields__'):
-                    kwargs[key] = build_dataclass(field_type, value)
+                
+                # Check if field type is a union of a dataclass (like TrainingConfig | dict)
+                # or just extract the base class to check if it's a dataclass
+                is_dataclass = False
+                base_type = field_type
+                
+                # Handle typing.Optional, typing.Union by extracting actual types
+                if getattr(field_type, '__origin__', None) is not None:
+                    # It's a generic type like Union or Optional
+                    args = getattr(field_type, '__args__', [])
+                    for arg in args:
+                        if hasattr(arg, '__dataclass_fields__'):
+                            is_dataclass = True
+                            base_type = arg
+                            break
+                elif hasattr(field_type, '__dataclass_fields__'):
+                    is_dataclass = True
+                    base_type = field_type
+
+                if is_dataclass and isinstance(value, dict):
+                    kwargs[key] = build_dataclass(base_type, value)
                 else:
                     # Expand $ENV_VAR references in string values (e.g. $STRATUM_DIR).
                     # If the var is unset, expandvars leaves $VAR as-is; fall back to
