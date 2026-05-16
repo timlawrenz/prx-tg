@@ -203,7 +203,7 @@ def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="c
     return per_token_loss.mean()
 
 
-def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, pose_kpts=None, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05, maskdit_config=None, global_step=0, seg_map=None, seg_weight_config=None):
+def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, pose_kpts=None, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05, maskdit_config=None, global_step=0, seg_map=None, seg_weight_config=None, asymflow_config=None):
     """Compute flow matching loss with mutually exclusive CFG dropout.
     
     Supports two prediction modes:
@@ -252,11 +252,11 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     # This points from data (x0) towards noise (z1)
     # Integrating forward in time: z_t -> z_{t+dt} moves toward noise
     # Integrating backward in time (sampling): z_t -> z_{t-dt} moves toward data
-    if hasattr(config.training, 'asymflow') and getattr(config.training.asymflow, 'enabled', False):
+    if hasattr(asymflow_config, 'enabled') and getattr(asymflow_config, 'enabled', False):
         z1_projected = apply_asymflow_projection(
             z1, 
-            config.model.patch_size, 
-            config.training.asymflow.rank
+            model.patch_size, 
+            getattr(asymflow_config, 'rank', 8)
         )
         v_target = z1_projected - x0
     else:
@@ -838,6 +838,7 @@ class Trainer:
                 maskdit_config=getattr(self, 'maskdit_config', None),
                 seg_map=seg_map,
                 seg_weight_config=getattr(self, 'seg_weight_config', None),
+                asymflow_config=getattr(self, 'asymflow_config', None),
             )
         
         # Scale loss by accumulation steps
@@ -1282,9 +1283,14 @@ class ProductionTrainer(Trainer):
         self.maskdit_config = training.maskdit if training.maskdit.enabled else None
 
         # Seg weight config
-        self.seg_weight_config = training.seg_weight if training.seg_weight.enabled else None
-        
-        # AMP (Automatic Mixed Precision) setup
+        self.seg_weight_config = getattr(training, 'seg_weight', None)
+        if self.seg_weight_config and not self.seg_weight_config.enabled:
+            self.seg_weight_config = None
+
+        # AsymFlow config
+        self.asymflow_config = getattr(training, 'asymflow', None)
+        if self.asymflow_config and not getattr(self.asymflow_config, 'enabled', False):
+            self.asymflow_config = None
         if training.mixed_precision and training.precision == "float16":
             self._amp_dtype = torch.float16
             self._grad_scaler = torch.cuda.amp.GradScaler()
