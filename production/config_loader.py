@@ -37,20 +37,6 @@ class MuonConfig:
 
 
 @dataclass
-class ResolutionPhase:
-    """A phase in the resolution schedule.
-    
-    Optional overrides (batch_size, grad_accumulation_steps, num_workers)
-    replace the global training defaults during this phase. None = use global.
-    """
-    until_step: int = 0
-    scale: float = 1.0
-    batch_size: Optional[int] = None
-    grad_accumulation_steps: Optional[int] = None
-    num_workers: Optional[int] = None
-
-
-@dataclass
 class OptimizerConfig:
     """Optimizer configuration."""
     type: str = "AdamW"            # "AdamW" or "Muon" (hybrid Muon + AdamW)
@@ -216,11 +202,7 @@ class TrainingConfig:
     compile: bool = False  # torch.compile the model for ~20-40% speedup
     time_budget_minutes: float = 0  # 0 = disabled, >0 = stop after N minutes
     
-    resolution_schedule: List = field(default_factory=list)  # List of {until_step, scale} dicts
-    
-    def get_resolution_phases(self) -> list:
-        """Parse resolution_schedule dicts into ResolutionPhase objects."""
-        return [ResolutionPhase(**p) for p in self.resolution_schedule] if self.resolution_schedule else []
+
 
 
 @dataclass

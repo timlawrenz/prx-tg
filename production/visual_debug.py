@@ -20,7 +20,6 @@ def create_visual_debug_fn(
     tensorboard_writer=None,
     self_guidance=False,
     guidance_scale=3.0,
-    get_resolution_scale=None,
     prediction_type="v_prediction",
 ):
     """Create visual debugging function for training loop.
@@ -36,7 +35,6 @@ def create_visual_debug_fn(
         tensorboard_writer: Optional TensorBoard SummaryWriter for logging
         self_guidance: Use self-guidance CFG
         guidance_scale: Self-guidance scale
-        get_resolution_scale: Callable returning current resolution scale (default 1.0)
         prediction_type: "v_prediction" or "x_prediction"
     
     Returns:
@@ -60,15 +58,14 @@ def create_visual_debug_fn(
         """Generate visual debug images at current training step."""
         model.eval()
         
-        # Query current resolution scale
-        scale = get_resolution_scale() if get_resolution_scale is not None else 1.0
+        # Always use full resolution
         if pixel_space:
-            base_size = 1024  # Full resolution pixel dimension
-            spatial_size = max(32, (int(base_size * scale) // 32) * 32)  # Align to 32-pixel grid (divisible by patch_size=16)
+            base_size = 1024
+            spatial_size = base_size
             in_channels = 3
         else:
-            base_size = 128  # Full resolution: 1024px / 8 = 128
-            spatial_size = max(2, (int(base_size * scale) // 2) * 2)
+            base_size = 128
+            spatial_size = base_size
             in_channels = 16
         
         # Create step directory

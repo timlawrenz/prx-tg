@@ -77,15 +77,6 @@ def print_config_summary(config):
     print(f"  Batch size: {config.training.batch_size} (global default)")
     print(f"  Grad accumulation: {config.training.grad_accumulation_steps} (global default)")
     print(f"  Effective batch: {config.training.batch_size * config.training.grad_accumulation_steps}")
-    res_phases = config.training.get_resolution_phases()
-    has_overrides = any(p.batch_size is not None or p.grad_accumulation_steps is not None for p in res_phases) if res_phases else False
-    if has_overrides:
-        print(f"  Per-phase overrides:")
-        for p in res_phases:
-            bs = p.batch_size if p.batch_size is not None else config.training.batch_size
-            ga = p.grad_accumulation_steps if p.grad_accumulation_steps is not None else config.training.grad_accumulation_steps
-            res = int(config.model.input_size * p.scale)
-            print(f"    {res}×{res} (scale={p.scale}): bs={bs}, ga={ga}, eff={bs*ga}")
     print(f"  Total steps: {config.training.total_steps}")
     print(f"  Warmup: {config.training.warmup_steps} steps")
     print(f"  Peak LR: {config.training.optimizer.lr}")
@@ -326,10 +317,6 @@ def main():
         print(f"Self-guidance CFG: ENABLED (scale={config.sampling.guidance_scale})")
     else:
         print(f"Dual CFG: text_scale={config.sampling.text_scale}, dino_scale={config.sampling.dino_scale}")
-    res_phases = config.training.get_resolution_phases()
-    if res_phases:
-        phase_strs = [f"{p.scale}x until step {p.until_step}" for p in res_phases]
-        print(f"Resolution schedule: {', '.join(phase_strs)}")
     if config.training.perceptual.enabled:
         p = config.training.perceptual
         print(f"Perceptual loss (LPIPS): weight={p.lpips_weight}, every {p.every_n_microsteps} micro-steps, crop={p.crop_size}")
@@ -350,7 +337,6 @@ def main():
             self_guidance=config.sampling.self_guidance,
             guidance_scale=config.sampling.guidance_scale,
             prediction_type=config.model.prediction_type,
-            get_resolution_scale=lambda: getattr(dataloader, 'resolution_scale', 1.0),
             source=getattr(config.data, 'source', 'webdataset'),
             stratum_dir=getattr(config.data, 'stratum_dir', '/workspace/stratum'),
         )
@@ -372,7 +358,6 @@ def main():
             tensorboard_writer=tb_writer,
             self_guidance=config.sampling.self_guidance,
             guidance_scale=config.sampling.guidance_scale,
-            get_resolution_scale=lambda: getattr(dataloader, 'resolution_scale', 1.0),
             prediction_type=config.model.prediction_type,
         )
     

@@ -750,50 +750,6 @@ class Trainer:
             for pg in self.optimizer_adam.param_groups:
                 pg['lr'] = lr
     
-    def _update_resolution_schedule(self):
-        """Check and apply resolution scale based on current step.
-        
-        Uses self.resolution_phases (set by ProductionTrainer) to determine
-        the correct scale for the current step. Updates the dataloader's
-        resolution_scale property when the phase changes. Also applies
-        per-phase overrides for batch_size and grad_accumulation_steps.
-        """
-        phases = getattr(self, 'resolution_phases', None)
-        if not phases:
-            return
-        
-        # Find the current phase
-        current_phase = phases[-1]  # default to last phase
-        for phase in phases:
-            if self.step < phase.until_step:
-                current_phase = phase
-                break
-        
-        scale = current_phase.scale
-        prev_scale = getattr(self, '_current_resolution_scale', None)
-        if prev_scale != scale:
-            if hasattr(self.dataloader, 'resolution_scale'):
-                self.dataloader.resolution_scale = scale
-                self._current_resolution_scale = scale
-                
-                # Apply per-phase overrides
-                changes = []
-                if current_phase.batch_size is not None:
-                    if hasattr(self.dataloader, 'batch_size'):
-                        self.dataloader.batch_size = current_phase.batch_size
-                    changes.append(f"batch_size={current_phase.batch_size}")
-                if current_phase.grad_accumulation_steps is not None:
-                    self.grad_accumulation_steps = current_phase.grad_accumulation_steps
-                    changes.append(f"grad_accum={current_phase.grad_accumulation_steps}")
-                
-                if prev_scale is not None:
-                    overrides = f" ({', '.join(changes)})" if changes else ""
-                    print(f"\n  Resolution schedule: scale {prev_scale} → {scale} at step {self.step}{overrides}")
-                
-                # Signal the training loop to recreate the data iterator
-                if changes:
-                    self._needs_data_reload = True
-    
     def train_step(self, batch):
         """Execute one training step.
         
@@ -1113,14 +1069,6 @@ class Trainer:
         _total_training_time = getattr(self, '_total_training_time', 0.0)
         
         while self.step < self.total_steps:
-            # Update resolution schedule if configured
-            self._update_resolution_schedule()
-            
-            # Reload data iterator if resolution phase changed batch_size
-            if getattr(self, '_needs_data_reload', False):
-                data_iter = iter(self.dataloader)
-                self._needs_data_reload = False
-            
             # Get batch
             try:
                 batch = next(data_iter)
@@ -1314,10 +1262,6 @@ class ProductionTrainer(Trainer):
         # GaLore optimizer replacement (post-init, replaces existing AdamW)
         if training.galore.enabled:
             self._setup_galore_optimizer(model, training)
-        
-        # Resolution schedule
-        self.resolution_phases = training.get_resolution_phases()
-        self._current_resolution_scale = None  # Will be set on first step
         
         # torch.compile
         if training.compile:

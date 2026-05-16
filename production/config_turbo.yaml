@@ -85,17 +85,6 @@ training:
   mixed_precision: true
   precision: "float16"
 
-  # Aggressive resolution schedule — never go full 1024x1024
-  resolution_schedule:
-    - until_step: 1500
-      scale: 0.125                   # 128×128 → 64 tokens (16 visible after masking)
-    - until_step: 3500
-      scale: 0.25                    # 256×256 → 256 tokens (64 visible)
-    - until_step: 5000
-      scale: 0.5                     # 512×512 → 1024 tokens (256 visible)
-    - until_step: 6000
-      scale: 0.75                    # 768×768 → 2304 tokens (576 visible)
-
   perceptual:
     enabled: false
 

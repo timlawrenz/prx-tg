@@ -471,11 +471,8 @@ class AutoTuner:
         return results[0]  # best
 
     def tune_all(self) -> dict:
-        """Tune all resolution phases. Returns {scale: BenchmarkResult}."""
-        phases = self.config.training.get_resolution_phases()
-        if not phases:
-            print("No resolution schedule defined — tuning at full scale only.")
-            phases = [type('Phase', (), {'scale': 1.0, 'until_step': 99999})]
+        """Tune at full scale. Returns {scale: BenchmarkResult}."""
+        phases = [type('Phase', (), {'scale': 1.0, 'until_step': 99999})]
 
         results = {}
         for phase in phases:
@@ -491,21 +488,18 @@ class AutoTuner:
 
 def print_results(results: dict, config):
     """Print a summary table of tuning results."""
-    phases = config.training.get_resolution_phases()
-
     print(f"\n{'='*70}")
     print(f"  AUTO-TUNE RESULTS")
     print(f"{'='*70}")
     print(f"  {'Scale':<8} {'Resolution':<12} {'batch':<7} {'accum':<7} {'ckpt':<6} {'samp/s':<10} {'VRAM GB'}")
     print(f"  {'-'*8} {'-'*12} {'-'*7} {'-'*7} {'-'*6} {'-'*10} {'-'*7}")
 
-    for phase in phases:
-        r = results.get(phase.scale)
+    for scale, r in sorted(results.items()):
         if r is None:
             continue
-        h, w = scale_to_pixel_size(phase.scale, config.model.input_size, config.model.patch_size)
+        h, w = scale_to_pixel_size(scale, config.model.input_size, config.model.patch_size)
         c = r.candidate
-        print(f"  {phase.scale:<8.3f} {h}×{w:<8} {c.batch_size:<7d} "
+        print(f"  {scale:<8.3f} {h}×{w:<8} {c.batch_size:<7d} "
               f"{c.grad_accumulation_steps:<7d} {'Y' if c.gradient_checkpointing else 'N':<6} "
               f"{r.samples_per_sec:<10.1f} {r.peak_vram_gb:.2f}")
 
@@ -517,37 +511,26 @@ def print_results(results: dict, config):
 
 
 def generate_yaml_snippet(results: dict, config) -> str:
-    """Generate a resolution_schedule YAML snippet with per-phase overrides."""
-    phases = config.training.get_resolution_phases()
-    lines = ["resolution_schedule:"]
-    for phase in phases:
-        r = results.get(phase.scale)
-        lines.append(f"  - until_step: {phase.until_step}")
-        lines.append(f"    scale: {phase.scale}")
+    """Generate a YAML snippet with tuned batch parameters."""
+    lines = ["# Auto-tuned batch parameters"]
+    for scale, r in sorted(results.items()):
         if r and not r.oom:
             c = r.candidate
-            lines.append(f"    batch_size: {c.batch_size}")
-            lines.append(f"    grad_accumulation_steps: {c.grad_accumulation_steps}")
+            lines.append(f"# scale={scale}: batch_size={c.batch_size}, grad_accumulation_steps={c.grad_accumulation_steps}")
     return "\n".join(lines)
 
 
 def write_tuned_config(results: dict, config, config_path: str, output_path: str):
-    """Write a complete config with tuned per-phase overrides."""
+    """Write a complete config with tuned batch parameters."""
     with open(config_path) as f:
         raw = yaml.safe_load(f)
 
-    phases = config.training.get_resolution_phases()
-    tuned_schedule = []
-    for phase in phases:
-        entry = {'until_step': phase.until_step, 'scale': phase.scale}
-        r = results.get(phase.scale)
-        if r and not r.oom:
-            c = r.candidate
-            entry['batch_size'] = c.batch_size
-            entry['grad_accumulation_steps'] = c.grad_accumulation_steps
-        tuned_schedule.append(entry)
-
-    raw.setdefault('training', {})['resolution_schedule'] = tuned_schedule
+    # Pick the best result (scale=1.0 since we always train at native resolution)
+    r = results.get(1.0)
+    if r and not r.oom:
+        c = r.candidate
+        raw.setdefault('training', {})['batch_size'] = c.batch_size
+        raw['training']['grad_accumulation_steps'] = c.grad_accumulation_steps
 
     with open(output_path, 'w') as f:
         yaml.dump(raw, f, default_flow_style=False, sort_keys=False)
@@ -592,20 +575,11 @@ def apply_tune_results(config_path, tune_results, output_path=None):
     with open(config_path) as f:
         raw = yaml.safe_load(f)
     
-    from production.config_loader import load_config
-    config = load_config(config_path)
-    phases = config.training.get_resolution_phases()
-    
-    tuned_schedule = []
-    for phase in phases:
-        entry = {'until_step': phase.until_step, 'scale': phase.scale}
-        r = tune_results.get(phase.scale)
-        if r:
-            entry['batch_size'] = r['batch_size']
-            entry['grad_accumulation_steps'] = r['grad_accumulation_steps']
-        tuned_schedule.append(entry)
-    
-    raw.setdefault('training', {})['resolution_schedule'] = tuned_schedule
+    # Use scale=1.0 result since we always train at native resolution
+    r = tune_results.get(1.0)
+    if r:
+        raw.setdefault('training', {})['batch_size'] = r['batch_size']
+        raw['training']['grad_accumulation_steps'] = r['grad_accumulation_steps']
     
     out = output_path or config_path
     with open(out, 'w') as f:

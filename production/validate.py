@@ -106,7 +106,6 @@ class ValidationRunner:
         self_guidance=False,
         guidance_scale=3.0,
         prediction_type="v_prediction",
-        get_resolution_scale=None,
     ):
         """
         Args:
@@ -118,7 +117,6 @@ class ValidationRunner:
             lpips_net: LPIPS network ('alex' or 'vgg')
             tensorboard_writer: Optional TensorBoard SummaryWriter
             prediction_type: "v_prediction" or "x_prediction"
-            get_resolution_scale: Optional callback returning current resolution scale (0.0-1.0)
         """
         self.model = model
         self.ema = ema
@@ -127,7 +125,6 @@ class ValidationRunner:
         self.output_dir = Path(output_dir)
         self.tb_writer = tensorboard_writer
         self.prediction_type = prediction_type
-        self.get_resolution_scale = get_resolution_scale
 
         # Sampling CFG scales for validation
         self.text_scale = text_scale
@@ -202,11 +199,7 @@ class ValidationRunner:
         was trained at.
         """
         base_size = getattr(self.model, 'input_size', 128)
-        if self.get_resolution_scale is not None:
-            scale = self.get_resolution_scale()
-            latent_size = max(2, (int(base_size * scale) // 2) * 2)
-        else:
-            latent_size = base_size
+        latent_size = base_size
         return latent_size
     
     def run_reconstruction_test(self, step, sampler, latent_size=None):
@@ -840,7 +833,6 @@ class ValidationRunner:
             results = {
                 'step': step,
                 'latent_size': latent_size,
-                'resolution_scale': scale,
                 'reconstruction': self.run_reconstruction_test(step, sampler, latent_size=latent_size),
                 'dino_swap': self.run_dino_swap_test(step, sampler, latent_size=latent_size),
             }
@@ -919,7 +911,6 @@ def create_validation_fn(
     self_guidance=False,
     guidance_scale=3.0,
     prediction_type="v_prediction",
-    get_resolution_scale=None,
     source="webdataset",
     stratum_dir="/workspace/stratum",
 ):
@@ -939,7 +930,6 @@ def create_validation_fn(
         self_guidance: Use self-guidance instead of dual CFG
         guidance_scale: Self-guidance scale
         prediction_type: "v_prediction" or "x_prediction"
-        get_resolution_scale: Optional callback returning current resolution scale (0.0-1.0)
     
     Returns:
         validation_fn(model, ema, step, device)
@@ -954,7 +944,7 @@ def create_validation_fn(
         nonlocal runner, val_dataloader
 
         # Create deterministic validation dataloader (first call only)
-        # Always load at full resolution; tests resize dynamically per resolution schedule
+        # Always load at full resolution
         if val_dataloader is None:
             print(f"Creating deterministic validation dataloader from {shard_dir}...")
             val_dataloader = get_deterministic_validation_dataloader(
@@ -975,7 +965,6 @@ def create_validation_fn(
                 self_guidance=self_guidance,
                 guidance_scale=guidance_scale,
                 prediction_type=prediction_type,
-                get_resolution_scale=get_resolution_scale,
             )
         
         runner.run_validation(step)

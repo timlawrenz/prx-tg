@@ -196,11 +196,6 @@ training:
     p_dino_patches_only: 0.05
     p_drop_pose: 0.10
     p_pose_only: 0.05
-  resolution_schedule:             # Train at lower res first (optional)
-    - until_step: 3000
-      scale: 0.5                   # Half resolution (4× fewer tokens)
-    - until_step: 6000
-      scale: 1.0                   # Full resolution
   repa:
     enabled: true
     weight: 0.5           # REPA loss weight

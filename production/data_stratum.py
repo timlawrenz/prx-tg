@@ -125,16 +125,6 @@ class StratumDataset:
         self._dirs = [self.stratum_dir / f"{i:05d}" for i in range(limit)]
         print(f"[StratumDataset] {len(self._dirs)} samples in {self.stratum_dir}")
 
-    @property
-    def resolution_scale(self):
-        # Tie latent target to network patch size dynamically. For pixel space, 
-        # the model patch_size dictates the alignment requirement.
-        return 1.0
-
-    @resolution_scale.setter
-    def resolution_scale(self, value):
-        pass  # Handled statically per batch context.
-
     # ------------------------------------------------------------------
 
     def _load_sample(self, d: Path) -> dict:

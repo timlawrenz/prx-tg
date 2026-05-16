@@ -61,11 +61,6 @@ training:
   gradient_checkpointing: true
   mixed_precision: true
   precision: float16
-  resolution_schedule:
-  - until_step: 999999
-    scale: 0.75
-    batch_size: 2
-    grad_accumulation_steps: 128
   perceptual:
     enabled: false
 data:

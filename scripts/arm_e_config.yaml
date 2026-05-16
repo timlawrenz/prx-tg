@@ -73,14 +73,6 @@ training:
   mixed_precision: true
   precision: "bfloat16"
 
-  resolution_schedule:
-    - until_step: 500
-      scale: 0.25
-    - until_step: 3000
-      scale: 0.5
-    - until_step: 5000
-      scale: 1.0
-
   perceptual:
     enabled: false
     lpips_weight: 0.1
