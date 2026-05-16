@@ -94,7 +94,7 @@ def main():
     writer = SummaryWriter(log_dir=str(tensorboard_dir))
     
     # Create validation function
-    print("Creating validation suite...")
+    print("Creating validation function...")
     validate_fn = create_validation_fn(
         shard_dir=config.data.shard_base_dir,
         output_dir=str(exp_dir / config.validation.output_dir),
@@ -104,12 +104,15 @@ def main():
         num_steps=config.sampling.num_steps,
         prediction_type=getattr(config.model, 'prediction_type', 'v_prediction'),
         self_guidance=getattr(config.sampling, 'self_guidance', False),
-        guidance_scale=getattr(config.sampling, 'guidance_scale', 3.0)
+        guidance_scale=getattr(config.sampling, 'guidance_scale', 3.0),
+        source=getattr(config.data, 'source', 'webdataset'),
+        stratum_dir=getattr(config.data, 'stratum_dir', '/mnt/nas-ai-models/training-data/ffhq/stratum'),
     )
-    
+
     # Run validation
-    print("\n" + "="*60)
+    print(f"\n{'='*60}")
     print(f"RUNNING VALIDATION FOR STEP {step}")
+    print(f"{'='*60}")
     print("="*60)
     
     with torch.no_grad():

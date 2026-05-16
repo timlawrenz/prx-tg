@@ -351,6 +351,8 @@ def main():
             guidance_scale=config.sampling.guidance_scale,
             prediction_type=config.model.prediction_type,
             get_resolution_scale=lambda: getattr(dataloader, 'resolution_scale', 1.0),
+            source=getattr(config.data, 'source', 'webdataset'),
+            stratum_dir=getattr(config.data, 'stratum_dir', '/workspace/stratum'),
         )
     
     # Create visual debugging function (if enabled)
