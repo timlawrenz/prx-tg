@@ -20,8 +20,8 @@ model:
 training:
   total_steps: 5000
   warmup_steps: 500
-  batch_size: 1
-  grad_accumulation_steps: 256
+  batch_size: 4              # auto-tuned (was 1) — 6.2 samp/s on RTX 4090
+  grad_accumulation_steps: 32  # auto-tuned (was 256) — effective batch 128
 
   optimizer:
     type: "Muon"
