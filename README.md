@@ -219,8 +219,7 @@ training:
 7. **REPA (REPresentation Alignment)**: Auxiliary loss aligning transformer hidden states with DINOv3 patch features at the middle block, improving convergence and representation quality (weight=0.5, cosine similarity)
 8. **TREAD (Token Routing)**: Randomly routes 50% of latent tokens past middle blocks (1→depth-2), effectively halving compute for 16 of 18 blocks. Parameter-free — adds zero new weights. Pairs with self-guidance sampling (2 passes instead of 3-pass dual CFG)
 9. **Muon Optimizer**: Hybrid Muon + AdamW — all 2D weight matrices (~237M params) use Muon's Newton-Schulz orthogonalization for geometry-aware updates; non-2D params (convs, biases, ~0.1M) stay on AdamW. Uses `adjust_lr_fn="match_rms_adamw"` so both optimizers share the same LR schedule.
-10. **Resolution Scheduling**: Train at lower resolution first (e.g., 0.5× spatial scale = 4× fewer tokens), then transition to full resolution.
-11. **DWPose Conditioning**: Whole-body pose keypoints with dedicated CFG dropout, confidence masking, and learned [NULL_POSE] embeddings.
+10. **DWPose Conditioning**: Whole-body pose keypoints with dedicated CFG dropout, confidence masking, and learned [NULL_POSE] embeddings.
 
 ### Data Augmentation
 
@@ -319,7 +318,6 @@ Quick 4-image generation every 100 steps:
 - ✅ **REPA Alignment**: Auxiliary loss aligns hidden states with DINOv3 teacher features for faster convergence
 - ✅ **TREAD Token Routing**: Routes 50% of tokens past middle blocks for ~2× throughput, with self-guidance sampling
 - ✅ **Muon Optimizer**: Hybrid Muon + AdamW for geometry-aware weight updates
-- ✅ **Resolution Scheduling**: Multi-phase training at lower resolution first for faster convergence
 - 🚧 In progress: Training on curated dataset, scaling to 70k images
 
 ### Known Limitations
@@ -398,37 +396,24 @@ python -m production.sample \
   --output output.png
 ```
 
-## Ablation Study
+## Experiment Registry
 
-The ablation grid isolates the contribution of each key technique. Each run trains for 5,000 steps on the same 7k FFHQ subset.
+All arms train for 5,000 steps on the same 7k FFHQ subset. Each arm isolates one variable against its baseline. See [`docs/experiment-structure.md`](docs/experiment-structure.md) for directory layout, provenance templates, and governance rules.
 
-| Run | TREAD | Optimizer | REPA | Purpose |
-|-----|-------|-----------|------|---------|
-| A   | ✗     | AdamW     | ✗    | Baseline (no optimizations) |
-| B   | ✓     | AdamW     | ✗    | Proves TREAD's VRAM/speed value |
-| C   | ✓     | Muon      | ✗    | Proves Muon's convergence advantage |
-| D   | ✓     | Muon      | ✓    | Full stack — proves REPA's quality boost |
+| Arm | Slug | TREAD | Optimizer | REPA | Extra | Status | Date | Compares To |
+|-----|------|-------|-----------|------|-------|--------|------|-------------|
+| A | `minimal-baseline` | ✗ | AdamW | ✗ | — | ✅ Done | 2026-05 | — |
+| B | `tread-adamw` | ✓ | AdamW | ✗ | — | ✅ Done | 2026-05 | A |
+| C | `tread-muon` | ✓ | Muon | ✗ | — | ✅ Done | 2026-05 | B |
+| D | `full-stack-baseline` | ✓ | Muon | ✓ | — | ✅ Done | 2026-05 | C |
+| E | `seg-weight-spatial` | ✓ | Muon | ✓ | Seg weight map (face 2×, bg 0.5×) | 🚧 Training | 2026-05 | D |
 
-### Running Ablations
+### Key Comparisons
 
-```bash
-# Run the full grid (A → B → C → D)
-bash scripts/run_ablations.sh
-
-# Run a subset
-bash scripts/run_ablations.sh B D
-
-# Select GPU
-GPU=1 bash scripts/run_ablations.sh
-```
-
-Configs are in `experiments/ablations/config_{A,B,C,D}_*.yaml`. Results are logged to TensorBoard under each experiment's `tensorboard/` directory.
-
-### Key Metrics
-
-- **A vs B**: `memory/peak_vram_gb` and `sys/iter_per_sec` — quantifies TREAD's compute savings
-- **B vs C**: `train/loss` slope during first 5,000 steps — proves Muon's faster convergence
-- **C vs D**: `validation/reconstruction_lpips` — proves REPA's perceptual quality improvement
+- **A → B**: `memory/peak_vram_gb` and `sys/iter_per_sec` — quantifies TREAD's compute savings
+- **B → C**: `train/loss` slope during first 5,000 steps — proves Muon's faster convergence
+- **C → D**: `validation/reconstruction_lpips` — proves REPA's perceptual quality improvement
+- **D → E**: Reconstruction LPIPS + text manipulation LPIPS — does seg weighting improve text controllability without degrading fidelity?
 
 ## Dependencies
 

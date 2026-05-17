@@ -12,14 +12,14 @@ prx-tg is a pixel-space DiT (Diffusion Transformer) for face generation. It trai
 ```
 production/           # Core training code (model, train, validate, config_loader)
 scripts/              # Experiment configs, helper scripts, autoresearch
-experiments/          # Run outputs: checkpoints, tensorboard, validation, metadata
-  <timestamp>/        # Each run gets a timestamped directory
-    metadata.json     # Git commit, config path, command, dirty flag
-    config.yaml       # Frozen config snapshot (copied at run start)
-    checkpoints/      # Model checkpoints (step*.pt, final.pt)
-    tensorboard/      # TensorBoard logs
-    validation/       # Validation outputs (images, results.json)
-    visual_debug/     # Debug visualizations
+experiments/          # Symlink → Stratum NAS. One subdir per arm (slug-named).
+  {slug}/             # See docs/experiment-structure.md for full template
+    config.yaml       # Frozen config
+    provenance.yaml   # Machine-readable provenance
+    runs/             # Timestamped run dirs (checkpoints, tensorboard, logs)
+    validation/       # Post-hoc standardized validation
+docs/                 # Git-tracked documentation
+  experiment-structure.md  # Experiment directory layout, rules, provenance template
 research/             # Ratiocinator specs and results (when initialized)
   specs/              # Experiment YAML specs for ratiocinator fleet
   results/            # Collected metrics and analysis
@@ -37,8 +37,8 @@ research/             # Ratiocinator specs and results (when initialized)
 
 ### Config File Conventions
 
-- Base config: `production/config.yaml` (Arm D — full stack baseline)
-- Arm variants: `scripts/arm_{letter}_config.yaml`
+- Base config: `experiments/full-stack-baseline/config.yaml` (Arm D — full stack baseline)
+- Arm variants: `experiments/{slug}/config.yaml` (legacy: `scripts/arm_{letter}_config.yaml`)
 - Each arm config **MUST** have a comment header explaining:
   - What it tests (ablation hypothesis)
   - How it differs from the baseline
@@ -48,9 +48,9 @@ research/             # Ratiocinator specs and results (when initialized)
 
 | Entity | Format | Example |
 |--------|--------|---------|
-| Arm config | `arm_{letter}_config.yaml` | `arm_e_config.yaml` |
-| Experiment dir | `<YYYY-MM-DD_HHMM>` (auto) | `2026-05-13_2035` |
-| Vast sync dir | `vast_sync_<arm>_<date>_<time>` | `vast_sync_arm_e_2026-05-16_0525` |
+| Arm directory | `experiments/{slug}/` | `experiments/seg-weight-spatial/` |
+| Arm config | `experiments/{slug}/config.yaml` | `experiments/seg-weight-spatial/config.yaml` |
+| Run dir | `experiments/{slug}/runs/<YYYY-MM-DD_HHMM>/` | `experiments/seg-weight-spatial/runs/2026-05-17_0043/` |
 | Ratiocinator spec | `research/specs/<name>.yaml` | `research/specs/arm_e_vs_d.yaml` |
 | Checkpoint | `checkpoint_step{N}.pt` | `checkpoint_step2500.pt` |
 
@@ -66,11 +66,12 @@ research/             # Ratiocinator specs and results (when initialized)
 2. **MUST** run validation on the final checkpoint if not run during training:
    ```bash
    python scripts/run_checkpoint_validation.py \
-     --config experiments/<dir>/config.yaml \
-     --checkpoint experiments/<dir>/checkpoints/checkpoint_final.pt
+     --config experiments/{slug}/config.yaml \
+     --checkpoint experiments/{slug}/runs/<timestamp>/checkpoints/checkpoint_final.pt
    ```
 3. **MUST** collect metrics into a comparison table before claiming one arm beats another.
 4. **SHOULD** sync tensorboard logs for visual comparison.
+5. **MUST** update the Experiment Registry table in `README.md` with final status.
 
 ## Ratiocinator Integration
 
@@ -85,13 +86,13 @@ When using `ratiocinator fleet` for parallel runs:
 
 | Artifact | Location | Retention |
 |----------|----------|-----------|
-| Checkpoints | `experiments/<run>/checkpoints/` | Keep last 10 per run |
-| Validation images | `experiments/<run>/validation/` | Keep all |
-| TensorBoard | `experiments/<run>/tensorboard/` | Keep all |
-| Training log | `experiments/<run>/training_log.jsonl` | Keep all |
-| Frozen config | `experiments/<run>/config.yaml` | Keep all |
-| Metadata | `experiments/<run>/metadata.json` | Keep all |
-| Vast.ai syncs | `experiments/vast_sync_*` | Archive after analysis |
+| Checkpoints | `experiments/{slug}/runs/<ts>/checkpoints/` | Keep last 10 per run |
+| Validation images | `experiments/{slug}/runs/<ts>/validation/` | Keep all |
+| TensorBoard | `experiments/{slug}/runs/<ts>/tensorboard/` | Keep all |
+| Training log | `experiments/{slug}/runs/<ts>/training_log.jsonl` | Keep all |
+| Frozen config | `experiments/{slug}/config.yaml` | Keep all |
+| Metadata | `experiments/{slug}/runs/<ts>/metadata.json` | Keep all |
+| Provenance | `experiments/{slug}/provenance.yaml` | Keep all |
 | Autoresearch TSV | `results/results_phase_*.tsv` | Keep all |
 | Ratiocinator results | `research/results/` | Keep all |
 
