@@ -406,14 +406,18 @@ All arms train for 5,000 steps on the same 7k FFHQ subset. Each arm isolates one
 | B | `tread-adamw` | ✓ | AdamW | ✗ | — | ✅ Done | 2026-05 | A |
 | C | `tread-muon` | ✓ | Muon | ✗ | — | ✅ Done | 2026-05 | B |
 | D | `full-stack-baseline` | ✓ | Muon | ✓ | — | ✅ Done | 2026-05 | C |
-| E | `seg-weight-spatial` | ✓ | Muon | ✓ | Seg weight map (face 2×, bg 0.5×) | 🚧 Training | 2026-05 | D |
+| E | `seg-weight-spatial` | ✓ | Muon | ✓ | Seg weight map (face 2×, bg 0.5×) | ❌ Confounded | 2026-05 | D |
+| F | `seg-weight-clean-ablation` | ✓ | Muon | ✓ | Seg weight map (face 2×, bg 0.5×) | ⏸️ Paused | 2026-05 | D |
+| G | `asym-flow-ablation` | ✓ | Muon | ✓ | AsymFlow (rank 8) | ✅ Done | 2026-05 | D |
 
 ### Key Comparisons
 
 - **A → B**: `memory/peak_vram_gb` and `sys/iter_per_sec` — quantifies TREAD's compute savings
 - **B → C**: `train/loss` slope during first 5,000 steps — proves Muon's faster convergence
 - **C → D**: `validation/reconstruction_lpips` — proves REPA's perceptual quality improvement
-- **D → E**: Reconstruction LPIPS + text manipulation LPIPS — does seg weighting improve text controllability without degrading fidelity?
+- **D → E**: Reconstruction LPIPS + text manipulation LPIPS — Confounded by eff. batch size and REPA warmdown schedule differences.
+- **D → F**: Reconstruction LPIPS + text manipulation LPIPS — Clean ablation for spatial segment weighting.
+- **D → G**: Reconstruction LPIPS + text manipulation LPIPS — verifies Asymmetric Flow matching convergence acceleration vs baseline visual quality.
 
 ## Dependencies
 
