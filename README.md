@@ -417,7 +417,7 @@ All arms train for 5,000 steps on the same 7k FFHQ subset. Each arm isolates one
 - **C → D**: `validation/reconstruction_lpips` — proves REPA's perceptual quality improvement
 - **D → E**: Reconstruction LPIPS + text manipulation LPIPS — Confounded by eff. batch size and REPA warmdown schedule differences.
 - **D → F**: Reconstruction LPIPS + text manipulation LPIPS — Clean ablation for spatial segment weighting.
-- **D → G**: Reconstruction LPIPS + text manipulation LPIPS — verifies Asymmetric Flow matching convergence acceleration vs baseline visual quality.
+- **D → G**: Reconstruction LPIPS (0.9379) + Text-only LPIPS (0.9141) — verifies Asymmetric Flow matching convergence acceleration vs baseline visual quality. Lower LPIPS indicates better perceptual quality.
 
 ## Dependencies
 
