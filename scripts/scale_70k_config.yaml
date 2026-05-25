@@ -70,8 +70,9 @@ training:
     crop_size: 256
 
 data:
+  source: stratum
   stratum_dir: /mnt/nas-ai-models/training-data/ffhq/stratum
-  shard_base_dir: data/shards/faces70k
+  shard_base_dir: data/shards/faces70k  # fallback, not used with source: stratum
   buckets:
     - bucket_1024x1024
   bucket_sampling: proportional
