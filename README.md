@@ -409,6 +409,7 @@ All arms train for 5,000 steps on the same 7k FFHQ subset. Each arm isolates one
 | E | `seg-weight-spatial` | ✓ | Muon | ✓ | Seg weight map (face 2×, bg 0.5×) | ❌ Confounded | 2026-05 | D |
 | F | `seg-weight-clean-ablation` | ✓ | Muon | ✓ | Seg weight map (face 2×, bg 0.5×) | ⏸️ Paused | 2026-05 | D |
 | G | `asym-flow-ablation` | ✓ | Muon | ✓ | AsymFlow (rank 8) | ✅ Done | 2026-05 | D |
+| H | `shared-adaln-lora` | ✓ | Muon | ✓ | Shared adaLN + per-block LoRA (rank 8) | ❌ Failed | 2026-05 | D |
 
 ### Key Comparisons
 
@@ -418,6 +419,7 @@ All arms train for 5,000 steps on the same 7k FFHQ subset. Each arm isolates one
 - **D → E**: Reconstruction LPIPS + text manipulation LPIPS — Confounded by eff. batch size and REPA warmdown schedule differences.
 - **D → F**: Reconstruction LPIPS + text manipulation LPIPS — Clean ablation for spatial segment weighting.
 - **D → G**: Reconstruction LPIPS (0.9379) + Text-only LPIPS (0.9141) — verifies Asymmetric Flow matching convergence acceleration vs baseline visual quality. Lower LPIPS indicates better perceptual quality.
+- **D → H**: Recon LPIPS 0.9823, Text-only 1.0062 — shared adaLN + LoRA fails to converge at 5k steps. Visually noise/dithering; per-block modulation is load-bearing, not redundant. 59M param savings (178.8M vs 237.7M) not worth the quality collapse.
 
 ## Dependencies
 
