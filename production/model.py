@@ -570,14 +570,18 @@ class NanoDiT(nn.Module):
 
         # Dynamic Tensor Masking for latent sequence (Rule of 32)
         original_S = x.shape[1]
+        
+        # In compiled mode, modulo arithmetic on sequence shapes creates SymInts. 
+        # Using simple // instead of math functions to keep it clean for Dynamo
         pad_latent = (32 - (original_S % 32)) % 32
+        
         x_mask = None
-        if pad_latent > 0:
-            x = F.pad(x, (0, 0, 0, pad_latent))
-            x_mask = torch.cat([
-                torch.ones(B, original_S, device=x.device, dtype=torch.bool),
-                torch.zeros(B, pad_latent, device=x.device, dtype=torch.bool)
-            ], dim=1)
+        # Unconditional padding to avoid branching on SymInts
+        x = F.pad(x, (0, 0, 0, pad_latent))
+        x_mask = torch.cat([
+            torch.ones(B, original_S, device=x.device, dtype=torch.bool),
+            torch.zeros(B, pad_latent, device=x.device, dtype=torch.bool)
+        ], dim=1)
         
         t_emb = self.t_embedder(t)  # (B, hidden_size)
         
@@ -613,15 +617,22 @@ class NanoDiT(nn.Module):
         
         # Dynamic Tensor Masking for context sequence (Rule of 16)
         S_ctx = text_cond.shape[1] + 1 + patches_cond.shape[1]
+        
+        # When compiled dynamically, this forces pad_ctx to be an int (no unbacked SymInt issue)
+        # since it's just Python modulo arithmetic on known symbolic shapes.
+        # But we must avoid conditional branching on SymInts. F.pad handles SymInts fine.
+        
         pad_ctx = (16 - (S_ctx % 16)) % 16
-        if pad_ctx > 0:
-            patches_cond = F.pad(patches_cond, (0, 0, 0, pad_ctx))
-            if text_mask is None:
-                text_mask = torch.ones(B, text_cond.shape[1], device=text_cond.device, dtype=torch.long)
-            if dino_patches_mask is None:
-                original_patches_len = patches_cond.shape[1] - pad_ctx
-                dino_patches_mask = torch.ones(B, original_patches_len, device=patches_cond.device, dtype=text_mask.dtype)
-            dino_patches_mask = F.pad(dino_patches_mask, (0, pad_ctx), value=0)
+        
+        # We must avoid 'if pad_ctx > 0:' when pad_ctx is a SymInt.
+        # Instead, we just unconditionally pad. F.pad with 0 padding is a no-op anyway.
+        patches_cond = F.pad(patches_cond, (0, 0, 0, pad_ctx))
+        if text_mask is None:
+            text_mask = torch.ones(B, text_cond.shape[1], device=text_cond.device, dtype=torch.long)
+        if dino_patches_mask is None:
+            original_patches_len = patches_cond.shape[1] - pad_ctx
+            dino_patches_mask = torch.ones(B, original_patches_len, device=patches_cond.device, dtype=text_mask.dtype)
+        dino_patches_mask = F.pad(dino_patches_mask, (0, pad_ctx), value=0)
         
         # MaskDiT: randomly mask image tokens during training
         use_maskdit = self.maskdit_enabled and (maskdit_enabled if maskdit_enabled is not None else self.training)
@@ -639,11 +650,13 @@ class NanoDiT(nn.Module):
             # Keep only visible tokens for encoder
             x_full_before_mask = x  # save for decoder pos_embed
             x = x[:, visible_idx]  # (B, N_vis, C)
-            
+        
+            # When compiled dynamically, returning dicts with tensors can cause graph breaks
+            # or unbacked symbol issues. Use a structured tuple or handle it carefully.
             maskdit_info = {
                 'visible_idx': visible_idx,
                 'masked_idx': masked_idx,
-                'N_total': N_total,
+                'N_total': int(N_total),
                 'pos_embed': pos_embed,
             }
         
@@ -656,7 +669,12 @@ class NanoDiT(nn.Module):
         
         if use_tread:
             N = x.shape[1]
-            N_visible = N - int(N * self.tread_routing_prob)
+            # When compiled dynamically, int() casting of a float product can create unbacked symbols
+            # Use integer arithmetic if routing probability is a clean fraction like 0.5
+            if self.tread_routing_prob == 0.5:
+                N_visible = N // 2
+            else:
+                N_visible = N - int(N * self.tread_routing_prob)
             
             perm = torch.randperm(N, device=x.device)
             visible_idx = perm[:N_visible].sort().values
@@ -701,8 +719,8 @@ class NanoDiT(nn.Module):
             )
             
         # Slice off padding tokens if added
-        if pad_latent > 0:
-            x = x[:, :original_S, :]
+        # Using unconditional slicing based on original_S instead of `if pad_latent > 0`
+        x = x[:, :original_S, :]
         
         # Output projection
         x = self.final_norm(x)

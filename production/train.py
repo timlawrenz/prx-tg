@@ -778,7 +778,7 @@ class Trainer:
         use_amp = amp_dtype is not None
         
         # Forward pass with optional mixed precision
-        ctx = torch.cuda.amp.autocast(enabled=use_amp, dtype=amp_dtype if use_amp else torch.float32)
+        ctx = torch.amp.autocast('cuda', enabled=use_amp, dtype=amp_dtype if use_amp else torch.float32)
         with ctx:
             loss, v_pred, repa_loss, lpips_loss, mae_loss = flow_matching_loss(
                 self.model, x0, dino_emb, dino_patches, text_emb, text_mask, self.cfg_probs, 
@@ -1254,6 +1254,10 @@ class ProductionTrainer(Trainer):
             self._amp_dtype = torch.bfloat16
             self._grad_scaler = None  # bfloat16 doesn't need loss scaling
             print(f"  Mixed precision: bfloat16 (no GradScaler needed)")
+        elif training.mixed_precision and training.precision == "fp8":
+            self._amp_dtype = torch.bfloat16
+            self._grad_scaler = None
+            print(f"  Mixed precision: fp8 enabled via torchao (autocast uses bfloat16)")
         else:
             self._amp_dtype = None
             self._grad_scaler = None

@@ -88,7 +88,9 @@ def _collate(batch: list[dict]) -> dict:
     }
 
 
-class StratumDataset:
+from torch.utils.data import IterableDataset
+
+class StratumDataset(IterableDataset):
     """Infinite shuffled dataloader over a stratum-hq directory tree.
 
     Compatible with BucketAwareDataLoader — exposes .target_latent_size and
@@ -167,8 +169,18 @@ class StratumDataset:
 
     def __iter__(self):
         """Yield collated batches indefinitely (infinite, shuffled)."""
-        dirs = list(self._dirs)
+        import math
+        import torch.utils.data
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:
+            worker_dirs = list(self._dirs)
+        else:
+            per_worker = int(math.ceil(len(self._dirs) / float(worker_info.num_workers)))
+            worker_id = worker_info.id
+            worker_dirs = self._dirs[worker_id * per_worker:(worker_id + 1) * per_worker]
+
         while True:
+            dirs = list(worker_dirs)
             if self.shuffle:
                 random.shuffle(dirs)
             batch_buf = []

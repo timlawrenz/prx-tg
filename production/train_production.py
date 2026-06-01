@@ -15,6 +15,7 @@ import json
 import subprocess
 
 import torch
+torch.set_float32_matmul_precision('high')
 
 from .config_loader import load_config
 from .model import NanoDiT
@@ -84,7 +85,6 @@ def print_config_summary(config):
     print("\nData:")
     print(f"  Shard dir: {config.data.shard_base_dir}")
     print(f"  Buckets: {len(config.data.buckets)}")
-    print(f"  Flip prob: {config.data.horizontal_flip_prob}")
     print("\nCheckpoints:")
     print(f"  Save every: {config.checkpoint.save_every} steps")
     print(f"  Output: {config.checkpoint.output_dir}")
@@ -299,6 +299,43 @@ def main():
         maskdit_mask_ratio=maskdit_mask_ratio,
         maskdit_decoder_depth=maskdit_decoder_depth,
     ).to(device)
+
+    # Enable FP8 via torchao and torch.compile
+    precision = getattr(config.training, 'precision', 'float32')
+    if precision == 'fp8':
+        try:
+            from torchao.float8 import convert_to_float8_training
+            
+            def fp8_filter_fn(mod, mod_name: str) -> bool:
+                """
+                Keep global conditioning and output layers in BF16 to prevent
+                Batch-Size hardware alignment crashes (K dimension < 16).
+                """
+                exclude_keywords = [
+                    "pose_proj",          # Input dim 3
+                    "t_embedder",         # Global timestep (B, D)
+                    "dino_proj",          # Global DINO CLS (B, D)
+                    "text_proj",          # Text projection 
+                    "dino_patch_proj",    # Patch projection
+                    "adaLN_modulation",   # Block-level global scale/shift
+                    "final_proj"          # Output head
+                ]
+                return not any(kw in mod_name for kw in exclude_keywords)
+
+            convert_to_float8_training(model, module_filter_fn=fp8_filter_fn)
+            print("Converted model to torchao FP8 training (excluding global projections).")
+            
+            # Must compile the model to fuse the FP8 casts
+            print("Compiling model to fuse FP8 kernels (this will take a few minutes)...")
+            # For 24GB GPUs we need to restrict caching and workspace size during compile
+            # to avoid OOMing during the Triton kernel generation phase
+            import torch._inductor.config as inductor_config
+            inductor_config.fx_graph_cache = False
+            inductor_config.max_autotune = False
+            
+            model = torch.compile(model, dynamic=True)
+        except ImportError:
+            print("WARNING: torchao not installed. Cannot use fp8.")
     
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

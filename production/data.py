@@ -56,7 +56,6 @@ class ValidationDataset:
         shard_dir,
         batch_size=8,
         shuffle=True,
-        flip_prob=0.5,
         target_latent_size=64,
         shard_files=None,
         deterministic=False,
@@ -66,14 +65,12 @@ class ValidationDataset:
             shard_dir: Path to shards (e.g., 'data/shards/faces7k/bucket_1024x1024')
             batch_size: Number of samples per batch
             shuffle: Whether to shuffle between epochs
-            flip_prob: Probability of horizontal flip augmentation
             target_latent_size: Target spatial size in pixels
             deterministic: If True, set seeds for reproducible sample ordering
         """
         self.shard_dir = Path(shard_dir)
         self.batch_size = batch_size
         self.shuffle = shuffle
-        self.flip_prob = flip_prob
         self.target_latent_size = target_latent_size
 
         # Set seeds for deterministic behavior
@@ -205,7 +202,6 @@ def get_validation_dataloader(
     shard_dir='data/shards/validation',
     batch_size=8,
     shuffle=True,
-    flip_prob=0.5,
     target_latent_size=64,
 ):
     """Convenience function to create validation dataloader for training.
@@ -214,7 +210,6 @@ def get_validation_dataloader(
         shard_dir: Path to validation shards
         batch_size: Number of samples per batch
         shuffle: Whether to shuffle between epochs
-        flip_prob: Probability of horizontal flip augmentation
         target_latent_size: Target spatial size in pixels
 
     Returns:
@@ -224,7 +219,6 @@ def get_validation_dataloader(
         shard_dir=shard_dir,
         batch_size=batch_size,
         shuffle=shuffle,
-        flip_prob=flip_prob,
         target_latent_size=target_latent_size,
     )
     return dataset
@@ -241,7 +235,6 @@ def get_deterministic_validation_dataloader(
 
     This dataloader:
     - Does NOT shuffle (stable sample ordering)
-    - Does NOT flip (no augmentation)
     - Does NOT repeat (finite, single pass)
     - Sets seeds for reproducible sample selection
 
@@ -269,14 +262,14 @@ def get_deterministic_validation_dataloader(
         shard_dir=shard_dir,
         batch_size=batch_size,
         shuffle=False,      # CRITICAL: no shuffle for deterministic ordering
-        flip_prob=0.0,      # CRITICAL: no augmentation for consistency
         target_latent_size=target_latent_size,
         deterministic=True, # CRITICAL: set seeds for reproducible sampling
     )
     return dataset
+import torch
+from torch.utils.data import IterableDataset
 
-
-class BucketAwareDataLoader:
+class BucketAwareDataLoader(IterableDataset):
     """Sample whole batches from a single aspect-ratio bucket."""
 
     def __init__(self, bucket_datasets, bucket_weights):
@@ -348,21 +341,35 @@ def get_production_dataloader(config, device='cuda'):
       "stratum"              — flat loader from per-image stratum dirs
     """
     from .config_loader import Config
+    from torch.utils.data import DataLoader
 
     data_cfg = config.data
     training_cfg = config.training
+
+    num_workers = getattr(data_cfg, 'num_workers', 8)
+    pin_memory = getattr(data_cfg, 'pin_memory', True)
+    prefetch_factor = getattr(data_cfg, 'prefetch_factor', 2) if num_workers > 0 else None
 
     if getattr(data_cfg, 'source', 'webdataset') == 'stratum':
         from .data_stratum import get_stratum_dataloader
         print(f"  Data source: stratum")
         print(f"  Stratum dir: {data_cfg.stratum_dir}")
         print(f"  Batch size: {training_cfg.batch_size}")
-        return get_stratum_dataloader(
+        print(f"  Dataloader workers: {num_workers} (pin_memory={pin_memory})")
+        
+        dataset = get_stratum_dataloader(
             stratum_dir=data_cfg.stratum_dir,
             batch_size=training_cfg.batch_size,
             shuffle=True,
             target_latent_size=config.model.input_size,
             max_samples=data_cfg.stratum_max_samples,
+        )
+        return DataLoader(
+            dataset,
+            batch_size=None,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            prefetch_factor=prefetch_factor,
         )
 
     shard_dir = Path(data_cfg.shard_base_dir)
@@ -370,9 +377,9 @@ def get_production_dataloader(config, device='cuda'):
     print(f"  Shard base dir: {shard_dir}")
     print(f"  Buckets (configured): {len(data_cfg.buckets)}")
     print(f"  Batch size: {training_cfg.batch_size}")
-    print(f"  Flip prob: {data_cfg.horizontal_flip_prob}")
     print(f"  Bucket-aware batching: ENABLED")
     print(f"  Bucket sampling: {data_cfg.bucket_sampling}")
+    print(f"  Dataloader workers: {num_workers} (pin_memory={pin_memory})")
 
     bucket_datasets = {}
     bucket_weights = []
@@ -391,7 +398,6 @@ def get_production_dataloader(config, device='cuda'):
             shard_files=shard_files,
             batch_size=training_cfg.batch_size,
             shuffle=True,
-            flip_prob=data_cfg.horizontal_flip_prob,
             target_latent_size=target_size,
         )
         bucket_weights.append(len(shard_files))
@@ -402,7 +408,14 @@ def get_production_dataloader(config, device='cuda'):
     if data_cfg.bucket_sampling == 'uniform':
         bucket_weights = [1.0 for _ in bucket_weights]
 
-    return BucketAwareDataLoader(bucket_datasets, bucket_weights)
+    dataset = BucketAwareDataLoader(bucket_datasets, bucket_weights)
+    return DataLoader(
+        dataset,
+        batch_size=None,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        prefetch_factor=prefetch_factor,
+    )
 
 
 if __name__ == "__main__":
