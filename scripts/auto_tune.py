@@ -116,7 +116,11 @@ class BenchmarkRunner:
         # Determine AMP settings
         precision = getattr(config.training, 'precision', 'float32')
         self.use_amp = config.training.mixed_precision and precision != 'float32'
-        self.amp_dtype = torch.float16 if precision == 'float16' else torch.bfloat16
+        
+        if precision == 'fp8':
+            self.amp_dtype = torch.bfloat16  # torchao requires bf16/fp32 autocast context
+        else:
+            self.amp_dtype = torch.float16 if precision == 'float16' else torch.bfloat16
 
     def _build_model(self):
         from production.model import NanoDiT
@@ -135,7 +139,7 @@ class BenchmarkRunner:
         maskdit_mask_ratio = tc.maskdit.mask_ratio
         maskdit_decoder_depth = tc.maskdit.decoder_depth
 
-        return NanoDiT(
+        model = NanoDiT(
             input_size=mc.input_size,
             patch_size=mc.patch_size,
             in_channels=mc.in_channels,
@@ -154,7 +158,30 @@ class BenchmarkRunner:
             maskdit_enabled=maskdit_enabled,
             maskdit_mask_ratio=maskdit_mask_ratio,
             maskdit_decoder_depth=maskdit_decoder_depth,
-        ).to(self.device)
+        )
+
+        precision = getattr(self.config.training, 'precision', 'float32')
+        if precision == 'fp8':
+            try:
+                from torchao.float8 import convert_to_float8_training
+                def filter_fn(mod, mod_name: str) -> bool:
+                    exclude_keywords = [
+                        "pose_proj",
+                        "t_embedder",
+                        "dino_proj",
+                        "text_proj",
+                        "dino_patch_proj",
+                        "adaLN_modulation",
+                        "final_proj"
+                    ]
+                    return not any(kw in mod_name for kw in exclude_keywords)
+                
+                convert_to_float8_training(model, module_filter_fn=filter_fn)
+                print("  [Auto-Tune] Converted model to torchao FP8 training (excluding global projections).")
+            except ImportError:
+                print("  [Auto-Tune] WARNING: torchao not installed. Falling back to bfloat16 instead of fp8.")
+
+        return model.to(self.device)
 
     def _make_synthetic_batch(self, batch_size: int, h_px: int, w_px: int) -> dict:
         """Create a synthetic batch matching the model's expected inputs."""
