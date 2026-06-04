@@ -224,9 +224,6 @@ class DataConfig:
     stratum_dir: str = "/mnt/nas-ai-models/training-data/ffhq/stratum"
     stratum_max_samples: Optional[int] = None
 
-    horizontal_flip_prob: float = 0.5
-    # swap_caption_lr removed - caption text is unused during training
-
     num_workers: int = 4
     prefetch_factor: int = 2
     pin_memory: bool = True

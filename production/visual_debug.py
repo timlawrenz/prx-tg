@@ -218,7 +218,6 @@ def _load_debug_samples(shard_dir, num_samples, device):
     # Create dataset with deterministic sampling
     dataset = ValidationDataset(
         shard_dir=shard_dir,
-        flip_prob=0.0,  # No flip for debug samples
         target_latent_size=128,  # 1024x1024 target resolution
         batch_size=1,
         shuffle=False,  # No shuffle for deterministic order

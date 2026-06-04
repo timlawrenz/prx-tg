@@ -105,10 +105,6 @@ data:
   bucket_sampling: "proportional"    # "proportional" or "uniform"
 
   # Augmentation
-  # BLOCKED: Horizontal flip requires DWPose 133-keypoint left↔right index swap.
-  # See docs/augmentation_roadmap.md before enabling any spatial augmentation.
-  # horizontal_flip_prob: 0.5
-  #
   # Color jitter: safe for pixel path but creates DINO mismatch (embeddings are pre-computed).
   # Decision required before enabling. See augmentation_roadmap.md §3.
   # color_jitter_prob: 0.0

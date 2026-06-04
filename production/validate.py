@@ -920,7 +920,6 @@ def create_validation_fn(
     separate from the training dataloader. This ensures:
     - Sample indices are stable across validation runs
     - No shuffle (same idx always means same image)
-    - No augmentation (no flips)
     - Finite iteration (no repeat)
     
     Args:
