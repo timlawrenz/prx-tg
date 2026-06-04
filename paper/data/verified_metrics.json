@@ -1,0 +1,33 @@
+{
+  "_note": "Verified from canonical run dirs via metadata.json config_path mapping. Final step-5000 checkpoints. A-D match docs/ablation_a_through_d/ablation_study.md exactly.",
+  "_canonical_runs": {
+    "A_baseline": "experiments/vast_final_2026-05-12_0902/ablation_baseline (config_A_baseline.yaml, commit 0017169a)",
+    "B_tread_adamw": "experiments/vast_final_2026-05-12_0902/ablation_tread_adamw (config_B_tread_adamw.yaml)",
+    "C_tread_muon": "experiments/vast_final_2026-05-12_0902/ablation_tread_muon (config_C_tread_muon.yaml)",
+    "D_full_stack": "experiments/vast_final_2026-05-12_0902/ablation_full_stack (config_D_full_stack.yaml)",
+    "G_asymflow": "experiments/asym-flow-ablation/runs/2026-05-21_1315 (asym-flow-ablation/config.yaml, commit bc104122)",
+    "H_shared_adaln": "experiments/2026-05-24_2317 (arm_h_config.yaml, commit dc0f2e43)",
+    "I_fp8": "experiments/2026-06-01_1224 (arm_i_fp8/config.yaml, commit a409216e)"
+  },
+  "lpips_step5000": {
+    "A": {"recon": 0.9352, "text_only": 0.9593, "text_manip": 0.4663},
+    "B": {"recon": 1.0161, "text_only": 0.9396, "text_manip": 0.3728},
+    "C": {"recon": 0.9463, "text_only": 0.9603, "text_manip": 0.5459},
+    "D": {"recon": 0.9267, "text_only": 0.9219, "text_manip": 0.4312},
+    "G": {"recon": 0.9379, "text_only": 0.9141, "text_manip": 0.4665},
+    "H": {"recon": 0.9823, "text_only": 1.0062, "text_manip": 0.5039},
+    "I": {"recon": 0.9456, "text_only": 0.9289, "text_manip": 0.4753}
+  },
+  "throughput": {
+    "A": {"median_iter_per_sec": 0.0123, "peak_vram_gb": 5.54, "active_tokens": 4096},
+    "B": {"median_iter_per_sec": 0.0145, "peak_vram_gb": 5.58, "active_tokens": 2048},
+    "C": {"median_iter_per_sec": 0.0145, "peak_vram_gb": 4.56, "active_tokens": 2048},
+    "D": {"median_iter_per_sec": 0.0145, "peak_vram_gb": 4.57, "active_tokens": 2048},
+    "G": {"median_iter_per_sec": 0.0243, "peak_vram_gb": 5.37, "active_tokens": 2048},
+    "I": {"median_iter_per_sec": 0.0525, "peak_vram_gb": 9.48, "active_tokens": 2048}
+  },
+  "param_counts": {
+    "full_stack_M": 237.7,
+    "shared_adaln_lora_M": 178.8
+  }
+}
