@@ -15,6 +15,7 @@
 \usepackage[hidelinks]{hyperref}
 \usepackage{url}
 \usepackage{authblk}
+\usepackage[numbers,sort&compress]{natbib}
 
 \captionsetup{font=small,labelfont=bf}
 \setlength{\parskip}{2pt}
@@ -61,16 +62,18 @@ tracking. We release all configs, logs, and figure-generation code.
 \section{Introduction}
 The dominant narrative in text-to-image research couples quality to scale:
 millions of images, hundreds of accelerators, and long schedules. Recent recipes
-such as Photoroom's PRX series have shown that pixel-space prediction combined
-with token routing, representation alignment, and second-order-flavored
-optimizers can compress the cost dramatically. Yet most published recipes are
+such as Photoroom's PRX series~\citep{photoroom_prx3} have shown that pixel-space
+prediction~\citep{li2025xprediction} combined with token
+routing~\citep{krause2025tread}, representation alignment~\citep{yu2024repa}, and
+second-order-flavored optimizers~\citep{jordan2024muon} can compress the cost
+dramatically. Yet most published recipes are
 validated at datacenter scale, where memory pressure and optimizer stability
 behave differently than on a single consumer card.
 
 This paper treats the single-GPU regime as a first-class constraint and asks
 which techniques survive it. Our testbed is \texttt{prx-tg}, a 400M-parameter
-pixel-space Diffusion Transformer (NanoDiT) trained on a curated vertical
-dataset (FFHQ portraits). We run a sequence of controlled arms, each isolating
+pixel-space Diffusion Transformer~\citep{peebles2023dit} (NanoDiT) trained on a curated vertical
+dataset (FFHQ portraits)~\citep{karras2019ffhq}. We run a sequence of controlled arms, each isolating
 one variable against a defined baseline, on a single RTX~4090 (24\,GB). The
 contribution is not a new architecture but a \emph{rigorous, reproducible
 accounting} of what each technique costs and buys in this regime, including two
@@ -81,10 +84,12 @@ informative negative results.
 
 \paragraph{Model.} NanoDiT is a pixel-space DiT: 768 hidden dimensions, 18
 transformer blocks, 12 attention heads, $\sim$237.7M parameters. It predicts the
-clean image $x_0$ directly (x-prediction) under a rectified-flow objective, with
+clean image $x_0$ directly (x-prediction~\citep{li2025xprediction}) under a
+rectified-flow objective~\citep{liu2023rectifiedflow,lipman2023flowmatching}, with
 no VAE. Conditioning is multi-modal (``quad-conditioning''): T5-Large text
-embeddings, DINOv3 CLS (global style) and patch (spatial layout) features, and
-DWPose whole-body keypoints. All conditioning signals are pre-computed and
+embeddings~\citep{raffel2020t5}, DINOv3~\citep{simeoni2025dinov3} CLS (global
+style) and patch (spatial layout) features, and DWPose whole-body
+keypoints~\citep{yang2023dwpose}. All conditioning signals are pre-computed and
 sharded to avoid encoder forward passes during training.
 
 \paragraph{Data and budget.} All arms train on the same 7k-image FFHQ subset for
@@ -98,7 +103,8 @@ pixels without remapping left/right joints corrupts cross-attention binding.
 quad-GPU node with \texttt{CUDA\_VISIBLE\_DEVICES} pinned per arm, eliminating
 hardware variance as a confound. Later arms (G, H, I) ran on a single RTX~4090.
 
-\paragraph{Metrics.} We report LPIPS (lower is better) at the final step-5000
+\paragraph{Metrics.} We report LPIPS~\citep{zhang2018lpips} (lower is better) at
+the final step-5000
 checkpoint under three protocols: \emph{reconstruction} (full conditioning),
 \emph{text-only} (text conditioning, identity dropped), and a \emph{text
 manipulation delta} (mean LPIPS change under a single-attribute caption edit;
@@ -202,14 +208,16 @@ Arm~C also achieves the strongest text controllability of any arm
 Adding REPA representation alignment (Arm~D) yields the best reconstruction
 ($0.9267$) and a strong text-only score ($0.9219$). REPA's dual objective
 accelerates early semantic acquisition while Muon supplies the stability to
-converge. We note the known \emph{capacity-mismatch trap}: DINOv3 features lack
+converge. At inference, the routed configuration uses self-guidance rather than
+dual classifier-free guidance~\citep{krause2025selfguidance}, which is the
+sampling counterpart required for token-sparse models. We note the known \emph{capacity-mismatch trap}: DINOv3 features lack
 high-frequency texture, so a persistent alignment loss eventually constrains
 photorealism. Our production configuration therefore decays the REPA weight to
 zero over the first 20--30\% of training.
 
 \subsection{Asymmetric flow accelerates without quality loss (D$\to$G)}
 Replacing the full-dimensional noise target with a low-rank PCA subspace
-projection (rank 8) nearly doubles throughput ($0.0145\to0.0243$ it/s) and
+projection (rank 8)~\citep{asymflow2026} nearly doubles throughput ($0.0145\to0.0243$ it/s) and
 delivers the best text-only LPIPS overall ($0.9141$), with reconstruction
 statistically on par with the full stack ($0.9379$ vs.\ $0.9267$).
 
@@ -251,8 +259,10 @@ ordering under matched conditions, not state-of-the-art fidelity.
 \paragraph{Limitations.} LPIPS does not measure pose adherence; a DWPose-based
 MPJPE metric would better validate the spatial-conditioning pathway. The dataset
 is a single vertical domain, and conclusions about optimizer/routing interplay
-may shift at larger scale. The FP8 quality gap, while small, is real and
-measured at one budget only.
+may shift at larger scale, as observed in large rectified-flow
+systems~\citep{esser2024sd3}. We also did not evaluate auxiliary perceptual
+losses~\citep{ma2026pixelgen}, a natural pixel-space extension left to future
+work. The FP8 quality gap, while small, is real and measured at one budget only.
 
 \section{Conclusion}
 On a single 24\,GB GPU, the most effective configuration pairs TREAD with Muon
@@ -268,5 +278,8 @@ Verified metrics (\texttt{paper/data/verified\_metrics.json}), figure code
 \texttt{training\_log.jsonl} / \texttt{results.json} for every run are included
 in the project repository. Each run's arm identity is established by the
 \texttt{config\_path} field in its \texttt{metadata.json}.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
 
 \end{document}
