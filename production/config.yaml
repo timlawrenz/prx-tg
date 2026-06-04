@@ -15,7 +15,7 @@ model:
   pose_confidence_threshold: 0.05  # Hard-mask joints below this confidence with [NULL_POSE]
 
 training:
-  total_steps: 6000           # Total optimizer steps
+  total_steps: 100000           # Total optimizer steps
   warmup_steps: 500           # Linear LR warmup
   batch_size: 1               # Per-GPU batch size
   grad_accumulation_steps: 256 # Effective batch
@@ -138,7 +138,7 @@ validation:
   visual_debug_dir: "visual_debug"   # Output directory for visual debugging images
 
 checkpoint:
-  save_every: 100                   # Save checkpoint every N steps
+  save_every: 2500                   # Save checkpoint every N steps
   keep_last_n: 3                     # Keep only last N checkpoints (0 = keep all)
   output_dir: "checkpoints"          # Checkpoint output directory
   save_optimizer: true               # Save optimizer state (needed for resume)
