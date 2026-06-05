@@ -259,6 +259,7 @@ class ValidationSampler:
         self_guidance=False,
         guidance_scale=3.0,
         prediction_type="v_prediction",
+        pixel_range="01",
     ):
         """
         Args:
@@ -271,6 +272,8 @@ class ValidationSampler:
             self_guidance: use self-guidance instead of dual CFG
             guidance_scale: self-guidance scale
             prediction_type: "v_prediction" or "x_prediction"
+            pixel_range: pixel-space data range the model was trained on.
+                "01" → model predicts [0,1]; "-11" → model predicts [-1,1] (issue #5a)
         """
         self.model = model
         self.vae = vae
@@ -281,6 +284,7 @@ class ValidationSampler:
         self.self_guidance = self_guidance
         self.guidance_scale = guidance_scale
         self.prediction_type = prediction_type
+        self.pixel_range = pixel_range
     
     @torch.no_grad()
     def generate(
@@ -366,9 +370,14 @@ class ValidationSampler:
             )
         
         if pixel_space:
-            # Output is RGB [0,1] from sampler — convert to [-1,1] for consistency
-            # (tensor_to_pil, LPIPS, and all consumers expect [-1,1])
-            images = output.clamp(0, 1) * 2 - 1
+            # Downstream consumers (tensor_to_pil, LPIPS) all expect [-1,1].
+            # Issue #5a: the sampler output range matches the trained data range.
+            if self.pixel_range == "-11":
+                # Model already predicts in [-1,1]; just clamp.
+                images = output.clamp(-1, 1)
+            else:
+                # Legacy: model predicts [0,1]; map to [-1,1].
+                images = output.clamp(0, 1) * 2 - 1
         else:
             # Decode latents to images via VAE
             images = decode_latents(self.vae, output)

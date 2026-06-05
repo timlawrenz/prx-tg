@@ -105,6 +105,7 @@ class StratumDataset(IterableDataset):
         target_latent_size=1024,
         num_workers: int = 0,
         max_samples: Optional[int] = None,
+        pixel_range: str = "01",
     ):
         """
         Args:
@@ -114,11 +115,14 @@ class StratumDataset(IterableDataset):
             target_latent_size: Resize pixel.npy to this spatial size (int or (H,W))
             num_workers: Reserved for future DataLoader integration; ignored for now
             max_samples: If set, only iterate up to this many samples instead of 70000
+            pixel_range: "01" keeps data in [0,1] (legacy); "-11" centers to [-1,1]
+                (recommended, matches N(0,1) noise endpoint — see issue #5a)
         """
         self.stratum_dir = Path(stratum_dir)
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.target_latent_size = target_latent_size
+        self.pixel_range = pixel_range
 
         # Generate paths directly from the known naming convention (00000–69999).
         # Avoids scandir/iterdir over NAS which can block for several seconds on
@@ -141,6 +145,12 @@ class StratumDataset(IterableDataset):
         meta       = json.loads((d / 'metadata.json').read_text())
 
         image_data = _resize_image(pixel, self.target_latent_size)
+
+        # Issue #5a: center pixels to [-1,1] so the data endpoint is zero-mean,
+        # matching the N(0,1) noise endpoint used in flow matching (train.py:243).
+        # Legacy "01" leaves data in [0,1] (biased: data mean ~0.5).
+        if self.pixel_range == "-11":
+            image_data = image_data * 2.0 - 1.0
 
         # Seg map: load uint8 (1024×1024), downsample to token grid (nearest-neighbor).
         # patch_size=16, input=1024px → token grid = 64×64.
@@ -203,6 +213,7 @@ def get_stratum_dataloader(
     shuffle: bool = True,
     target_latent_size=1024,
     max_samples: Optional[int] = None,
+    pixel_range: str = "01",
 ) -> StratumDataset:
     """Create a StratumDataset dataloader.
 
@@ -223,4 +234,5 @@ def get_stratum_dataloader(
         shuffle=shuffle,
         target_latent_size=target_latent_size,
         max_samples=max_samples,
+        pixel_range=pixel_range,
     )

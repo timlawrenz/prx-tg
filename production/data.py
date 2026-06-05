@@ -230,6 +230,7 @@ def get_deterministic_validation_dataloader(
     target_latent_size=64,
     source="webdataset",
     stratum_dir="/workspace/stratum",
+    pixel_range="01",
 ):
     """Create deterministic validation dataloader for consistent testing.
 
@@ -256,6 +257,7 @@ def get_deterministic_validation_dataloader(
             shuffle=False,  # deterministic
             target_latent_size=target_latent_size,
             max_samples=100,  # use first 100 for validation
+            pixel_range=pixel_range,
         )
     
     dataset = ValidationDataset(
@@ -363,6 +365,7 @@ def get_production_dataloader(config, device='cuda'):
             shuffle=True,
             target_latent_size=config.model.input_size,
             max_samples=data_cfg.stratum_max_samples,
+            pixel_range=getattr(data_cfg, 'pixel_range', '01'),
         )
         return DataLoader(
             dataset,

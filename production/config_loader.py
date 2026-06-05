@@ -228,6 +228,11 @@ class DataConfig:
     prefetch_factor: int = 2
     pin_memory: bool = True
 
+    # Pixel normalization for the diffusion process.
+    # "01"  : data kept in [0,1] (legacy; biases flow matching, see issue #5a)
+    # "-11" : data centered to [-1,1] (recommended; matches N(0,1) noise endpoint)
+    pixel_range: Literal["01", "-11"] = "01"
+
 
 @dataclass
 class SamplingConfig:
