@@ -96,7 +96,7 @@ data:
   source: "stratum"                                                # "webdataset" | "stratum"
   stratum_dir: "$STRATUM_DIR"                                      # expands to '/mnt/nas-ai-models/training-data/ffhq/stratum'
   stratum_max_samples: 70000                                       # Train on 70k faces!
-  shard_base_dir: "data/shards/faces7k"
+  shard_base_dir: "data/shards/faces7k"                            # [IGNORED] Unused when source is "stratum" (retained for config compatibility)
   
   # Aspect ratio buckets to read (each bucket is a subdirectory with tar files)
   buckets:

@@ -959,7 +959,10 @@ def create_validation_fn(
         # Create deterministic validation dataloader (first call only)
         # Always load at full resolution
         if val_dataloader is None:
-            print(f"Creating deterministic validation dataloader from {shard_dir}...")
+            if source == "stratum":
+                print(f"Creating deterministic validation dataloader from stratum_dir: {stratum_dir}...")
+            else:
+                print(f"Creating deterministic validation dataloader from shard_dir: {shard_dir}...")
             val_dataloader = get_deterministic_validation_dataloader(
                 shard_dir=shard_dir,
                 batch_size=1,  # Process one at a time for validation
