@@ -263,6 +263,13 @@ may shift at larger scale, as observed in large rectified-flow
 systems~\citep{esser2024sd3}. We also did not evaluate auxiliary perceptual
 losses~\citep{ma2026pixelgen}, a natural pixel-space extension left to future
 work. The FP8 quality gap, while small, is real and measured at one budget only.
+Crucially, all reported arms (A--I) utilized a legacy pixel normalization of
+$[0,1]$, which introduces an off-center bias (mean $\approx 0.5$, std $\approx 0.25$)
+relative to the zero-mean Gaussian noise endpoint ($z_1 \sim \mathcal{N}(0, I)$),
+forcing the learned velocity field $v_t$ to absorb a constant DC-offset of
+$\approx -0.5$ at every step. We have since implemented and verified a config-driven
+zero-mean centering fix ($[-1, 1]$ range) in the codebase, but re-training the entire
+ablation suite on the corrected range is deferred to future production runs.
 
 \section{Conclusion}
 On a single 24\,GB GPU, the most effective configuration pairs TREAD with Muon
