@@ -1,43 +1,43 @@
-# Production Training Configuration — Full Stack
-# Architecture: NanoDiT + TREAD + Muon + REPA (Arm D, v1.0-ablation-study baseline)
-# Next focus: data augmentation (see docs/augmentation_roadmap.md)
+# Production Training Configuration — 70k faces FP8 run
+# Architecture: NanoDiT + TREAD + Muon + REPA + AsymFlow + torchao FP8 (Arm I scaled to 70k)
+# Goal: Train a high-quality text-to-image portrait generator on consumer 4090 GPU in ~9-18 days.
 
 model:
-  hidden_size: 768             # Hidden dimension (scale to 768-1024 for production)
-  depth: 18                    # Number of transformer layers (start small, scale to 24-28)
+  hidden_size: 768             # Hidden dimension
+  depth: 18                    # Number of transformer layers
   num_heads: 12                 # Attention heads
-  patch_size: 16               # Pixel-space patchification (16 ≈ old VAE 8× + patch 2)
+  patch_size: 16               # Pixel-space patchification (16x16)
   mlp_ratio: 4.0               # MLP expansion factor
   in_channels: 3               # RGB pixel channels (pixel-space training)
   prediction_type: x_prediction  # Pixel-space: model predicts x0 directly
   input_size: 1024             # Pixel resolution for sampling
-  num_pose_joints: 133         # DWPose whole-body keypoints (17 body + 6 feet + 68 face + 42 hands)
-  pose_confidence_threshold: 0.05  # Hard-mask joints below this confidence with [NULL_POSE]
+  num_pose_joints: 133         # DWPose whole-body keypoints
+  pose_confidence_threshold: 0.05  # Hard-mask joints below this confidence
 
 training:
-  total_steps: 100000           # Total optimizer steps
-  warmup_steps: 500           # Linear LR warmup
-  batch_size: 1               # Per-GPU batch size
-  grad_accumulation_steps: 256 # Effective batch
-  
+  total_steps: 40000           # Scaled step budget for 70k faces (approx 150 epochs @ batch 256)
+  warmup_steps: 1000           # Linear LR warmup
+  batch_size: 4                # Single-GPU batch size (FP8 allows batch 4 comfortably without gradient checkpointing)
+  grad_accumulation_steps: 64  # Effective batch = 4 * 64 = 256
+
   optimizer:
     type: "Muon"                   # "Muon" (hybrid Muon+AdamW) or "AdamW" (all params)
     lr: 3.0e-4                     # Peak learning rate (shared by both optimizers)
     min_lr: 1.0e-6                 # Minimum LR after cosine decay
     betas: [0.9, 0.95]             # AdamW beta values (for non-2D params)
-    weight_decay: 0.03             # Decoupled weight decay (both optimizers)
+    weight_decay: 0.03             # Decoupled weight decay
     eps: 1.0e-8
     muon:
       momentum: 0.95               # Muon momentum factor
       nesterov: true               # Nesterov momentum
       ns_steps: 5                  # Newton-Schulz orthogonalization steps
-      adjust_lr_fn: "match_rms_adamw"  # Scale updates to match AdamW RMS (reuses same LR)
-  
+      adjust_lr_fn: "match_rms_adamw"  # Scale updates to match AdamW RMS
+
   grad_clip: 1.0               # Gradient clipping norm
   ema_decay: 0.9999            # Target EMA decay
-  ema_warmup_steps: 500       # Warm EMA from 0 to target over N steps
-  
-  # CFG dropout (mutually exclusive categorical as per fixed validation code)
+  ema_warmup_steps: 1000       # Warm EMA from 0 to target over N steps
+
+  # CFG dropout (mutually exclusive categorical categories)
   cfg_dropout:
     p_uncond: 0.1              # Drop all conditioning (unconditional)
     p_text_only: 0.25          # Drop DINO + pose (text only)
@@ -48,15 +48,14 @@ training:
     # Remaining 40% keeps all signals (text + DINO + pose)
 
   # REPA (REPresentation Alignment) — align hidden states with DINOv3 patches
-  # NOTE: Stage-wise decay is critical for extended training (see docs/augmentation_roadmap.md §REPA)
-  # The HASTE trap: REPA helps burn-in but becomes a straitjacket for high-freq detail after ~20-30% of run.
+  # HASTE Trap Mitigation: decay REPA weight to 0 over 20%-40% of training steps.
   repa:
     enabled: true
-    weight: 0.5                    # REPA loss weight (per PRX Part 3)
+    weight: 0.5                    # REPA loss weight
     block_index: -1                # Block to align at (-1 = depth // 2)
-    loss_type: "cosine"            # "cosine" or "mse"
-    decay_start_step: 1000         # Begin decaying REPA weight linearly toward 0 at this step
-    decay_end_step: 2000           # REPA weight reaches 0 at this step
+    loss_type: "cosine"            # "cosine" similarity
+    decay_start_step: 8000         # Begin decaying REPA weight linearly toward 0 (20% of 40k)
+    decay_end_step: 16000          # REPA weight reaches 0 at this step (40% of 40k)
 
   # TREAD (Token Routing) — route 50% of tokens past middle blocks for throughput
   tread:
@@ -71,25 +70,33 @@ training:
   timestep_sampling: "logit_normal"  # "uniform" or "logit_normal"
   logit_normal_loc: 0.0              # Mean of logit-normal distribution
   logit_normal_scale: 1.0            # Std of logit-normal distribution
-  
-  # Memory optimization
-  gradient_checkpointing: true       # Enable to trade 20-30% speed for 3-4x memory savings
-  
-  # Precision
-  mixed_precision: true              # Use bfloat16 (required for flow matching)
-  precision: "bfloat16"              # "bfloat16" or "float32"
 
-  # Perceptual loss (LPIPS) — compares predicted vs ground truth pixel crops
+  # Memory optimization
+  gradient_checkpointing: false      # Disabled because FP8 natively fits batch_size: 4 without it
+
+  # Precision (Native FP8 via torchao)
+  mixed_precision: true              # Use mixed precision
+  precision: "fp8"                   # "fp8", "bfloat16", or "float32"
+
   perceptual:
     enabled: false
-    lpips_weight: 0.1                # Loss weight (PRX Part 3 uses 0.1)
-    every_n_microsteps: 4            # Compute every N micro-steps (amortize cost)
-    crop_size: 256                   # Pixel crop size for LPIPS comparison
+    lpips_weight: 0.1
+    every_n_microsteps: 4
+    crop_size: 256
+
+  # Asymmetric Flow matching (Arm G) — target computed on lower-dim PCA subspace
+  asymflow:
+    enabled: true
+    rank: 8                        # Rank of the noise subspace (typically 8 for 1024-dim patches)
+
+  seg_weight:
+    enabled: false                 # Disabled (ablation concluded spatial weighting was confounded)
 
 data:
   source: "stratum"                                                # "webdataset" | "stratum"
-  stratum_dir: "/mnt/nas-ai-models/training-data/ffhq/stratum"   # used when source=stratum
-  shard_base_dir: "data/shards/faces7k"      # Base directory for WebDataset shards
+  stratum_dir: "$STRATUM_DIR"                                      # expands to '/mnt/nas-ai-models/training-data/ffhq/stratum'
+  stratum_max_samples: 70000                                       # Train on 70k faces!
+  shard_base_dir: "data/shards/faces7k"
   
   # Aspect ratio buckets to read (each bucket is a subdirectory with tar files)
   buckets:
@@ -101,16 +108,8 @@ data:
     - "bucket_768x1280"
     - "bucket_832x1216"
   
-  # Bucket sampling strategy (for bucket-aware batching)
   bucket_sampling: "proportional"    # "proportional" or "uniform"
-
-  # Augmentation
-  # Color jitter: safe for pixel path but creates DINO mismatch (embeddings are pre-computed).
-  # Decision required before enabling. See augmentation_roadmap.md §3.
-  # color_jitter_prob: 0.0
-  
-  # DataLoader settings
-  num_workers: 4                     # Parallel workers
+  num_workers: 8                     # High performance loader (Arm I baseline)
   prefetch_factor: 2                 # Batches to prefetch per worker
   pin_memory: true                   # Pin memory for faster GPU transfer
 
@@ -123,23 +122,21 @@ sampling:
 
 validation:
   enabled: true                      # Enable validation runs
-  interval_steps: 100               # Run validation every N steps (full suite)
+  interval_steps: 500                # Run validation every N steps
   num_samples: 25                    # Number of samples to validate
   output_dir: "validation_outputs"   # Validation output directory
   
-  # Validation tests to run
   run_reconstruction: true           # Test reconstruction LPIPS
   run_dino_swap: true                # Test DINO swap pairs
   run_text_manip: true               # Test text manipulation
   
-  # Visual debugging (quick image generation during training)
-  visual_debug_interval: 10        # Generate sample images every N steps (0 = disabled)
-  visual_debug_num_samples: 4        # Number of samples per visual debug checkpoint
-  visual_debug_dir: "visual_debug"   # Output directory for visual debugging images
+  visual_debug_interval: 0           # Disabled during main production training to save VRAM/cycles
+  visual_debug_num_samples: 4
+  visual_debug_dir: "visual_debug"
 
 checkpoint:
   save_every: 2500                   # Save checkpoint every N steps
-  keep_last_n: 3                     # Keep only last N checkpoints (0 = keep all)
+  keep_last_n: 10                    # Keep last 10 checkpoints (per AGENTS.md)
   output_dir: "checkpoints"          # Checkpoint output directory
   save_optimizer: true               # Save optimizer state (needed for resume)
 
@@ -147,17 +144,10 @@ logging:
   log_every: 2                      # Log metrics every N steps
   log_file: "training.log"           # JSON-lines log file
   
-  # Monitoring (from the-plan.md Part E)
   monitor_velocity_norm: true        # Track |v_pred| magnitude
   monitor_grad_norm: true            # Track gradient norm
   velocity_norm_warning: 10.0        # Warn if |v_pred| > this (collapse detection)
   grad_norm_warning: 10.0            # Warn if grad_norm > this after warmup
 
-# Paths (relative to project root)
 paths:
-  t5_path: "models/t5xxl_fp16.safetensors"   # T5-XXL encoder (for validation)
-
-  # AsymFlow configuration
-  asymflow:
-    enabled: true
-    rank: 8 # Rank of the noise subspace (typically 8 for 1024-dim patches)
+  t5_path: "models/t5xxl_fp16.safetensors"

@@ -411,6 +411,7 @@ All arms train for 5,000 steps on the same 7k FFHQ subset. Each arm isolates one
 | G | `asym-flow-ablation` | ✓ | Muon | ✓ | AsymFlow (rank 8) | ✅ Done | 2026-05 | D |
 | H | `shared-adaln-lora` | ✓ | Muon | ✓ | Shared adaLN + per-block LoRA (rank 8) | ❌ Failed | 2026-05 | D |
 | I | `fp8-native` | ✓ | Muon | ✓ | FP8 precision via torchao | ✅ Done | 2026-06 | G |
+| J | `faces70k-fp8` | ✓ | Muon | ✓ | Scaled to 70k portraits (40k steps, REPA linear decay) | 🚀 Scheduled | 2026-06 | I |
 
 ### Key Comparisons
 
