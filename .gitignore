@@ -82,3 +82,28 @@ validation_evals/
 
 # Run logs
 sync_vast_arm_e.log
+
+# Local scratch logs and environments (FP8 run artifacts)
+autotune_fp8*.log
+fp8_train*.log
+training_output.log
+*.log
+.venv-3.11/
+
+# Local diagnostic and scratch scripts
+test_fp8_*.py
+test_torchao.py
+test_train.py
+debug_shapes*.py
+check_tread_fp8.py
+check_auto_tune_model.py
+check_filter_fn.py
+parse_lpips.py
+sync_vast_arm_*.sh
+start_training_after_ipadapter.sh
+stop_training.sh
+scripts/upload_to_ratiocinator.py
+
+# Research outputs / Ratiocinator local files
+research/
+
