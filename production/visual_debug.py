@@ -21,7 +21,6 @@ def create_visual_debug_fn(
     self_guidance=False,
     guidance_scale=3.0,
     prediction_type="v_prediction",
-    pixel_range="01",
 ):
     """Create visual debugging function for training loop.
     
@@ -106,12 +105,8 @@ def create_visual_debug_fn(
             )
             
             if pixel_space:
-                # tensor_to_pil expects [-1,1]. Issue #5a: output range matches
-                # the trained data range.
-                if pixel_range == "-11":
-                    img_tensor = output[0].clamp(-1, 1)
-                else:
-                    img_tensor = output[0].clamp(0, 1) * 2 - 1
+                # Output is RGB [0,1] — convert to [-1, 1] for tensor_to_pil compatibility
+                img_tensor = output[0].clamp(0, 1) * 2 - 1
             else:
                 # Decode latents to image (latent → pixel via 8x VAE upsampling)
                 images = decode_latents(vae, output)

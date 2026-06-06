@@ -376,7 +376,6 @@ def main():
             prediction_type=config.model.prediction_type,
             source=getattr(config.data, 'source', 'webdataset'),
             stratum_dir=getattr(config.data, 'stratum_dir', '/workspace/stratum'),
-            pixel_range=getattr(config.data, 'pixel_range', '01'),
         )
     
     # Create visual debugging function (if enabled)
@@ -397,7 +396,6 @@ def main():
             self_guidance=config.sampling.self_guidance,
             guidance_scale=config.sampling.guidance_scale,
             prediction_type=config.model.prediction_type,
-            pixel_range=getattr(config.data, 'pixel_range', '01'),
         )
     
     # Create trainer

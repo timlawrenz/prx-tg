@@ -106,7 +106,6 @@ class ValidationRunner:
         self_guidance=False,
         guidance_scale=3.0,
         prediction_type="v_prediction",
-        pixel_range="01",
     ):
         """
         Args:
@@ -118,8 +117,6 @@ class ValidationRunner:
             lpips_net: LPIPS network ('alex' or 'vgg')
             tensorboard_writer: Optional TensorBoard SummaryWriter
             prediction_type: "v_prediction" or "x_prediction"
-            pixel_range: data range produced by `dataloader` and the model.
-                "01" → GT/output in [0,1]; "-11" → already centered (issue #5a)
         """
         self.model = model
         self.ema = ema
@@ -128,7 +125,6 @@ class ValidationRunner:
         self.output_dir = Path(output_dir)
         self.tb_writer = tensorboard_writer
         self.prediction_type = prediction_type
-        self.pixel_range = pixel_range
 
         # Sampling CFG scales for validation
         self.text_scale = text_scale
@@ -257,12 +253,8 @@ class ValidationRunner:
                         mode='bilinear', align_corners=False
                     )
             
-            # Ground truth → [-1,1] for LPIPS comparison.
-            # Issue #5a: if dataloader already centered to [-1,1], use as-is.
-            if self.pixel_range == "-11":
-                gt_images = gt_images_raw.to(self.device).clamp(-1, 1)
-            else:
-                gt_images = gt_images_raw.to(self.device) * 2 - 1
+            # Convert ground truth [0,1] → [-1,1] for LPIPS comparison
+            gt_images = gt_images_raw.to(self.device) * 2 - 1
             
             # Compute LPIPS
             for j in range(len(batch_indices)):
@@ -563,12 +555,8 @@ class ValidationRunner:
                         mode='bilinear', align_corners=False
                     )
             
-            # Ground truth → [-1,1] for LPIPS comparison.
-            # Issue #5a: if dataloader already centered to [-1,1], use as-is.
-            if self.pixel_range == "-11":
-                gt_images = gt_images_raw.to(self.device).clamp(-1, 1)
-            else:
-                gt_images = gt_images_raw.to(self.device) * 2 - 1
+            # Convert ground truth [0,1] → [-1,1] for LPIPS comparison
+            gt_images = gt_images_raw.to(self.device) * 2 - 1
             
             # Compute LPIPS
             for j in range(len(batch_indices)):
@@ -838,7 +826,6 @@ class ValidationRunner:
             self_guidance=self.self_guidance,
             guidance_scale=self.guidance_scale,
             prediction_type=self.prediction_type,
-            pixel_range=self.pixel_range,
         )
         
         try:
@@ -926,7 +913,6 @@ def create_validation_fn(
     prediction_type="v_prediction",
     source="webdataset",
     stratum_dir="/workspace/stratum",
-    pixel_range="01",
 ):
     """Create validation function for training loop.
     
@@ -969,7 +955,6 @@ def create_validation_fn(
                 target_latent_size=getattr(model, 'input_size', 128),
                 source=source,
                 stratum_dir=stratum_dir,
-                pixel_range=pixel_range,
             )
         
         if runner is None:
@@ -982,7 +967,6 @@ def create_validation_fn(
                 self_guidance=self_guidance,
                 guidance_scale=guidance_scale,
                 prediction_type=prediction_type,
-                pixel_range=pixel_range,
             )
         
         runner.run_validation(step)
