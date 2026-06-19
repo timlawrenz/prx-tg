@@ -242,7 +242,9 @@ class ValidationRunner:
             
             # Generate images at current training resolution
             gen_images = sampler.generate(dino_emb, dino_patches, text_emb, text_mask,
-                                          latent_size=latent_size)
+                                          latent_size=latent_size,
+                                          text_scale=self.text_scale/2.0,
+                                          dino_scale=self.dino_scale/2.0)
             
             # Resize GT to match generation resolution
             if latent_size is not None:
@@ -327,6 +329,8 @@ class ValidationRunner:
                 sample_a['t5_hidden'].unsqueeze(0),
                 sample_a['t5_mask'].unsqueeze(0),
                 latent_size=latent_size,
+                text_scale=self.text_scale/2.0,
+                dino_scale=self.dino_scale/2.0,
             )[0]  # (3, H, W)
             
             # 2. Swapped: A's caption + B's DINO (swap CLS + patches together)
@@ -336,6 +340,8 @@ class ValidationRunner:
                 sample_a['t5_hidden'].unsqueeze(0),
                 sample_a['t5_mask'].unsqueeze(0),
                 latent_size=latent_size,
+                text_scale=self.text_scale/2.0,
+                dino_scale=self.dino_scale/2.0,
             )[0]  # (3, H, W)
             
             # 3. Reference: B's caption + B's DINO
@@ -345,6 +351,8 @@ class ValidationRunner:
                 sample_b['t5_hidden'].unsqueeze(0),
                 sample_b['t5_mask'].unsqueeze(0),
                 latent_size=latent_size,
+                text_scale=self.text_scale/2.0,
+                dino_scale=self.dino_scale/2.0,
             )[0]  # (3, H, W)
             
             # Create collage: [A_ref | A_swap | B_ref]
@@ -706,14 +714,18 @@ class ValidationRunner:
             text_emb_orig = sample['t5_hidden'].unsqueeze(0)
             text_mask_orig = sample['t5_mask'].unsqueeze(0)
             gen_orig = sampler.generate(dino_emb, dino_patches, text_emb_orig, text_mask_orig,
-                                        latent_size=latent_size)[0]  # (3, H, W)
+                                        latent_size=latent_size,
+                                        text_scale=self.text_scale/2.0,
+                                        dino_scale=self.dino_scale/2.0)[0]  # (3, H, W)
             
             # Re-encode modified caption with T5
             text_emb_mod, text_mask_mod = self.encode_caption(modified_caption)
             
             # Generate with modified caption
             gen_mod = sampler.generate(dino_emb, dino_patches, text_emb_mod, text_mask_mod,
-                                       latent_size=latent_size)[0]  # (3, H, W)
+                                       latent_size=latent_size,
+                                       text_scale=self.text_scale/2.0,
+                                       dino_scale=self.dino_scale/2.0)[0]  # (3, H, W)
             
             # Compute LPIPS between original and modified generations
             lpips_val = self.lpips_fn(gen_orig.unsqueeze(0), gen_mod.unsqueeze(0)).item()

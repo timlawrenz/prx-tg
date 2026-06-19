@@ -107,3 +107,6 @@ scripts/upload_to_ratiocinator.py
 # Research outputs / Ratiocinator local files
 research/
 
+# Local prompt test results (run artifacts, not source code)
+results/
+
