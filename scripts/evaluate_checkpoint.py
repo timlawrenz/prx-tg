@@ -96,7 +96,7 @@ def load_aesthetic_predictor(device):
 # -----------------------------------------------------------------------------
 # Main Evaluator Logic
 # -----------------------------------------------------------------------------
-def run_evaluation(checkpoint_path, config_path, output_dir, device='cuda'):
+def run_evaluation(checkpoint_path, config_path, output_dir, device='cuda', clip_model=None, clip_preprocess=None, clip_tokenizer=None, aesthetic_model=None, dwpose=None, t5=None):
     print(f"--- PRX-TG Checkpoint Evaluator ---")
     print(f"Checkpoint: {checkpoint_path}")
     print(f"Output Dir: {output_dir}\n")
@@ -104,16 +104,17 @@ def run_evaluation(checkpoint_path, config_path, output_dir, device='cuda'):
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     
-    # --- 1. Load CLIP & Aesthetic Models ---
-    print("[1/3] Loading Evaluation Models...")
-    clip_model, _, clip_preprocess = open_clip.create_model_and_transforms('ViT-L-14', pretrained='openai', device=device)
-    clip_model.eval()
-    clip_tokenizer = open_clip.get_tokenizer('ViT-L-14')
-    aesthetic_model = load_aesthetic_predictor(device)
-    
-    # Load DWPose on CPU to save VRAM for DiT
-    print("  Loading DWPose (ONNX CPU)...")
-    dwpose = DWPoseDetector(device="cpu")
+    # --- 1. Load Evaluation Models (if not provided) ---
+    if clip_model is None:
+        print("[1/3] Loading Evaluation Models...")
+        clip_model, _, clip_preprocess = open_clip.create_model_and_transforms('ViT-L-14', pretrained='openai', device=device)
+        clip_model.eval()
+        clip_tokenizer = open_clip.get_tokenizer('ViT-L-14')
+        aesthetic_model = load_aesthetic_predictor(device)
+        print("  Loading DWPose (ONNX CPU)...")
+        dwpose = DWPoseDetector(device="cpu")
+    else:
+        print("[1/3] Using pre-loaded Evaluation Models...")
     
     # --- 2. Load Generation Models ---
     import yaml
@@ -125,8 +126,9 @@ def run_evaluation(checkpoint_path, config_path, output_dir, device='cuda'):
     model = load_model(checkpoint_path, config, torch.device(device))
     model.eval()
     
-    device_obj = torch.device(device)
-    t5 = T5Encoder(device_obj)
+    if t5 is None:
+        device_obj = torch.device(device)
+        t5 = T5Encoder(device_obj)
     
     mc = config.get("model", {})
     sc = config.get("sampling", {})
