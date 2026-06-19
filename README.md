@@ -411,7 +411,8 @@ All arms train for 5,000 steps on the same 7k FFHQ subset. Each arm isolates one
 | G | `asym-flow-ablation` | ✓ | Muon | ✓ | AsymFlow (rank 8) | ✅ Done | 2026-05 | D |
 | H | `shared-adaln-lora` | ✓ | Muon | ✓ | Shared adaLN + per-block LoRA (rank 8) | ❌ Failed | 2026-05 | D |
 | I | `fp8-native` | ✓ | Muon | ✓ | FP8 precision via torchao | ✅ Done | 2026-06 | G |
-| J | `faces70k-fp8` | ✓ | Muon | ✓ | Scaled to 70k portraits (40k steps, REPA linear decay) | 🚀 Scheduled | 2026-06 | I |
+| J | `faces70k-fp8` | ✓ | Muon | ✓ | Scaled to 70k portraits (40k steps, REPA linear decay) | 🚀 Active | 2026-06 | I |
+| K | `nystrom-self-attn` | ✓ | Muon | ✓ | Nyströmformer self-attention approximation | ❌ Falsified | 2026-06 | J |
 
 ### Key Comparisons
 
@@ -423,6 +424,7 @@ All arms train for 5,000 steps on the same 7k FFHQ subset. Each arm isolates one
 - **D → G**: Reconstruction LPIPS (0.9379) + Text-only LPIPS (0.9141) — verifies Asymmetric Flow matching convergence acceleration vs baseline visual quality. Lower LPIPS indicates better perceptual quality.
 - **D → H**: Recon LPIPS 0.9823, Text-only 1.0062 — shared adaLN + LoRA fails to converge at 5k steps. Visually noise/dithering; per-block modulation is load-bearing, not redundant. 59M param savings (178.8M vs 237.7M) not worth the quality collapse.
 - **G → I**: `sys/iter_per_sec` & `memory/peak_vram_gb` — Native FP8 via `torchao` trained successfully! After resolving initial memory scale-state overheads by implementing dynamic tensor masking and optimized autocast scoping, the model fits into 24GB VRAM and trains in **26 hours** (down from 56h). Perceptual quality remains highly competitive with BF16 (Recon LPIPS 0.906 vs 0.900, Text-only LPIPS 0.909 vs 0.920), while text controllability actually improved (Text Manip Diff 0.504 vs 0.485). FP8 represents a >2x speedup with negligible perceptual degradation.
+- **J → K**: Falsified before training. A wall-clock micro-benchmark proved that Nyström (m=64) is ~8.4x **slower** than `F.scaled_dot_product_attention` (FlashAttention-2) on the RTX 4090 at N=4096. CuSOLVER SVD and un-fused matmuls completely obliterate the theoretical ~98% FLOP reduction. The ablation was cancelled; see `.hermes/plans/2026-06-18_nystrom-self-attention.md` for the rigorous evaluation framework designed for it, which will be adopted for future runs.
 
 ## Dependencies
 
