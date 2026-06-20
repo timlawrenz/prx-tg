@@ -32,11 +32,17 @@ experiments/
             dino_swap/
             text_manip/
         nohup.log                # Raw training stdout/stderr
-    validation/                  # Post-hoc local re-validation (standardized)
-      step{NNNN}/
-        results.json
-        reconstruction/
-        text_only/
+    validation/
+      {YYYY-MM-DD_HHMM}/         # Post-hoc re-validation scoped to run timestamp
+        step{NNNN}/
+          results.json
+          reconstruction/
+          text_only/
+          evaluation_results.json  # CLIP + aesthetic + DWPose metrics (per checkpoint)
+          collage.png              # Generated sample grid for this checkpoint
+    metric_trajectory.csv         # Aggregated quality-metric trajectory across checkpoints
+    metric_graphs.png             # Trajectory plots (aesthetic, CLIP, face confidence)
+    progression_timeline.png      # Checkpoint collage timeline
     figures/                     # Generated comparison plots for this arm
     notes/                       # Free-form analysis notes, observations
 ```

@@ -1140,6 +1140,14 @@ class Trainer:
                         torch.cuda.empty_cache()
                         # Put model back in train mode
                         self.model.train()
+                    
+                    # Run quality metrics (CLIP + aesthetic + DWPose) if enabled
+                    if self._quality_metrics_models is not None:
+                        torch.cuda.empty_cache()
+                        ckpt_path = self.checkpoint_dir / f'checkpoint_step{self.step:07d}.pt'
+                        self._run_quality_metrics(ckpt_path, self.step)
+                        torch.cuda.empty_cache()
+                        self.model.train()
                 
                 pbar.update(1)
                 
@@ -1281,6 +1289,12 @@ class ProductionTrainer(Trainer):
             self.perceptual_module = None
             self.perceptual_config = None
         
+        # Quality metrics (CLIP + aesthetic + DWPose face confidence)
+        self._quality_metrics_models = None
+        self._quality_metrics_output_dir = None
+        if config.validation.quality_metrics.enabled:
+            self._setup_quality_metrics(config, device)
+        
         # Prediction type (v_prediction or x_prediction)
         self.prediction_type = config.model.prediction_type
         self.t_clamp_min = config.model.t_clamp_min
@@ -1352,6 +1366,109 @@ class ProductionTrainer(Trainer):
         galore_count = sum(p.numel() for p in galore_params)
         regular_count = sum(p.numel() for p in regular_params)
         print(f"  GaLore optimizer: {galore_count/1e6:.1f}M params (rank={galore_cfg.rank}), {regular_count/1e6:.1f}M regular")
+    
+    def _setup_quality_metrics(self, config, device):
+        """Pre-load quality-metric scoring models (OpenCLIP, aesthetic, DWPose, T5).
+        
+        These are loaded once at trainer init to avoid ~30s of overhead per checkpoint.
+        """
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        
+        from scripts.evaluate_checkpoint import run_evaluation, load_aesthetic_predictor
+        import open_clip
+        from scripts.dwpose_onnx import DWPoseDetector
+        from scripts.txt2img import T5Encoder
+        
+        print("  Pre-loading quality metric models...")
+        
+        clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
+            'ViT-L-14', pretrained='openai', device=device
+        )
+        clip_model.eval()
+        clip_tokenizer = open_clip.get_tokenizer('ViT-L-14')
+        
+        aesthetic_model = load_aesthetic_predictor(device)
+        
+        print("  Loading DWPose (ONNX CPU)...")
+        dwpose = DWPoseDetector(device="cpu")
+        
+        print("  Loading T5 Encoder (CUDA)...")
+        t5 = T5Encoder(torch.device(device))
+        t5._load()
+        
+        self._quality_metrics_models = {
+            'clip_model': clip_model,
+            'clip_preprocess': clip_preprocess,
+            'clip_tokenizer': clip_tokenizer,
+            'aesthetic_model': aesthetic_model,
+            'dwpose': dwpose,
+            't5': t5,
+        }
+        
+        # Output directory: experiments/<arm>/runs/<ts>/quality_metrics/
+        checkpoint_dir = Path(config.checkpoint.output_dir)
+        # checkpoint_dir is e.g. experiments/<arm>/runs/<ts>/checkpoints/
+        run_dir = checkpoint_dir.parent  # runs/<ts>/
+        quality_dir = run_dir / 'quality_metrics'
+        self._quality_metrics_output_dir = quality_dir
+        
+        print(f"  Quality metrics ready. Output: {quality_dir}")
+    
+    def _run_quality_metrics(self, checkpoint_path, step):
+        """Evaluate the saved checkpoint with CLIP + aesthetic + DWPose scoring.
+        
+        Calls scripts/evaluate_checkpoint.py with pre-loaded scoring models.
+        Parses results and logs to TensorBoard.
+        """
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        
+        from scripts.evaluate_checkpoint import run_evaluation
+        
+        out_dir = self._quality_metrics_output_dir / f'step{step:07d}'
+        
+        # Determine config path: the frozen config lives at <experiment_dir>/config.yaml
+        checkpoint_dir = Path(self.config.checkpoint.output_dir)
+        config_path = str(checkpoint_dir.parent / 'config.yaml')
+        
+        models = self._quality_metrics_models
+        
+        print(f"  Running quality metrics at step {step}...")
+        run_evaluation(
+            str(checkpoint_path),
+            config_path,
+            str(out_dir),
+            device='cuda',
+            clip_model=models['clip_model'],
+            clip_preprocess=models['clip_preprocess'],
+            clip_tokenizer=models['clip_tokenizer'],
+            aesthetic_model=models['aesthetic_model'],
+            dwpose=models['dwpose'],
+            t5=models['t5'],
+        )
+        
+        # Parse results and log to TensorBoard
+        import json
+        results_path = out_dir / 'evaluation_results.json'
+        if results_path.exists():
+            with open(results_path) as f:
+                results = json.load(f)
+            summary = results.get('summary', {})
+            
+            if self.writer is not None:
+                if 'mean_aesthetic_score' in summary:
+                    self.writer.add_scalar('val/aesthetic_score', summary['mean_aesthetic_score'], step)
+                if 'mean_clip_score' in summary:
+                    self.writer.add_scalar('val/clip_score', summary['mean_clip_score'], step)
+                if 'mean_dwpose_face_conf' in summary:
+                    self.writer.add_scalar('val/face_confidence', summary['mean_dwpose_face_conf'], step)
+            
+            print(f"  Quality metrics: Aesthetic={summary.get('mean_aesthetic_score', 0):.2f} "
+                  f"CLIP={summary.get('mean_clip_score', 0):.3f} "
+                  f"FaceConf={summary.get('mean_dwpose_face_conf', 0):.3f}")
     
     def log(self, metrics):
         """Log metrics to file, console, and TensorBoard.

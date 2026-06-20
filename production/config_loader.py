@@ -155,6 +155,12 @@ class MaskDiTConfig:
 
 
 @dataclass
+class DinoPatchesConfig:
+    """DINOv3 patch cross-attention configuration."""
+    spatial_window_radius: int | None = None  # None = attend to all patches; int = local window radius in DINO grid cells
+
+
+@dataclass
 class GaLoreConfig:
     """GaLore (Gradient Low-Rank Projection) optimizer memory reduction."""
     enabled: bool = False
@@ -191,6 +197,7 @@ class TrainingConfig:
     galore: GaLoreConfig = field(default_factory=GaLoreConfig)
     seg_weight: SegWeightConfig = field(default_factory=SegWeightConfig)
     asymflow: AsymFlowConfig = field(default_factory=AsymFlowConfig)
+    dino_patches: DinoPatchesConfig = field(default_factory=DinoPatchesConfig)
     
     timestep_sampling: Literal["uniform", "logit_normal"] = "logit_normal"
     logit_normal_loc: float = 0.0
@@ -240,6 +247,14 @@ class SamplingConfig:
 
 
 @dataclass
+class QualityMetricsConfig:
+    """Quality metrics evaluation (CLIP, aesthetic, DWPose face confidence)."""
+    enabled: bool = False
+    num_prompts: int = 10       # Number of fixed prompts to evaluate
+    device: str = "cuda"        # Device for scoring models
+
+
+@dataclass
 class ValidationConfig:
     """Validation configuration."""
     enabled: bool = True
@@ -254,6 +269,8 @@ class ValidationConfig:
     visual_debug_interval: int = 1000
     visual_debug_num_samples: int = 4
     visual_debug_dir: str = "visual_debug"
+    
+    quality_metrics: QualityMetricsConfig = field(default_factory=QualityMetricsConfig)
 
 
 @dataclass

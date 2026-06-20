@@ -91,6 +91,9 @@ training:
 
   seg_weight:
     enabled: false                 # Disabled (ablation concluded spatial weighting was confounded)
+  
+  dino_patches:
+    spatial_window_radius: null    # None = full cross-attn; int (e.g. 2) = local spatial window
 
 data:
   source: "stratum"                                                # "webdataset" | "stratum"
@@ -132,6 +135,10 @@ validation:
   visual_debug_interval: 0           # Disabled during main production training to save VRAM/cycles
   visual_debug_num_samples: 4
   visual_debug_dir: "visual_debug"
+  
+  quality_metrics:                   # CLIP + aesthetic + DWPose face confidence scoring
+    enabled: true                    # Run at each checkpoint save
+    num_prompts: 10                  # Fixed prompts for consistent comparison
 
 checkpoint:
   save_every: 2500                   # Save checkpoint every N steps
