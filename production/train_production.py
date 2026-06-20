@@ -114,12 +114,21 @@ def create_experiment_dir(config_path, resume_path=None):
         experiment_dir: Path to created/reused directory
     """
     if resume_path:
-        # Expected resume_path: experiments/2026-02-22_1200/checkpoints/checkpoint.pt
+        # Expected resume_path: experiments/{slug}/runs/{timestamp}/checkpoints/checkpoint.pt
+        # or legacy: experiments/{timestamp}/checkpoints/checkpoint.pt
         # Get the parent directory of the 'checkpoints' directory
         try:
             exp_dir = Path(resume_path).parent.parent
-            if exp_dir.name.startswith('202') and exp_dir.parent.name == 'experiments':
+            # Check if this is a nested run (slug/runs/timestamp) or legacy flat (timestamp)
+            if exp_dir.parent.name == 'runs':
+                # Nested: experiments/{slug}/runs/{timestamp}/
+                slug_dir = exp_dir.parent.parent  # experiments/{slug}/
+                print(f"Resuming existing experiment: {exp_dir} (arm: {slug_dir.name})")
+            elif exp_dir.name.startswith('202') and exp_dir.parent.name == 'experiments':
+                # Legacy flat structure
                 print(f"Resuming existing experiment: {exp_dir}")
+            else:
+                raise ValueError(f"Unrecognized experiment directory structure: {exp_dir}")
                 
                 # Append resume info to metadata
                 metadata_path = exp_dir / 'metadata.json'
@@ -147,8 +156,22 @@ def create_experiment_dir(config_path, resume_path=None):
     # Create timestamp: 2026-02-15_1130
     timestamp = datetime.now().strftime('%Y-%m-%d_%H%M')
     
-    # Create experiment directory
-    exp_dir = Path('experiments') / timestamp
+    # Detect if config lives in a slug directory: experiments/{slug}/config.yaml
+    # If so, nest runs under experiments/{slug}/runs/{timestamp}/
+    config_path_obj = Path(config_path).resolve()
+    experiments_root = Path('experiments').resolve()
+    try:
+        config_relative = config_path_obj.relative_to(experiments_root)
+        parts = config_relative.parts
+        if len(parts) >= 2 and parts[-1] == 'config.yaml':
+            slug = parts[0]  # experiments/{slug}/config.yaml
+            exp_dir = experiments_root / slug / 'runs' / timestamp
+        else:
+            exp_dir = experiments_root / timestamp
+    except ValueError:
+        # config_path is not under experiments/ — use plain timestamp
+        exp_dir = experiments_root / timestamp
+    
     exp_dir.mkdir(parents=True, exist_ok=True)
     
     # Copy config file
