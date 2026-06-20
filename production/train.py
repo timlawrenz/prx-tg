@@ -1465,6 +1465,21 @@ class ProductionTrainer(Trainer):
                     self.writer.add_scalar('val/clip_score', summary['mean_clip_score'], step)
                 if 'mean_dwpose_face_conf' in summary:
                     self.writer.add_scalar('val/face_confidence', summary['mean_dwpose_face_conf'], step)
+                
+                # Push collage image to TensorBoard
+                collage_path = out_dir / 'collage.png'
+                if collage_path.exists():
+                    from PIL import Image
+                    import numpy as np
+                    collage_img = np.array(Image.open(collage_path))
+                    self.writer.add_image('val/collage', collage_img, step, dataformats='HWC')
+                
+                # Push individual prompt images
+                for i in range(10):
+                    prompt_path = out_dir / f'prompt_{i:02d}.png'
+                    if prompt_path.exists():
+                        prompt_img = np.array(Image.open(prompt_path))
+                        self.writer.add_image(f'val/prompt_{i:02d}', prompt_img, step, dataformats='HWC')
             
             print(f"  Quality metrics: Aesthetic={summary.get('mean_aesthetic_score', 0):.2f} "
                   f"CLIP={summary.get('mean_clip_score', 0):.3f} "

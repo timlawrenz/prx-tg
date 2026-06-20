@@ -235,6 +235,10 @@ def run_evaluation(checkpoint_path, config_path, output_dir, device='cuda', clip
     # Outputs
     with open(out_path / "evaluation_results.json", "w") as f:
         json.dump(results, f, indent=2)
+    
+    # Save individual prompt images (for TensorBoard)
+    for i, pil_img in enumerate(pil_images):
+        pil_img.save(out_path / f"prompt_{i:02d}.png")
         
     collage_img = Image.fromarray(create_image_collage(pil_images, spacing=20))
     collage_img.save(out_path / "collage.png")
