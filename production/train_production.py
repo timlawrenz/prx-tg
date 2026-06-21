@@ -8,6 +8,7 @@ Usage:
 
 import argparse
 import sys
+import signal
 from pathlib import Path
 from datetime import datetime
 import shutil
@@ -452,13 +453,19 @@ def main():
     
     # Train
     print("\nStarting training...\n")
+    
+    # Convert SIGTERM (pkill) to KeyboardInterrupt so checkpoint_interrupt.pt is saved
+    def _sigterm_handler(signum, frame):
+        raise KeyboardInterrupt()
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+    
     try:
         trainer.train(
             validate_fn=validate_fn,
             visual_debug_fn=visual_debug_fn,
         )
     except KeyboardInterrupt:
-        print("\n\n⚠️  Training interrupted by user (Ctrl+C)")
+        print("\n\n⚠️  Training interrupted by user (SIGINT/SIGTERM)")
         print("Saving checkpoint...")
         trainer.save_checkpoint(
             Path(config.checkpoint.output_dir) / 'checkpoint_interrupt.pt'
