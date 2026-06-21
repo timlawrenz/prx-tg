@@ -129,26 +129,26 @@ def create_experiment_dir(config_path, resume_path=None):
                 print(f"Resuming existing experiment: {exp_dir}")
             else:
                 raise ValueError(f"Unrecognized experiment directory structure: {exp_dir}")
+            
+            # Append resume info to metadata
+            metadata_path = exp_dir / 'metadata.json'
+            if metadata_path.exists():
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
                 
-                # Append resume info to metadata
-                metadata_path = exp_dir / 'metadata.json'
-                if metadata_path.exists():
-                    with open(metadata_path, 'r') as f:
-                        metadata = json.load(f)
-                    
-                    if 'resumes' not in metadata:
-                        metadata['resumes'] = []
-                    
-                    metadata['resumes'].append({
-                        'timestamp': datetime.now().isoformat(),
-                        'checkpoint': str(resume_path),
-                        'command': ' '.join(sys.argv)
-                    })
-                    
-                    with open(metadata_path, 'w') as f:
-                        json.dump(metadata, f, indent=2)
+                if 'resumes' not in metadata:
+                    metadata['resumes'] = []
                 
-                return exp_dir
+                metadata['resumes'].append({
+                    'timestamp': datetime.now().isoformat(),
+                    'checkpoint': str(resume_path),
+                    'command': ' '.join(sys.argv)
+                })
+                
+                with open(metadata_path, 'w') as f:
+                    json.dump(metadata, f, indent=2)
+            
+            return exp_dir
         except Exception as e:
             print(f"Warning: Could not resolve experiment dir from resume path: {e}")
             print("Falling back to creating new experiment directory.")
