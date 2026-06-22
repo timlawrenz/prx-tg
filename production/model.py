@@ -231,7 +231,7 @@ class DiTBlock(nn.Module):
         nn.init.zeros_(self.adaLN_modulation[1].weight)
         nn.init.zeros_(self.adaLN_modulation[1].bias)
 
-    def _forward_impl(self, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask=None, x_mask=None, tread_visible_idx=None, N_total=None):
+    def _forward_impl(self, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask=None, x_mask=None):
         """Internal forward implementation for checkpointing."""
         # Get adaLN modulation parameters from DINOv3
         shift_msa, scale_msa, shift_ca, scale_ca, shift_mlp, scale_mlp = \
@@ -261,37 +261,18 @@ class DiTBlock(nn.Module):
             cross_mask = None
         
         # Cross-attention to combined sequence with adaLN
-        x_ca_norm = modulate(self.norm2(x), shift_ca, scale_ca)
-        
-        if tread_visible_idx is not None and N_total is not None:
-            # TREAD middle blocks: scatter to full size, run flex_attention, gather back
-            B, _, C = x.shape
-            x_ca_full = torch.zeros(B, N_total, C, device=x.device, dtype=x.dtype)
-            # Use advanced indexing to scatter the visible tokens
-            idx = tread_visible_idx.unsqueeze(0).unsqueeze(-1).expand(B, -1, C)
-            x_ca_full.scatter_(1, idx, x_ca_norm)
-            
-            ca_out_full = self.cross_attn(
-                x_ca_full,
-                context=combined_context,
-                mask=cross_mask
-            )
-            
-            # Gather the visible tokens back
-            x = x + ca_out_full.gather(1, idx)
-        else:
-            x = x + self.cross_attn(
-                x_ca_norm,
-                context=combined_context,
-                mask=cross_mask
-            )
+        x = x + self.cross_attn(
+            modulate(self.norm2(x), shift_ca, scale_ca),
+            context=combined_context,
+            mask=cross_mask
+        )
         
         # MLP with adaLN
         x = x + self.mlp(modulate(self.norm3(x), shift_mlp, scale_mlp))
         
         return x
 
-    def forward(self, x, c_dino, c_text, text_mask=None, c_dino_cls_token=None, c_patches=None, patches_mask=None, x_mask=None, tread_visible_idx=None, N_total=None):
+    def forward(self, x, c_dino, c_text, text_mask=None, c_dino_cls_token=None, c_patches=None, patches_mask=None, x_mask=None):
         """
         Args:
             x: (B, N, C) latent tokens
@@ -305,10 +286,10 @@ class DiTBlock(nn.Module):
         """
         if self.use_checkpoint and self.training:
             return torch.utils.checkpoint.checkpoint(
-                self._forward_impl, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask, x_mask, tread_visible_idx, N_total, use_reentrant=False
+                self._forward_impl, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask, x_mask, use_reentrant=False
             )
         else:
-            return self._forward_impl(x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask, x_mask, tread_visible_idx, N_total)
+            return self._forward_impl(x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask, x_mask)
 
 class MaskDiTDecoder(nn.Module):
     """Lightweight decoder for MaskDiT masked token reconstruction.
@@ -766,8 +747,7 @@ class NanoDiT(nn.Module):
             x = x[:, visible_idx]
             
             for i in range(self.tread_route_start, self.tread_route_end + 1):
-                # Pass tread_visible_idx and N_total so DiTBlock can scatter/gather and use flex_attention
-                x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask, x_mask=visible_x_mask, tread_visible_idx=visible_idx, N_total=N)
+                x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask, x_mask=visible_x_mask)
                 if return_repa_hidden and i == self.repa_block_idx:
                     repa_hidden = self.repa_proj(x)
             
