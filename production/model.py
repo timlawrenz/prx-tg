@@ -172,7 +172,7 @@ class Attention(nn.Module):
         
         # Use memory-efficient scaled dot product attention or flex_attention
         if mask is not None:
-            if hasattr(mask, "create_mask"):
+            if type(mask).__name__ == "BlockMask":
                 # It's a flex_attention BlockMask
                 x = flex_attention(q, k, v, block_mask=mask)
             else:
