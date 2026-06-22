@@ -491,21 +491,15 @@ class NanoDiT(nn.Module):
         dino_cols = (lat_cols.float() * dino_w / w_patches).long().clamp(0, dino_w - 1)
         
         # Build DINO patch mask: (N_latent, N_dino) — True if DINO patch is within radius
-        dino_patch_mask = torch.zeros(N_latent, N_dino, device=device, dtype=torch.bool)
+        # Compute purely with tensor operations (no Python loops, no .item())
+        # to avoid torch.compile graph breaks.
+        dino_patch_rows = torch.arange(dino_h, device=device).unsqueeze(1).expand(dino_h, dino_w).flatten()  # (N_dino,)
+        dino_patch_cols = torch.arange(dino_w, device=device).unsqueeze(0).expand(dino_h, dino_w).flatten()  # (N_dino,)
         
-        for i in range(N_latent):
-            dr, dc = dino_rows[i].item(), dino_cols[i].item()
-            r_min = max(0, dr - r)
-            r_max = min(dino_h - 1, dr + r)
-            c_min = max(0, dc - r)
-            c_max = min(dino_w - 1, dc + r)
-            
-            # Gather DINO patch indices in the spatial window
-            for drr in range(r_min, r_max + 1):
-                for dcc in range(c_min, c_max + 1):
-                    idx = drr * dino_w + dcc
-                    if idx < N_dino:
-                        dino_patch_mask[i, idx] = True
+        # Broadcasting: (N_latent, 1) vs (1, N_dino) -> (N_latent, N_dino)
+        row_dist = (dino_rows.unsqueeze(1) - dino_patch_rows.unsqueeze(0)).abs()
+        col_dist = (dino_cols.unsqueeze(1) - dino_patch_cols.unsqueeze(0)).abs()
+        dino_patch_mask = (row_dist <= r) & (col_dist <= r)
         
         # Total context: text + CLS + dino_patches + pose(optional)
         N_pose = self.num_pose_joints if has_pose else 0
