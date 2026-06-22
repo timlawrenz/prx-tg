@@ -458,7 +458,7 @@ class NanoDiT(nn.Module):
         pos_embed = pos_embed.to(device).float().unsqueeze(0)
         return pos_embed
 
-    def _build_spatial_cross_mask(self, N_latent, h_patches, w_patches, N_dino, N_text, has_pose, device, dtype):
+    def _build_spatial_cross_mask(self, N_latent, h_patches, w_patches, N_dino, N_text, has_pose, pad_ctx, device, dtype):
         """Build a 4D per-query-token cross-attention mask for spatial windowing.
         
         Each latent token attends to:
@@ -522,7 +522,11 @@ class NanoDiT(nn.Module):
         full_mask[:, :, :, N_text + 1:N_text + 1 + N_dino] = dino_patch_mask.unsqueeze(0).unsqueeze(0)
         # Pose tokens: all True
         if N_pose > 0:
-            full_mask[:, :, :, N_text + 1 + N_dino:] = True
+            full_mask[:, :, :, N_text + 1 + N_dino:N_text + 1 + N_dino + N_pose] = True
+        
+        # Context padding (Rule of 16): always False (don't attend to padding)
+        if pad_ctx > 0:
+            full_mask = F.pad(full_mask, (0, pad_ctx), value=False)
         
         return full_mask
 
@@ -721,7 +725,7 @@ class NanoDiT(nn.Module):
             # Note: patches_cond already includes pose + context padding.
             # We build the mask for the FULL context including pose and padding.
             spatial_cross_mask = self._build_spatial_cross_mask(
-                N_latent_orig, h_patches, w_patches, N_dino_orig, N_text, has_pose,
+                N_latent_orig, h_patches, w_patches, N_dino_orig, N_text, has_pose, pad_ctx,
                 x.device, torch.bool
             )
         
