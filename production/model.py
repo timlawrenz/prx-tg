@@ -785,7 +785,13 @@ class NanoDiT(nn.Module):
             
             # Sub-sample the x_mask and spatial_cross_mask for middle blocks
             visible_x_mask = x_mask[:, visible_idx] if x_mask is not None else None
-            visible_spatial_cross_mask = spatial_cross_mask[:, :, visible_idx, :] if spatial_cross_mask is not None else None
+            
+            visible_spatial_cross_mask = None
+            if spatial_cross_mask is not None:
+                # spatial_cross_mask is a flex_attention BlockMask. 
+                # We can't slice it directly, so we materialize it to dense for the middle blocks.
+                dense_mask = spatial_cross_mask.to_dense()  # (1, 1, 4096, M)
+                visible_spatial_cross_mask = dense_mask[:, :, visible_idx, :]
             
             for i in range(self.tread_route_start):
                 x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask, x_mask=x_mask, spatial_cross_mask=spatial_cross_mask)
