@@ -620,6 +620,38 @@ class NanoDiT(nn.Module):
         text_cond = self.text_proj(text_emb)  # (B, seq_len, hidden_size)
         patches_cond = self.dino_patch_proj(dino_patches)  # (B, num_patches, hidden_size)
         
+        # Pool patches if factor provided
+        if self.dino_pool_factor is not None:
+            factor = self.dino_pool_factor
+            B, num_p, C = patches_cond.shape
+            
+            # Use original bucket dimensions for exact pooling
+            h_p = h_patches
+            w_p = num_p // h_p
+            while h_p * w_p < num_p: w_p += 1
+            while h_p * w_p > num_p: h_p -= 1
+            
+            # Calculate pad needed to make divisible by factor
+            pad_h = (factor - (h_p % factor)) % factor
+            pad_w = (factor - (w_p % factor)) % factor
+            
+            # Reshape to 2D
+            patches_spatial = patches_cond.transpose(1, 2).reshape(B, C, h_p, w_p)
+            
+            # Pad spatial dims if needed
+            if pad_h > 0 or pad_w > 0:
+                patches_spatial = F.pad(patches_spatial, (0, pad_w, 0, pad_h))
+            
+            # Pool
+            pooled = F.avg_pool2d(patches_spatial, kernel_size=factor, stride=factor)
+            
+            # Flatten back
+            patches_cond = pooled.flatten(2).transpose(1, 2)
+            
+            # Update mask (assume all pooled patches are valid for simplicity)
+            if dino_patches_mask is not None:
+                dino_patches_mask = torch.ones(B, patches_cond.shape[1], device=patches_cond.device, dtype=dino_patches_mask.dtype)
+        
         # Pose conditioning: project keypoints and add joint-type embeddings
         if pose_kpts is not None:
             if cfg_drop_pose is not None:
@@ -662,37 +694,6 @@ class NanoDiT(nn.Module):
             original_patches_len = patches_cond.shape[1] - pad_ctx
             dino_patches_mask = torch.ones(B, original_patches_len, device=patches_cond.device, dtype=text_mask.dtype)
         dino_patches_mask = F.pad(dino_patches_mask, (0, pad_ctx), value=0)
-        
-        # Pool patches if factor provided
-        if self.dino_pool_factor is not None:
-            factor = self.dino_pool_factor
-            B, num_p, C = patches_cond.shape
-            
-            # Use original bucket dimensions for exact pooling
-            h_p = h_patches
-            w_p = num_p // h_p
-            while h_p * w_p < num_p: w_p += 1
-            while h_p * w_p > num_p: h_p -= 1
-            
-            # Calculate pad needed to make divisible by factor
-            pad_h = (factor - (h_p % factor)) % factor
-            pad_w = (factor - (w_p % factor)) % factor
-            
-            # Reshape to 2D
-            patches_spatial = patches_cond.transpose(1, 2).reshape(B, C, h_p, w_p)
-            
-            # Pad spatial dims if needed
-            if pad_h > 0 or pad_w > 0:
-                patches_spatial = F.pad(patches_spatial, (0, pad_w, 0, pad_h))
-            
-            # Pool
-            pooled = F.avg_pool2d(patches_spatial, kernel_size=factor, stride=factor)
-            
-            # Flatten back
-            patches_cond = pooled.flatten(2).transpose(1, 2)
-            
-            # Update mask (assume all pooled patches are valid for simplicity, or recompute mask)
-            dino_patches_mask = torch.ones(B, patches_cond.shape[1], device=patches_cond.device, dtype=text_mask.dtype)
         
         # MaskDiT: randomly mask image tokens during training
         use_maskdit = self.maskdit_enabled and (maskdit_enabled if maskdit_enabled is not None else self.training)
