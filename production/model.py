@@ -382,6 +382,7 @@ class NanoDiT(nn.Module):
         self.tread_routing_prob = tread_routing_prob
         self.tread_enabled = tread_route_start is not None and tread_route_end is not None
         self.spatial_window_radius = spatial_window_radius
+        self._spatial_mask_cache: dict = {}  # key: (h, w, N_dino, N_text, has_pose, pad_ctx) -> mask tensor
         self.num_pose_joints = num_pose_joints
         self.pose_confidence_threshold = pose_confidence_threshold
         
@@ -461,15 +462,13 @@ class NanoDiT(nn.Module):
     def _build_spatial_cross_mask(self, N_latent, h_patches, w_patches, N_dino, N_text, has_pose, pad_ctx, device, dtype):
         """Build a 4D per-query-token cross-attention mask for spatial windowing.
         
-        Each latent token attends to:
-        - All text tokens (always)
-        - CLS token (always)
-        - DINO patches within self.spatial_window_radius of its spatial position
-        - All pose tokens (always)
-        
-        Returns:
-            mask: (1, 1, N_latent, M_context) where True = attend
+        Cached by grid geometry: (h_patches, w_patches, N_dino, N_text, has_pose, pad_ctx).
+        The mask is static per aspect ratio — only computed once, then reused.
         """
+        cache_key = (h_patches, w_patches, N_dino, N_text, int(has_pose), int(pad_ctx))
+        if cache_key in self._spatial_mask_cache:
+            return self._spatial_mask_cache[cache_key].to(device=device)
+        
         r = self.spatial_window_radius
         
         # Estimate DINO grid size from patch count
@@ -522,6 +521,7 @@ class NanoDiT(nn.Module):
         if pad_ctx > 0:
             full_mask = F.pad(full_mask, (0, pad_ctx), value=False)
         
+        self._spatial_mask_cache[cache_key] = full_mask.detach().cpu()
         return full_mask
 
     def initialize_weights(self):
