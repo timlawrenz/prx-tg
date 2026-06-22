@@ -383,6 +383,7 @@ class NanoDiT(nn.Module):
         self.tread_enabled = tread_route_start is not None and tread_route_end is not None
         self.spatial_window_radius = spatial_window_radius
         self._spatial_mask_cache: dict = {}  # key: (h, w, N_dino, N_text, has_pose, pad_ctx) -> mask tensor
+        self._pos_embed_cache: dict = {}     # key: (h, w) -> pos_embed tensor (1, h*w, hidden_size)
         self.num_pose_joints = num_pose_joints
         self.pose_confidence_threshold = pose_confidence_threshold
         
@@ -447,6 +448,7 @@ class NanoDiT(nn.Module):
     def get_pos_embed(self, h, w, device):
         """Generate 2D sinusoidal positional embeddings for given spatial size.
         
+        Cached per grid size — embeddings are static per aspect ratio bucket.
         Args:
             h: height in patches
             w: width in patches
@@ -455,8 +457,13 @@ class NanoDiT(nn.Module):
         Returns:
             pos_embed: (1, h*w, hidden_size)
         """
+        cache_key = (h, w)
+        if cache_key in self._pos_embed_cache:
+            return self._pos_embed_cache[cache_key].to(device=device)
+        
         pos_embed = get_2d_sincos_pos_embed(self.hidden_size, (h, w))
         pos_embed = pos_embed.to(device).float().unsqueeze(0)
+        self._pos_embed_cache[cache_key] = pos_embed.detach()
         return pos_embed
 
     def _build_spatial_cross_mask(self, N_latent, h_patches, w_patches, N_dino, N_text, has_pose, pad_ctx, device, dtype):
