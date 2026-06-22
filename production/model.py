@@ -525,10 +525,14 @@ class NanoDiT(nn.Module):
             # 2. Pose: always attend
             is_global = (kv_idx < dino_start) | ((kv_idx >= dino_end) & (kv_idx < dino_end + N_pose))
             
+            # Pad latent handling: if q_idx is in the padded region, attend to nothing (or just global)
+            is_valid_q = q_idx < (h_patches * w_patches)
+            
             # 3. DINO patches: attend only if within spatial window
-            # Map q_idx to latent grid
-            lat_r = q_idx // w_patches
-            lat_c = q_idx % w_patches
+            # Map q_idx to latent grid (clamped to prevent out-of-bounds math on padding tokens)
+            q_clamped = torch.clamp(q_idx, 0, (h_patches * w_patches) - 1)
+            lat_r = q_clamped // w_patches
+            lat_c = q_clamped % w_patches
             
             # Map latent grid to DINO grid
             dino_r_center = (lat_r * dino_h) // h_patches
@@ -546,7 +550,7 @@ class NanoDiT(nn.Module):
             
             # Combine: attend if global token OR local DINO token
             # Padding automatically rejected because it's >= dino_end + N_pose
-            return is_global | is_local_dino
+            return (is_global | is_local_dino) & is_valid_q
 
         # Compile the Python function into a BlockMask
         block_mask = create_block_mask(
@@ -755,7 +759,7 @@ class NanoDiT(nn.Module):
             # Note: patches_cond already includes pose + context padding.
             # We build the mask for the FULL context including pose and padding.
             flex_cross_mask = self._build_spatial_cross_mask(
-                N_latent_orig, h_patches, w_patches, N_dino_orig, N_text, has_pose, pad_ctx,
+                x.shape[1], h_patches, w_patches, N_dino_orig, N_text, has_pose, pad_ctx,
                 x.device, torch.bool
             )
         
