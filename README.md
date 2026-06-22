@@ -16,8 +16,8 @@ This project demonstrates that you don't need massive datasets (millions of imag
 
 ### Model: NanoDiT (Diffusion Transformer)
 
-- **Production**: 768 hidden, 18 layers, 12 heads (~400M parameters)
-- **Patch-based**: 2×2 patches in pixel space for high detail
+- **Production**: 768 hidden, 18 layers, 12 heads (~240M parameters)
+- **Patch-based**: 16×16 pixel patches (64×64 token grid at 1024×1024 resolution)
 - **Pixel-space training**: Model predicts x0 (RGB pixels) directly — no VAE encoder/decoder
 - **Quad conditioning**: 
   - Text via T5-Large embeddings (1024-dim, 512 tokens)
@@ -412,8 +412,9 @@ All arms train for 5,000 steps on the same 7k FFHQ subset. Each arm isolates one
 | H | `shared-adaln-lora` | ✓ | Muon | ✓ | Shared adaLN + per-block LoRA (rank 8) | ❌ Failed | 2026-05 | D |
 | I | `fp8-native` | ✓ | Muon | ✓ | FP8 precision via torchao | ✅ Done | 2026-06 | G |
 | J | `faces70k-fp8` | ✓ | Muon | ✓ | Scaled to 70k portraits (40k steps, REPA linear decay) | 🔄 Stopped at 34k | 2026-06 | I |
-| K | `spatial-window-baseline` | ✓ | Muon | ✓ | Quality metrics (CLIP + aesthetic + DWPose) baseline | ⏳ Queued | 2026-06 | J |
-| L | `spatial-window-2` | ✓ | Muon | ✓ | DINO patch spatial window (r=2) | ⏳ Queued | 2026-06 | K |
+| K | `spatial-window-baseline` | ✓ | Muon | ✓ | Quality metrics (CLIP + aesthetic + DWPose) baseline | ✅ Done | 2026-06 | J |
+| L | `spatial-window-2` | ✓ | Muon | ✓ | DINO patch spatial window (r=2) via 2x2 AvgPool2d | 🏃 Running | 2026-06 | K |
+| M | `no-dino-patch-ablation` | ✓ | Muon | ✓ | DINO patch cross-attention disabled | ⏳ Queued | 2026-06 | K |
 
 ### Key Comparisons
 
