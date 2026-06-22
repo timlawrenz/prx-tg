@@ -175,14 +175,15 @@ class Attention(nn.Module):
             if hasattr(mask, "create_mask"):
                 # It's a flex_attention BlockMask
                 x = flex_attention(q, k, v, block_mask=mask)
-            elif mask.dim() == 4:
-                # Already a 4D per-query-token mask: (B, 1, N, M)
-                attn_mask = mask.bool()
-                x = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
             else:
-                # 2D mask: (B, M) → broadcast to (B, 1, 1, M)
-                attn_mask = mask.unsqueeze(1).unsqueeze(2).bool()
-                x = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+                if mask.dim() == 4:
+                    # Already a 4D per-query-token mask: (B, 1, N, M)
+                    attn_mask = mask.bool()
+                    x = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+                else:
+                    # 2D mask: (B, M) → broadcast to (B, 1, 1, M)
+                    attn_mask = mask.unsqueeze(1).unsqueeze(2).bool()
+                    x = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         else:
             x = F.scaled_dot_product_attention(q, k, v)
             
@@ -272,7 +273,8 @@ class DiTBlock(nn.Module):
             B, _, C = x.shape
             x_ca_full = torch.zeros(B, N_total, C, device=x.device, dtype=x.dtype)
             # Use advanced indexing to scatter the visible tokens
-            x_ca_full.scatter_(1, tread_visible_idx.unsqueeze(-1).expand(-1, -1, C), x_ca_norm)
+            idx = tread_visible_idx.unsqueeze(0).unsqueeze(-1).expand(B, -1, C)
+            x_ca_full.scatter_(1, idx, x_ca_norm)
             
             ca_out_full = self.cross_attn(
                 x_ca_full,
@@ -281,7 +283,7 @@ class DiTBlock(nn.Module):
             )
             
             # Gather the visible tokens back
-            x = x + ca_out_full.gather(1, tread_visible_idx.unsqueeze(-1).expand(-1, -1, C))
+            x = x + ca_out_full.gather(1, idx)
         else:
             x = x + self.cross_attn(
                 x_ca_norm,
