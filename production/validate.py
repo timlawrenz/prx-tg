@@ -846,7 +846,6 @@ class ValidationRunner:
                 'step': step,
                 'latent_size': latent_size,
                 'reconstruction': self.run_reconstruction_test(step, sampler, latent_size=latent_size),
-                'dino_swap': self.run_dino_swap_test(step, sampler, latent_size=latent_size),
             }
             
             if self.self_guidance:
@@ -859,7 +858,8 @@ class ValidationRunner:
             # Text-only test always runs (uses dual-CFG path regardless of guidance mode)
             results['text_only'] = self.run_text_only_test(step, sampler, latent_size=latent_size)
             
-            results['text_manip'] = self.run_text_manip_test(step, sampler, latent_size=latent_size)
+            # Text manipulation skipped — not relevant for spatial window ablation
+            results['text_manip'] = {'skipped': True, 'reason': 'not relevant for spatial window comparison'}
         finally:
             # Clean up sampler to prevent memory leak
             del sampler
@@ -883,9 +883,7 @@ class ValidationRunner:
             self.tb_writer.add_scalar('validation/reconstruction_lpips', results['reconstruction']['mean_lpips'], step)
             if not results['text_only'].get('skipped'):
                 self.tb_writer.add_scalar('validation/text_only_lpips', results['text_only']['mean_lpips'], step)
-            self.tb_writer.add_scalar('validation/text_manip_lpips_diff', results['text_manip']['mean_lpips_difference'], step)
-            self.tb_writer.add_scalar('validation/text_manip_success_rate', 
-                                     results['text_manip']['num_successful'] / max(results['text_manip']['num_cases'], 1), step)
+            # Text manipulation TensorBoard logging skipped (not relevant for spatial window ablation)
         
         # Print summary
         print(f"\n{'='*60}")
@@ -900,13 +898,11 @@ class ValidationRunner:
             print(f"Text-only LPIPS: SKIPPED (self-guidance mode)")
         else:
             print(f"Text-only LPIPS: {results['text_only']['mean_lpips']:.4f} (text only, 20 samples)")
-        print(f"DINO swap: {results['dino_swap']['num_pairs']} pairs, 3 images each (A_ref, A_swap, B_ref)")
+        # DINO swap and text manipulation skipped — not relevant for spatial window comparison
         if results['divergence'].get('skipped'):
             print(f"CFG Divergence: SKIPPED (self-guidance mode)")
         else:
             print(f"CFG Divergence: {results['divergence']['num_samples']} samples (text-only vs DINO-only vs both)")
-        print(f"Text manipulation: {results['text_manip']['num_successful']}/{results['text_manip']['num_cases']} cases, "
-              f"mean LPIPS diff: {results['text_manip']['mean_lpips_difference']:.4f}")
         print(f"Results saved to: {results_file}")
         print(f"{'='*60}\n")
         
