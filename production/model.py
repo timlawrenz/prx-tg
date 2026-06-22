@@ -770,8 +770,9 @@ class NanoDiT(nn.Module):
             routed_idx = perm[N_visible:].sort().values
             tread_visible_idx = visible_idx
             
-            # Sub-sample the x_mask for middle blocks
+            # Sub-sample the x_mask and spatial_cross_mask for middle blocks
             visible_x_mask = x_mask[:, visible_idx] if x_mask is not None else None
+            visible_spatial_cross_mask = spatial_cross_mask[:, :, visible_idx, :] if spatial_cross_mask is not None else None
             
             for i in range(self.tread_route_start):
                 x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask, x_mask=x_mask, spatial_cross_mask=spatial_cross_mask)
@@ -780,7 +781,7 @@ class NanoDiT(nn.Module):
             x = x[:, visible_idx]
             
             for i in range(self.tread_route_start, self.tread_route_end + 1):
-                x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask, x_mask=visible_x_mask, spatial_cross_mask=spatial_cross_mask)
+                x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask, x_mask=visible_x_mask, spatial_cross_mask=visible_spatial_cross_mask)
                 if return_repa_hidden and i == self.repa_block_idx:
                     repa_hidden = self.repa_proj(x)
             
