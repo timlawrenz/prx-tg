@@ -521,7 +521,7 @@ class NanoDiT(nn.Module):
         if pad_ctx > 0:
             full_mask = F.pad(full_mask, (0, pad_ctx), value=False)
         
-        self._spatial_mask_cache[cache_key] = full_mask.detach().cpu()
+        self._spatial_mask_cache[cache_key] = full_mask.detach()
         return full_mask
 
     def initialize_weights(self):
