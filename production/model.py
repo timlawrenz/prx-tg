@@ -14,7 +14,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+from torch.nn.attention.flex_attention import flex_attention, create_block_mask, BlockMask
 
 
 def modulate(x, shift, scale):
@@ -172,7 +172,7 @@ class Attention(nn.Module):
         
         # Use memory-efficient scaled dot product attention or flex_attention
         if mask is not None:
-            if type(mask).__name__ == "BlockMask":
+            if isinstance(mask, BlockMask):
                 # It's a flex_attention BlockMask
                 x = flex_attention(q, k, v, block_mask=mask)
             else:
