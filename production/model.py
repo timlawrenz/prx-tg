@@ -227,53 +227,71 @@ class DiTBlock(nn.Module):
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
         # Zero-init the adaLN gate (critical for stability)
-        nn.init.zeros_(self.adaLN_modulation[1].weight)
-        nn.init.zeros_(self.adaLN_modulation[1].bias)
-
-    def _forward_impl(self, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask=None, x_mask=None, spatial_cross_mask=None):
-        """Internal forward implementation for checkpointing."""
-        # Get adaLN modulation parameters from DINOv3
-        shift_msa, scale_msa, shift_ca, scale_ca, shift_mlp, scale_mlp = \
-            self.adaLN_modulation(c_dino).chunk(6, dim=1)
+        def _forward_impl(self, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask=None, x_mask=None, spatial_cross_mask=None, tread_visible_idx=None, N_total=None):
+            """Internal forward implementation for checkpointing."""
+            # Get adaLN modulation parameters from DINOv3
+            shift_msa, scale_msa, shift_ca, scale_ca, shift_mlp, scale_mlp = \
+                self.adaLN_modulation(c_dino).chunk(6, dim=1)
         
-        # Self-attention with adaLN
-        x = x + self.attn(modulate(self.norm1(x), shift_msa, scale_msa), mask=x_mask)
+            # Self-attention with adaLN
+            x = x + self.attn(modulate(self.norm1(x), shift_msa, scale_msa), mask=x_mask)
         
-        # Concatenate cross-attention sequence: [T5 text, DINO CLS, DINO patches]
-        combined_context = torch.cat([c_text, c_dino_cls_token, c_patches], dim=1)
+            # Concatenate cross-attention sequence: [T5 text, DINO CLS, DINO patches]
+            # c_text: (B, 500, hidden_size)
+            # c_dino_cls_token: (B, 1, hidden_size)
+            # c_patches: (B, num_patches, hidden_size) - VARIABLE LENGTH!
+            combined_context = torch.cat([c_text, c_dino_cls_token, c_patches], dim=1)
         
-        if spatial_cross_mask is not None:
-            # Use pre-computed 4D spatial mask directly: (B, 1, N, M)
-            cross_mask = spatial_cross_mask
-        else:
-            # Build 2D combined mask from text + patches masks
-            B = x.shape[0]
-            
-            if text_mask is not None:
-                cls_mask = torch.ones(B, 1, device=text_mask.device, dtype=text_mask.dtype)
-                
-                if patches_mask is None:
-                    patches_mask = torch.ones(B, c_patches.shape[1], device=text_mask.device, dtype=text_mask.dtype)
-                else:
-                    patches_mask = patches_mask.to(device=text_mask.device, dtype=text_mask.dtype)
-                    
-                cross_mask = torch.cat([text_mask, cls_mask, patches_mask], dim=1)  # (B, seq + 1 + num_patches)
+            if spatial_cross_mask is not None:
+                # Use pre-computed 4D spatial mask directly: (B, 1, N, M) or flex_attention BlockMask
+                cross_mask = spatial_cross_mask
             else:
-                cross_mask = None
+                # Build 2D combined mask from text + patches masks
+                B = x.shape[0]
+            
+                if text_mask is not None:
+                    cls_mask = torch.ones(B, 1, device=text_mask.device, dtype=text_mask.dtype)
+                
+                    if patches_mask is None:
+                        patches_mask = torch.ones(B, c_patches.shape[1], device=text_mask.device, dtype=text_mask.dtype)
+                    else:
+                        patches_mask = patches_mask.to(device=text_mask.device, dtype=text_mask.dtype)
+                    
+                    cross_mask = torch.cat([text_mask, cls_mask, patches_mask], dim=1)  # (B, seq + 1 + num_patches)
+                else:
+                    cross_mask = None
         
-        # Cross-attention to combined sequence with adaLN
-        x = x + self.cross_attn(
-            modulate(self.norm2(x), shift_ca, scale_ca),
-            context=combined_context,
-            mask=cross_mask
-        )
+            # Cross-attention to combined sequence with adaLN
+            x_ca_norm = modulate(self.norm2(x), shift_ca, scale_ca)
         
-        # MLP with adaLN
-        x = x + self.mlp(modulate(self.norm3(x), shift_mlp, scale_mlp))
+            if tread_visible_idx is not None and N_total is not None:
+                # TREAD middle blocks: scatter to full size, run flex_attention, gather back
+                B, _, C = x.shape
+                x_ca_full = torch.zeros(B, N_total, C, device=x.device, dtype=x.dtype)
+                # Use advanced indexing to scatter the visible tokens
+                x_ca_full.scatter_(1, tread_visible_idx.unsqueeze(-1).expand(-1, -1, C), x_ca_norm)
+            
+                ca_out_full = self.cross_attn(
+                    x_ca_full,
+                    context=combined_context,
+                    mask=cross_mask
+                )
+            
+                # Gather the visible tokens back
+                x = x + ca_out_full.gather(1, tread_visible_idx.unsqueeze(-1).expand(-1, -1, C))
+            else:
+                x = x + self.cross_attn(
+                    x_ca_norm,
+                    context=combined_context,
+                    mask=cross_mask
+                )
         
-        return x
+            # MLP with adaLN
+            x = x + self.mlp(modulate(self.norm3(x), shift_mlp, scale_mlp))
+        
+            return x
 
-    def forward(self, x, c_dino, c_text, text_mask=None, c_dino_cls_token=None, c_patches=None, patches_mask=None, x_mask=None, spatial_cross_mask=None):
+    def forward(self, x, c_dino, c_text, text_mask=None, c_dino_cls_token=None, c_patches=None, patches_mask=None, x_mask=None, spatial_cross_mask=None, tread_visible_idx=None, N_total=None):
         """
         Args:
             x: (B, N, C) latent tokens
@@ -288,10 +306,10 @@ class DiTBlock(nn.Module):
         """
         if self.use_checkpoint and self.training:
             return torch.utils.checkpoint.checkpoint(
-                self._forward_impl, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask, x_mask, spatial_cross_mask, use_reentrant=False
+                self._forward_impl, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask, x_mask, spatial_cross_mask, tread_visible_idx, N_total, use_reentrant=False
             )
         else:
-            return self._forward_impl(x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask, x_mask, spatial_cross_mask)
+            return self._forward_impl(x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask, x_mask, spatial_cross_mask, tread_visible_idx, N_total)
 
 class MaskDiTDecoder(nn.Module):
     """Lightweight decoder for MaskDiT masked token reconstruction.
@@ -472,19 +490,14 @@ class NanoDiT(nn.Module):
         return pos_embed
 
     def _build_spatial_cross_mask(self, N_latent, h_patches, w_patches, N_dino, N_text, has_pose, pad_ctx, device, dtype):
-        """Build spatial windowing masks for cross-attention.
-        
-        Returns a tuple: (dense_boolean_mask, flex_block_mask)
-        - dense_boolean_mask is used for TREAD middle blocks where Q is dynamically sliced.
-        - flex_block_mask is used for outer blocks for true O(N) FLOPs.
+        """Build a flex_attention BlockMask for spatial windowing.
         
         Cached by grid geometry: (h_patches, w_patches, N_dino, N_text, has_pose, pad_ctx).
         The mask is static per aspect ratio — only compiled once, then reused.
         """
         cache_key = (h_patches, w_patches, N_dino, N_text, int(has_pose), int(pad_ctx))
         if cache_key in self._spatial_mask_cache:
-            dense_mask, block_mask = self._spatial_mask_cache[cache_key]
-            return dense_mask.to(device=device), block_mask
+            return self._spatial_mask_cache[cache_key]
         
         r = self.spatial_window_radius
         
@@ -496,66 +509,51 @@ class NanoDiT(nn.Module):
         while dino_h * dino_w > N_dino + dino_w:
             dino_h -= 1
         
-        # --- 1. Build Dense Boolean Mask (for TREAD middle blocks) ---
-        lat_rows = torch.arange(h_patches, device=device).unsqueeze(1).expand(h_patches, w_patches).flatten()
-        lat_cols = torch.arange(w_patches, device=device).unsqueeze(0).expand(h_patches, w_patches).flatten()
-        
-        dino_rows = (lat_rows.float() * dino_h / h_patches).long().clamp(0, dino_h - 1)
-        dino_cols = (lat_cols.float() * dino_w / w_patches).long().clamp(0, dino_w - 1)
-        
-        dino_patch_rows = torch.arange(dino_h, device=device).unsqueeze(1).expand(dino_h, dino_w).flatten()
-        dino_patch_cols = torch.arange(dino_w, device=device).unsqueeze(0).expand(dino_h, dino_w).flatten()
-        
-        row_dist = (dino_rows.unsqueeze(1) - dino_patch_rows.unsqueeze(0)).abs()
-        col_dist = (dino_cols.unsqueeze(1) - dino_patch_cols.unsqueeze(0)).abs()
-        dino_patch_mask = (row_dist <= r) & (col_dist <= r)
-        
+        # We need these scalars available inside the mask function
         N_pose = self.num_pose_joints if has_pose else 0
-        M_total = N_text + 1 + N_dino + N_pose
-        
-        dense_mask = torch.zeros(1, 1, N_latent, M_total, device=device, dtype=torch.bool)
-        dense_mask[:, :, :, :N_text] = True  # Text
-        dense_mask[:, :, :, N_text] = True   # CLS
-        dense_mask[:, :, :, N_text + 1:N_text + 1 + N_dino] = dino_patch_mask.unsqueeze(0).unsqueeze(0)  # DINO patches
-        if N_pose > 0:
-            dense_mask[:, :, :, N_text + 1 + N_dino:N_text + 1 + N_dino + N_pose] = True  # Pose
-        
-        if pad_ctx > 0:
-            dense_mask = F.pad(dense_mask, (0, pad_ctx), value=False)
-        
-        # --- 2. Build Flex Attention BlockMask (for outer blocks) ---
         dino_start = N_text + 1
         dino_end = N_text + 1 + N_dino
         
+        # The mask function takes (b, h, q_idx, kv_idx) and returns a boolean scalar
         def spatial_document_mask(b, h, q_idx, kv_idx):
+            # 1. Text + CLS: always attend
+            # 2. Pose: always attend
             is_global = (kv_idx < dino_start) | ((kv_idx >= dino_end) & (kv_idx < dino_end + N_pose))
             
+            # 3. DINO patches: attend only if within spatial window
+            # Map q_idx to latent grid
             lat_r = q_idx // w_patches
             lat_c = q_idx % w_patches
+            
+            # Map latent grid to DINO grid
             dino_r_center = (lat_r * dino_h) // h_patches
             dino_c_center = (lat_c * dino_w) // w_patches
             
+            # Map kv_idx to DINO grid
             dino_idx = kv_idx - dino_start
             dino_r = dino_idx // dino_w
             dino_c = dino_idx % dino_w
             
+            # Distance check (Chebyshev distance <= r)
             row_dist_ok = (dino_r - dino_r_center).abs() <= r
             col_dist_ok = (dino_c - dino_c_center).abs() <= r
             is_local_dino = (kv_idx >= dino_start) & (kv_idx < dino_end) & row_dist_ok & col_dist_ok
             
+            # Combine: attend if global token OR local DINO token
+            # Padding automatically rejected because it's >= dino_end + N_pose
             return is_global | is_local_dino
 
+        # Compile the Python function into a BlockMask
         block_mask = create_block_mask(
             spatial_document_mask, 
-            B=None, H=None,
+            B=None, H=None, # Broadcast over batch and heads
             Q_LEN=N_latent, 
             KV_LEN=N_text + 1 + N_dino + N_pose + pad_ctx,
             device=device
         )
         
-        # Cache both
-        self._spatial_mask_cache[cache_key] = (dense_mask.detach(), block_mask)
-        return dense_mask, block_mask
+        self._spatial_mask_cache[cache_key] = block_mask
+        return block_mask
 
     def initialize_weights(self):
         # Standard initialization
@@ -740,7 +738,6 @@ class NanoDiT(nn.Module):
         dino_patches_mask = F.pad(dino_patches_mask, (0, pad_ctx), value=0)
         
         # Build spatial window cross-attention mask if configured
-        spatial_cross_mask = None
         flex_cross_mask = None
         if self.spatial_window_radius is not None:
             N_latent_orig = original_S  # pre-padding latent token count
@@ -752,7 +749,7 @@ class NanoDiT(nn.Module):
             # DiTBlock will cat [text, CLS, patches] and the mask dimensions must match.
             # Note: patches_cond already includes pose + context padding.
             # We build the mask for the FULL context including pose and padding.
-            spatial_cross_mask, flex_cross_mask = self._build_spatial_cross_mask(
+            flex_cross_mask = self._build_spatial_cross_mask(
                 N_latent_orig, h_patches, w_patches, N_dino_orig, N_text, has_pose, pad_ctx,
                 x.device, torch.bool
             )
@@ -804,13 +801,8 @@ class NanoDiT(nn.Module):
             routed_idx = perm[N_visible:].sort().values
             tread_visible_idx = visible_idx
             
-            # Sub-sample the x_mask and spatial_cross_mask for middle blocks
+            # Sub-sample the x_mask for middle blocks
             visible_x_mask = x_mask[:, visible_idx] if x_mask is not None else None
-            
-            visible_spatial_cross_mask = None
-            if spatial_cross_mask is not None:
-                # Use the explicit dense boolean mask for the middle blocks, since Q is sliced dynamically.
-                visible_spatial_cross_mask = spatial_cross_mask[:, :, visible_idx, :]
             
             for i in range(self.tread_route_start):
                 x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask, x_mask=x_mask, spatial_cross_mask=flex_cross_mask)
@@ -819,7 +811,8 @@ class NanoDiT(nn.Module):
             x = x[:, visible_idx]
             
             for i in range(self.tread_route_start, self.tread_route_end + 1):
-                x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask, x_mask=visible_x_mask, spatial_cross_mask=visible_spatial_cross_mask)
+                # Pass tread_visible_idx and N_total so DiTBlock can scatter/gather and use flex_attention
+                x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask, x_mask=visible_x_mask, spatial_cross_mask=flex_cross_mask, tread_visible_idx=visible_idx, N_total=N)
                 if return_repa_hidden and i == self.repa_block_idx:
                     repa_hidden = self.repa_proj(x)
             
