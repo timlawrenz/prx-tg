@@ -529,8 +529,8 @@ class NanoDiT(nn.Module):
             is_valid_q = q_idx < (h_patches * w_patches)
             
             # 3. DINO patches: attend only if within spatial window
-            # Map q_idx to latent grid (clamped to prevent out-of-bounds math on padding tokens)
-            q_clamped = torch.clamp(q_idx, 0, (h_patches * w_patches) - 1)
+            # Map q_idx to latent grid (safe math using min to prevent out-of-bounds)
+            q_clamped = torch.minimum(q_idx, torch.tensor((h_patches * w_patches) - 1, device=q_idx.device))
             lat_r = q_clamped // w_patches
             lat_c = q_clamped % w_patches
             
@@ -544,8 +544,14 @@ class NanoDiT(nn.Module):
             dino_c = dino_idx % dino_w
             
             # Distance check (Chebyshev distance <= r)
-            row_dist_ok = (dino_r - dino_r_center).abs() <= r
-            col_dist_ok = (dino_c - dino_c_center).abs() <= r
+            if r is None:
+                row_dist_ok = True
+                col_dist_ok = True
+            else:
+                row_dist = dino_r - dino_r_center
+                col_dist = dino_c - dino_c_center
+                row_dist_ok = (row_dist >= -r) & (row_dist <= r)
+                col_dist_ok = (col_dist >= -r) & (col_dist <= r)
             is_local_dino = (kv_idx >= dino_start) & (kv_idx < dino_end) & row_dist_ok & col_dist_ok
             
             # Combine: attend if global token OR local DINO token
