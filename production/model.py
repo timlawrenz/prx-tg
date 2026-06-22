@@ -227,69 +227,72 @@ class DiTBlock(nn.Module):
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
         # Zero-init the adaLN gate (critical for stability)
-        def _forward_impl(self, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask=None, x_mask=None, spatial_cross_mask=None, tread_visible_idx=None, N_total=None):
-            """Internal forward implementation for checkpointing."""
-            # Get adaLN modulation parameters from DINOv3
-            shift_msa, scale_msa, shift_ca, scale_ca, shift_mlp, scale_mlp = \
-                self.adaLN_modulation(c_dino).chunk(6, dim=1)
+        nn.init.zeros_(self.adaLN_modulation[1].weight)
+        nn.init.zeros_(self.adaLN_modulation[1].bias)
+
+    def _forward_impl(self, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask=None, x_mask=None, spatial_cross_mask=None, tread_visible_idx=None, N_total=None):
+        """Internal forward implementation for checkpointing."""
+        # Get adaLN modulation parameters from DINOv3
+        shift_msa, scale_msa, shift_ca, scale_ca, shift_mlp, scale_mlp = \
+            self.adaLN_modulation(c_dino).chunk(6, dim=1)
         
-            # Self-attention with adaLN
-            x = x + self.attn(modulate(self.norm1(x), shift_msa, scale_msa), mask=x_mask)
+        # Self-attention with adaLN
+        x = x + self.attn(modulate(self.norm1(x), shift_msa, scale_msa), mask=x_mask)
         
-            # Concatenate cross-attention sequence: [T5 text, DINO CLS, DINO patches]
-            # c_text: (B, 500, hidden_size)
-            # c_dino_cls_token: (B, 1, hidden_size)
-            # c_patches: (B, num_patches, hidden_size) - VARIABLE LENGTH!
-            combined_context = torch.cat([c_text, c_dino_cls_token, c_patches], dim=1)
+        # Concatenate cross-attention sequence: [T5 text, DINO CLS, DINO patches]
+        # c_text: (B, 500, hidden_size)
+        # c_dino_cls_token: (B, 1, hidden_size)
+        # c_patches: (B, num_patches, hidden_size) - VARIABLE LENGTH!
+        combined_context = torch.cat([c_text, c_dino_cls_token, c_patches], dim=1)
         
-            if spatial_cross_mask is not None:
-                # Use pre-computed 4D spatial mask directly: (B, 1, N, M) or flex_attention BlockMask
-                cross_mask = spatial_cross_mask
-            else:
-                # Build 2D combined mask from text + patches masks
-                B = x.shape[0]
+        if spatial_cross_mask is not None:
+            # Use pre-computed 4D spatial mask directly: (B, 1, N, M) or flex_attention BlockMask
+            cross_mask = spatial_cross_mask
+        else:
+            # Build 2D combined mask from text + patches masks
+            B = x.shape[0]
             
-                if text_mask is not None:
-                    cls_mask = torch.ones(B, 1, device=text_mask.device, dtype=text_mask.dtype)
+            if text_mask is not None:
+                cls_mask = torch.ones(B, 1, device=text_mask.device, dtype=text_mask.dtype)
                 
-                    if patches_mask is None:
-                        patches_mask = torch.ones(B, c_patches.shape[1], device=text_mask.device, dtype=text_mask.dtype)
-                    else:
-                        patches_mask = patches_mask.to(device=text_mask.device, dtype=text_mask.dtype)
-                    
-                    cross_mask = torch.cat([text_mask, cls_mask, patches_mask], dim=1)  # (B, seq + 1 + num_patches)
+                if patches_mask is None:
+                    patches_mask = torch.ones(B, c_patches.shape[1], device=text_mask.device, dtype=text_mask.dtype)
                 else:
-                    cross_mask = None
-        
-            # Cross-attention to combined sequence with adaLN
-            x_ca_norm = modulate(self.norm2(x), shift_ca, scale_ca)
-        
-            if tread_visible_idx is not None and N_total is not None:
-                # TREAD middle blocks: scatter to full size, run flex_attention, gather back
-                B, _, C = x.shape
-                x_ca_full = torch.zeros(B, N_total, C, device=x.device, dtype=x.dtype)
-                # Use advanced indexing to scatter the visible tokens
-                x_ca_full.scatter_(1, tread_visible_idx.unsqueeze(-1).expand(-1, -1, C), x_ca_norm)
-            
-                ca_out_full = self.cross_attn(
-                    x_ca_full,
-                    context=combined_context,
-                    mask=cross_mask
-                )
-            
-                # Gather the visible tokens back
-                x = x + ca_out_full.gather(1, tread_visible_idx.unsqueeze(-1).expand(-1, -1, C))
+                    patches_mask = patches_mask.to(device=text_mask.device, dtype=text_mask.dtype)
+                    
+                cross_mask = torch.cat([text_mask, cls_mask, patches_mask], dim=1)  # (B, seq + 1 + num_patches)
             else:
-                x = x + self.cross_attn(
-                    x_ca_norm,
-                    context=combined_context,
-                    mask=cross_mask
-                )
+                cross_mask = None
         
-            # MLP with adaLN
-            x = x + self.mlp(modulate(self.norm3(x), shift_mlp, scale_mlp))
+        # Cross-attention to combined sequence with adaLN
+        x_ca_norm = modulate(self.norm2(x), shift_ca, scale_ca)
         
-            return x
+        if tread_visible_idx is not None and N_total is not None:
+            # TREAD middle blocks: scatter to full size, run flex_attention, gather back
+            B, _, C = x.shape
+            x_ca_full = torch.zeros(B, N_total, C, device=x.device, dtype=x.dtype)
+            # Use advanced indexing to scatter the visible tokens
+            x_ca_full.scatter_(1, tread_visible_idx.unsqueeze(-1).expand(-1, -1, C), x_ca_norm)
+            
+            ca_out_full = self.cross_attn(
+                x_ca_full,
+                context=combined_context,
+                mask=cross_mask
+            )
+            
+            # Gather the visible tokens back
+            x = x + ca_out_full.gather(1, tread_visible_idx.unsqueeze(-1).expand(-1, -1, C))
+        else:
+            x = x + self.cross_attn(
+                x_ca_norm,
+                context=combined_context,
+                mask=cross_mask
+            )
+        
+        # MLP with adaLN
+        x = x + self.mlp(modulate(self.norm3(x), shift_mlp, scale_mlp))
+        
+        return x
 
     def forward(self, x, c_dino, c_text, text_mask=None, c_dino_cls_token=None, c_patches=None, patches_mask=None, x_mask=None, spatial_cross_mask=None, tread_visible_idx=None, N_total=None):
         """
