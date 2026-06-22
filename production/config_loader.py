@@ -157,7 +157,8 @@ class MaskDiTConfig:
 @dataclass
 class DinoPatchesConfig:
     """DINOv3 patch cross-attention configuration."""
-    spatial_window_radius: int | None = None  # None = attend to all patches; int = local window radius in DINO grid cells
+    enabled: bool = True
+    spatial_window_radius: int | None = None  # DEPRECATED
 
 
 @dataclass

@@ -306,11 +306,10 @@ def main():
     if maskdit_enabled:
         print(f"MaskDiT enabled: {maskdit_mask_ratio*100:.0f}% masking, {maskdit_decoder_depth} decoder blocks")
     
-    # Resolve spatial window config
-    spatial_window = config.training.dino_patches.spatial_window_radius
-    if spatial_window is not None:
-        print(f"DINO patch cross-attention: spatial window radius={spatial_window}")
-    
+    dino_patches_enabled = getattr(config.training.dino_patches, 'enabled', True)
+    if not dino_patches_enabled:
+        print("DINO patch cross-attention: DISABLED")
+        
     model = NanoDiT(
         input_size=config.model.input_size,
         patch_size=config.model.patch_size,
@@ -330,6 +329,7 @@ def main():
         maskdit_enabled=maskdit_enabled,
         maskdit_mask_ratio=maskdit_mask_ratio,
         maskdit_decoder_depth=maskdit_decoder_depth,
+        dino_patches_enabled=dino_patches_enabled,
         dino_pool_factor=getattr(config.training, 'dino_pool_factor', None)
     ).to(device)
 

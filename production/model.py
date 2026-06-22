@@ -240,11 +240,11 @@ class DiTBlock(nn.Module):
         # Self-attention with adaLN
         x = x + self.attn(modulate(self.norm1(x), shift_msa, scale_msa), mask=x_mask)
         
-        # Concatenate cross-attention sequence: [T5 text, DINO CLS, DINO patches]
-        # c_text: (B, 500, hidden_size)
-        # c_dino_cls_token: (B, 1, hidden_size)
-        # c_patches: (B, num_patches, hidden_size) - VARIABLE LENGTH!
-        combined_context = torch.cat([c_text, c_dino_cls_token, c_patches], dim=1)
+        # Concatenate cross-attention sequence: [T5 text, DINO CLS, DINO patches(optional)]
+        if not self.dino_patches_enabled or c_patches is None:
+            combined_context = torch.cat([c_text, c_dino_cls_token], dim=1)
+        else:
+            combined_context = torch.cat([c_text, c_dino_cls_token, c_patches], dim=1)
         
         # Build 2D combined mask from text + patches masks
         B = x.shape[0]
@@ -252,12 +252,11 @@ class DiTBlock(nn.Module):
         if text_mask is not None:
             cls_mask = torch.ones(B, 1, device=text_mask.device, dtype=text_mask.dtype)
             
-            if patches_mask is None:
-                patches_mask = torch.ones(B, c_patches.shape[1], device=text_mask.device, dtype=text_mask.dtype)
+            if not self.dino_patches_enabled or patches_mask is None:
+                cross_mask = torch.cat([text_mask, cls_mask], dim=1)
             else:
                 patches_mask = patches_mask.to(device=text_mask.device, dtype=text_mask.dtype)
-                
-            cross_mask = torch.cat([text_mask, cls_mask, patches_mask], dim=1)  # (B, seq + 1 + num_patches)
+                cross_mask = torch.cat([text_mask, cls_mask, patches_mask], dim=1)
         else:
             cross_mask = None
         
@@ -390,6 +389,7 @@ class NanoDiT(nn.Module):
         maskdit_enabled=False,
         maskdit_mask_ratio=0.75,
         maskdit_decoder_depth=4,
+        dino_patches_enabled=True,
         dino_pool_factor=None,        # Integer pooling factor for DINO patches (e.g. 2 for 2x2 pooling)
     ):
         super().__init__()
@@ -404,6 +404,7 @@ class NanoDiT(nn.Module):
         self.tread_route_end = tread_route_end
         self.tread_routing_prob = tread_routing_prob
         self.tread_enabled = tread_route_start is not None and tread_route_end is not None
+        self.dino_patches_enabled = dino_patches_enabled
         self.dino_pool_factor = dino_pool_factor
         self.num_pose_joints = num_pose_joints
         self.pose_confidence_threshold = pose_confidence_threshold
@@ -618,39 +619,44 @@ class NanoDiT(nn.Module):
         dino_cond = self.dino_proj(dino_emb) + t_emb  # (B, hidden_size) - for adaLN
         dino_cls_token = dino_cond.unsqueeze(1)  # (B, 1, hidden_size) - for cross-attention
         text_cond = self.text_proj(text_emb)  # (B, seq_len, hidden_size)
-        patches_cond = self.dino_patch_proj(dino_patches)  # (B, num_patches, hidden_size)
         
-        # Pool patches if factor provided
-        if self.dino_pool_factor is not None:
-            factor = self.dino_pool_factor
-            B, num_p, C = patches_cond.shape
+        if self.dino_patches_enabled and dino_patches is not None:
+            patches_cond = self.dino_patch_proj(dino_patches)  # (B, num_patches, hidden_size)
             
-            # Use original bucket dimensions for exact pooling
-            h_p = h_patches
-            w_p = num_p // h_p
-            while h_p * w_p < num_p: w_p += 1
-            while h_p * w_p > num_p: h_p -= 1
-            
-            # Calculate pad needed to make divisible by factor
-            pad_h = (factor - (h_p % factor)) % factor
-            pad_w = (factor - (w_p % factor)) % factor
-            
-            # Reshape to 2D
-            patches_spatial = patches_cond.transpose(1, 2).reshape(B, C, h_p, w_p)
-            
-            # Pad spatial dims if needed
-            if pad_h > 0 or pad_w > 0:
-                patches_spatial = F.pad(patches_spatial, (0, pad_w, 0, pad_h))
-            
-            # Pool
-            pooled = F.avg_pool2d(patches_spatial, kernel_size=factor, stride=factor)
-            
-            # Flatten back
-            patches_cond = pooled.flatten(2).transpose(1, 2)
-            
-            # Update mask (assume all pooled patches are valid for simplicity)
-            if dino_patches_mask is not None:
-                dino_patches_mask = torch.ones(B, patches_cond.shape[1], device=patches_cond.device, dtype=dino_patches_mask.dtype)
+            # Pool patches if factor provided
+            if self.dino_pool_factor is not None:
+                factor = self.dino_pool_factor
+                B, num_p, C = patches_cond.shape
+                
+                # Use original bucket dimensions for exact pooling
+                h_p = h_patches
+                w_p = num_p // h_p
+                while h_p * w_p < num_p: w_p += 1
+                while h_p * w_p > num_p: h_p -= 1
+                
+                # Calculate pad needed to make divisible by factor
+                pad_h = (factor - (h_p % factor)) % factor
+                pad_w = (factor - (w_p % factor)) % factor
+                
+                # Reshape to 2D
+                patches_spatial = patches_cond.transpose(1, 2).reshape(B, C, h_p, w_p)
+                
+                # Pad spatial dims if needed
+                if pad_h > 0 or pad_w > 0:
+                    patches_spatial = F.pad(patches_spatial, (0, pad_w, 0, pad_h))
+                
+                # Pool
+                pooled = F.avg_pool2d(patches_spatial, kernel_size=factor, stride=factor)
+                
+                # Flatten back
+                patches_cond = pooled.flatten(2).transpose(1, 2)
+                
+                # Update mask (assume all pooled patches are valid for simplicity)
+                if dino_patches_mask is not None:
+                    dino_patches_mask = torch.ones(B, patches_cond.shape[1], device=patches_cond.device, dtype=dino_patches_mask.dtype)
+        else:
+            patches_cond = None
+            dino_patches_mask = None
         
         # Pose conditioning: project keypoints and add joint-type embeddings
         if pose_kpts is not None:
@@ -671,13 +677,18 @@ class NanoDiT(nn.Module):
                 null_pose_expanded = self.null_pose.expand(B, -1, -1)
                 pose_tokens = torch.where(low_conf.unsqueeze(2), null_pose_expanded, pose_tokens)
             
-            patches_cond = torch.cat([patches_cond, pose_tokens], dim=1)
-            if dino_patches_mask is not None:
-                pose_mask = torch.ones(B, self.num_pose_joints, device=dino_patches_mask.device, dtype=dino_patches_mask.dtype)
-                dino_patches_mask = torch.cat([dino_patches_mask, pose_mask], dim=1)
+            if patches_cond is not None:
+                patches_cond = torch.cat([patches_cond, pose_tokens], dim=1)
+                if dino_patches_mask is not None:
+                    pose_mask = torch.ones(B, self.num_pose_joints, device=dino_patches_mask.device, dtype=dino_patches_mask.dtype)
+                    dino_patches_mask = torch.cat([dino_patches_mask, pose_mask], dim=1)
+            else:
+                patches_cond = pose_tokens
+                if text_mask is not None:
+                    dino_patches_mask = torch.ones(B, self.num_pose_joints, device=text_mask.device, dtype=text_mask.dtype)
         
         # Dynamic Tensor Masking for context sequence (Rule of 16)
-        S_ctx = text_cond.shape[1] + 1 + patches_cond.shape[1]
+        S_ctx = text_cond.shape[1] + 1 + (patches_cond.shape[1] if patches_cond is not None else 0)
         
         # When compiled dynamically, this forces pad_ctx to be an int (no unbacked SymInt issue)
         # since it's just Python modulo arithmetic on known symbolic shapes.
@@ -687,13 +698,16 @@ class NanoDiT(nn.Module):
         
         # We must avoid 'if pad_ctx > 0:' when pad_ctx is a SymInt.
         # Instead, we just unconditionally pad. F.pad with 0 padding is a no-op anyway.
-        patches_cond = F.pad(patches_cond, (0, 0, 0, pad_ctx))
+        if patches_cond is not None:
+            patches_cond = F.pad(patches_cond, (0, 0, 0, pad_ctx))
         if text_mask is None:
             text_mask = torch.ones(B, text_cond.shape[1], device=text_cond.device, dtype=torch.long)
         if dino_patches_mask is None:
-            original_patches_len = patches_cond.shape[1] - pad_ctx
-            dino_patches_mask = torch.ones(B, original_patches_len, device=patches_cond.device, dtype=text_mask.dtype)
-        dino_patches_mask = F.pad(dino_patches_mask, (0, pad_ctx), value=0)
+            if patches_cond is not None:
+                original_patches_len = patches_cond.shape[1] - pad_ctx
+                dino_patches_mask = torch.ones(B, original_patches_len, device=patches_cond.device, dtype=text_mask.dtype)
+        if dino_patches_mask is not None:
+            dino_patches_mask = F.pad(dino_patches_mask, (0, pad_ctx), value=0)
         
         # MaskDiT: randomly mask image tokens during training
         use_maskdit = self.maskdit_enabled and (maskdit_enabled if maskdit_enabled is not None else self.training)
