@@ -241,7 +241,7 @@ class DiTBlock(nn.Module):
         x = x + self.attn(modulate(self.norm1(x), shift_msa, scale_msa), mask=x_mask)
         
         # Concatenate cross-attention sequence: [T5 text, DINO CLS, DINO patches(optional)]
-        if not self.dino_patches_enabled or c_patches is None:
+        if c_patches is None:
             combined_context = torch.cat([c_text, c_dino_cls_token], dim=1)
         else:
             combined_context = torch.cat([c_text, c_dino_cls_token, c_patches], dim=1)
@@ -252,7 +252,7 @@ class DiTBlock(nn.Module):
         if text_mask is not None:
             cls_mask = torch.ones(B, 1, device=text_mask.device, dtype=text_mask.dtype)
             
-            if not self.dino_patches_enabled or patches_mask is None:
+            if patches_mask is None:
                 cross_mask = torch.cat([text_mask, cls_mask], dim=1)
             else:
                 patches_mask = patches_mask.to(device=text_mask.device, dtype=text_mask.dtype)
