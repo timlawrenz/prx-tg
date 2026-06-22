@@ -296,6 +296,9 @@ def main():
         tread_routing_prob = config.training.tread.routing_probability
         print(f"TREAD enabled: routing {tread_routing_prob*100:.0f}% tokens past blocks {tread_route_start}-{tread_route_end}")
     
+    if hasattr(config.training, 'dino_pool_factor') and config.training.dino_pool_factor is not None:
+        print(f"DINO patch pooling: {config.training.dino_pool_factor}x{config.training.dino_pool_factor}")
+    
     # Resolve MaskDiT config
     maskdit_enabled = config.training.maskdit.enabled
     maskdit_mask_ratio = config.training.maskdit.mask_ratio
@@ -327,7 +330,7 @@ def main():
         maskdit_enabled=maskdit_enabled,
         maskdit_mask_ratio=maskdit_mask_ratio,
         maskdit_decoder_depth=maskdit_decoder_depth,
-        spatial_window_radius=config.training.dino_patches.spatial_window_radius,
+        dino_pool_factor=getattr(config.training, 'dino_pool_factor', None)
     ).to(device)
 
     # Enable FP8 via torchao and torch.compile

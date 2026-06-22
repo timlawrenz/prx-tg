@@ -198,6 +198,7 @@ class TrainingConfig:
     seg_weight: SegWeightConfig = field(default_factory=SegWeightConfig)
     asymflow: AsymFlowConfig = field(default_factory=AsymFlowConfig)
     dino_patches: DinoPatchesConfig = field(default_factory=DinoPatchesConfig)
+    dino_pool_factor: int | None = None
     
     timestep_sampling: Literal["uniform", "logit_normal"] = "logit_normal"
     logit_normal_loc: float = 0.0
