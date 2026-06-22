@@ -410,7 +410,6 @@ class NanoDiT(nn.Module):
         self.tread_routing_prob = tread_routing_prob
         self.tread_enabled = tread_route_start is not None and tread_route_end is not None
         self.spatial_window_radius = spatial_window_radius
-        self._spatial_mask_cache: dict = {}  # key: (h, w, N_dino, N_text, has_pose, pad_ctx) -> mask tensor
         self._pos_embed_cache: dict = {}     # key: (h, w) -> pos_embed tensor (1, h*w, hidden_size)
         self.num_pose_joints = num_pose_joints
         self.pose_confidence_threshold = pose_confidence_threshold
@@ -497,13 +496,9 @@ class NanoDiT(nn.Module):
     def _build_spatial_cross_mask(self, N_latent, h_patches, w_patches, N_dino, N_text, has_pose, pad_ctx, device, dtype):
         """Build a flex_attention BlockMask for spatial windowing.
         
-        Cached by grid geometry: (h_patches, w_patches, N_dino, N_text, has_pose, pad_ctx).
-        The mask is static per aspect ratio — only compiled once, then reused.
+        The mask function is traced by torch.compile. flex_attention caches the
+        underlying block mask internally based on dimensions.
         """
-        cache_key = (h_patches, w_patches, N_dino, N_text, int(has_pose), int(pad_ctx))
-        if cache_key in self._spatial_mask_cache:
-            return self._spatial_mask_cache[cache_key]
-        
         r = self.spatial_window_radius
         
         # Estimate DINO grid size from patch count
@@ -559,6 +554,7 @@ class NanoDiT(nn.Module):
             return (is_global | is_local_dino) & is_valid_q
 
         # Compile the Python function into a BlockMask
+        # Let flex_attention handle its own internal caching
         block_mask = create_block_mask(
             spatial_document_mask, 
             B=None, H=None, # Broadcast over batch and heads
@@ -567,7 +563,6 @@ class NanoDiT(nn.Module):
             device=device
         )
         
-        self._spatial_mask_cache[cache_key] = block_mask
         return block_mask
 
     def initialize_weights(self):
