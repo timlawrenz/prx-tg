@@ -14,6 +14,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 
 
 def modulate(x, shift, scale):
@@ -169,15 +170,19 @@ class Attention(nn.Module):
             q, k, v = qkv[0], qkv[1], qkv[2]
             M = N
         
-        # Use memory-efficient scaled dot product attention
+        # Use memory-efficient scaled dot product attention or flex_attention
         if mask is not None:
-            if mask.dim() == 4:
+            if hasattr(mask, "create_mask"):
+                # It's a flex_attention BlockMask
+                x = flex_attention(q, k, v, block_mask=mask)
+            elif mask.dim() == 4:
                 # Already a 4D per-query-token mask: (B, 1, N, M)
                 attn_mask = mask.bool()
+                x = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
             else:
                 # 2D mask: (B, M) → broadcast to (B, 1, 1, M)
                 attn_mask = mask.unsqueeze(1).unsqueeze(2).bool()
-            x = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+                x = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         else:
             x = F.scaled_dot_product_attention(q, k, v)
             
@@ -467,20 +472,18 @@ class NanoDiT(nn.Module):
         return pos_embed
 
     def _build_spatial_cross_mask(self, N_latent, h_patches, w_patches, N_dino, N_text, has_pose, pad_ctx, device, dtype):
-        """Build a 4D per-query-token cross-attention mask for spatial windowing.
+        """Build a flex_attention BlockMask for spatial windowing.
         
         Cached by grid geometry: (h_patches, w_patches, N_dino, N_text, has_pose, pad_ctx).
-        The mask is static per aspect ratio — only computed once, then reused.
+        The mask is static per aspect ratio — only compiled once, then reused.
         """
         cache_key = (h_patches, w_patches, N_dino, N_text, int(has_pose), int(pad_ctx))
         if cache_key in self._spatial_mask_cache:
-            return self._spatial_mask_cache[cache_key].to(device=device)
+            return self._spatial_mask_cache[cache_key]
         
         r = self.spatial_window_radius
         
         # Estimate DINO grid size from patch count
-        # DINOv3 uses ~14px patches internally, but the exact grid varies.
-        # Approximate with sqrt to maintain aspect ratio.
         dino_h = int((N_dino * h_patches / w_patches) ** 0.5)
         dino_w = N_dino // dino_h
         while dino_h * dino_w < N_dino:
@@ -488,48 +491,51 @@ class NanoDiT(nn.Module):
         while dino_h * dino_w > N_dino + dino_w:
             dino_h -= 1
         
-        # Latent token grid positions
-        lat_rows = torch.arange(h_patches, device=device).unsqueeze(1).expand(h_patches, w_patches).flatten()  # (N_latent,)
-        lat_cols = torch.arange(w_patches, device=device).unsqueeze(0).expand(h_patches, w_patches).flatten()
-        
-        # Map each latent token to DINO grid position (linear scaling)
-        dino_rows = (lat_rows.float() * dino_h / h_patches).long().clamp(0, dino_h - 1)
-        dino_cols = (lat_cols.float() * dino_w / w_patches).long().clamp(0, dino_w - 1)
-        
-        # Build DINO patch mask: (N_latent, N_dino) — True if DINO patch is within radius
-        # Compute purely with tensor operations (no Python loops, no .item())
-        # to avoid torch.compile graph breaks.
-        dino_patch_rows = torch.arange(dino_h, device=device).unsqueeze(1).expand(dino_h, dino_w).flatten()  # (N_dino,)
-        dino_patch_cols = torch.arange(dino_w, device=device).unsqueeze(0).expand(dino_h, dino_w).flatten()  # (N_dino,)
-        
-        # Broadcasting: (N_latent, 1) vs (1, N_dino) -> (N_latent, N_dino)
-        row_dist = (dino_rows.unsqueeze(1) - dino_patch_rows.unsqueeze(0)).abs()
-        col_dist = (dino_cols.unsqueeze(1) - dino_patch_cols.unsqueeze(0)).abs()
-        dino_patch_mask = (row_dist <= r) & (col_dist <= r)
-        
-        # Total context: text + CLS + dino_patches + pose(optional)
+        # We need these scalars available inside the mask function
         N_pose = self.num_pose_joints if has_pose else 0
-        M_total = N_text + 1 + N_dino + N_pose
+        dino_start = N_text + 1
+        dino_end = N_text + 1 + N_dino
         
-        # Full mask: (1, 1, N_latent, M_total)
-        full_mask = torch.zeros(1, 1, N_latent, M_total, device=device, dtype=torch.bool)
+        # The mask function takes (b, h, q_idx, kv_idx) and returns a boolean scalar
+        def spatial_document_mask(b, h, q_idx, kv_idx):
+            # 1. Text + CLS: always attend
+            # 2. Pose: always attend
+            is_global = (kv_idx < dino_start) | ((kv_idx >= dino_end) & (kv_idx < dino_end + N_pose))
+            
+            # 3. DINO patches: attend only if within spatial window
+            # Map q_idx to latent grid
+            lat_r = q_idx // w_patches
+            lat_c = q_idx % w_patches
+            
+            # Map latent grid to DINO grid
+            dino_r_center = (lat_r * dino_h) // h_patches
+            dino_c_center = (lat_c * dino_w) // w_patches
+            
+            # Map kv_idx to DINO grid
+            dino_idx = kv_idx - dino_start
+            dino_r = dino_idx // dino_w
+            dino_c = dino_idx % dino_w
+            
+            # Distance check (Chebyshev distance <= r)
+            row_dist_ok = (dino_r - dino_r_center).abs() <= r
+            col_dist_ok = (dino_c - dino_c_center).abs() <= r
+            is_local_dino = (kv_idx >= dino_start) & (kv_idx < dino_end) & row_dist_ok & col_dist_ok
+            
+            # Combine: attend if global token OR local DINO token
+            # Padding automatically rejected because it's >= dino_end + N_pose
+            return is_global | is_local_dino
+
+        # Compile the Python function into a BlockMask
+        block_mask = create_block_mask(
+            spatial_document_mask, 
+            B=None, H=None, # Broadcast over batch and heads
+            Q_LEN=N_latent, 
+            KV_LEN=N_text + 1 + N_dino + N_pose + pad_ctx,
+            device=device
+        )
         
-        # Text tokens: all True
-        full_mask[:, :, :, :N_text] = True
-        # CLS token: True
-        full_mask[:, :, :, N_text] = True
-        # DINO patches: spatial window
-        full_mask[:, :, :, N_text + 1:N_text + 1 + N_dino] = dino_patch_mask.unsqueeze(0).unsqueeze(0)
-        # Pose tokens: all True
-        if N_pose > 0:
-            full_mask[:, :, :, N_text + 1 + N_dino:N_text + 1 + N_dino + N_pose] = True
-        
-        # Context padding (Rule of 16): always False (don't attend to padding)
-        if pad_ctx > 0:
-            full_mask = F.pad(full_mask, (0, pad_ctx), value=False)
-        
-        self._spatial_mask_cache[cache_key] = full_mask.detach()
-        return full_mask
+        self._spatial_mask_cache[cache_key] = block_mask
+        return block_mask
 
     def initialize_weights(self):
         # Standard initialization
