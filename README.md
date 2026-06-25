@@ -413,8 +413,8 @@ All arms train for 5,000 steps on the same 7k FFHQ subset. Each arm isolates one
 | I | `fp8-native` | ✓ | Muon | ✓ | FP8 precision via torchao | ✅ Done | 2026-06 | G |
 | J | `faces70k-fp8` | ✓ | Muon | ✓ | Scaled to 70k portraits (40k steps, REPA linear decay) | 🔄 Stopped at 34k | 2026-06 | I |
 | K | `spatial-window-baseline` | ✓ | Muon | ✓ | Quality metrics (CLIP + aesthetic + DWPose) baseline | ✅ Done | 2026-06 | J |
-| L | `spatial-window-2` | ✓ | Muon | ✓ | DINO patch spatial window (r=2) via 2x2 AvgPool2d | 🏃 Running | 2026-06 | K |
-| M | `no-dino-patch-ablation` | ✓ | Muon | ✓ | DINO patch cross-attention disabled | ⏳ Queued | 2026-06 | K |
+| L | `spatial-window-2` | ✓ | Muon | ✓ | DINO patch spatial window (r=2) via 2x2 AvgPool2d | ✅ Done | 2026-06 | K |
+| M | `no-dino-patch-ablation` | ✓ | Muon | ✓ | DINO patch cross-attention disabled | ✅ Done | 2026-06 | K |
 
 ### Key Comparisons
 
@@ -426,7 +426,8 @@ All arms train for 5,000 steps on the same 7k FFHQ subset. Each arm isolates one
 - **D → G**: Reconstruction LPIPS (0.9379) + Text-only LPIPS (0.9141) — verifies Asymmetric Flow matching convergence acceleration vs baseline visual quality. Lower LPIPS indicates better perceptual quality.
 - **D → H**: Recon LPIPS 0.9823, Text-only 1.0062 — shared adaLN + LoRA fails to converge at 5k steps. Visually noise/dithering; per-block modulation is load-bearing, not redundant. 59M param savings (178.8M vs 237.7M) not worth the quality collapse.
 - **G → I**: `sys/iter_per_sec` &amp; `memory/peak_vram_gb` — Native FP8 via `torchao` trained successfully! After resolving initial memory scale-state overheads by implementing dynamic tensor masking and optimized autocast scoping, the model fits into 24GB VRAM and trains in **26 hours** (down from 56h). Perceptual quality remains highly competitive with BF16 (Recon LPIPS 0.906 vs 0.900, Text-only LPIPS 0.909 vs 0.920), while text controllability actually improved (Text Manip Diff 0.504 vs 0.485). FP8 represents a >2x speedup with negligible perceptual degradation.
-- **K → L**: `val/clip_score`, `val/aesthetic_score`, `val/face_confidence` — Tests whether restricting DINO patch cross-attention to a local spatial neighborhood (r=2, ~25 patches instead of ~3880) preserves generation quality while reducing cross-attention FLOPs by ~155×.
+- **K → L**: Recon LPIPS 0.999, Text-only LPIPS 0.974, CLIP 0.192, Aesthetic 4.46, Face Conf 0.670. 2×2 AvgPool2d degrades reconstruction (0.999 vs 0.937) without matching the quality ceiling of full removal. Spatial window is a half-measure — pooled patches lose spatial precision but retain enough interference to harm generation quality. 155× FLOP reduction doesn't justify the quality trade-off.
+- **K → M**: Recon LPIPS 0.980, Text-only LPIPS **0.907**, CLIP **0.204**, Aesthetic **4.44**, Face Conf **0.790**. **Removing DINO patches entirely produces the best generation quality on 4 of 5 metrics.** DINO patches buy reconstruction fidelity (+0.043 LPIPS) at the cost of CLIP score, aesthetics, face confidence, and text-following. The gradient is monotonic: as DINO patch information decreases (full → pooled → none), generation quality consistently improves. DINO CLS token alone is sufficient style conditioning; patch tokens inject spatial constraints that fight against text-driven generation. Patches are actively counterproductive for generation quality.
 
 ## Dependencies
 
