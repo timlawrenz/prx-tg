@@ -11,8 +11,8 @@ from .sample import EulerSampler, load_vae_decoder, decode_latents, tensor_to_pi
 
 def create_visual_debug_fn(
     shard_dir,
-    output_dir,
     num_samples=4,
+    output_dir='visual_debug',
     text_scale=3.0,
     dino_scale=2.0,
     num_steps=50,
@@ -21,6 +21,9 @@ def create_visual_debug_fn(
     self_guidance=False,
     guidance_scale=3.0,
     prediction_type="v_prediction",
+    source="webdataset",
+    stratum_dir="/workspace/stratum",
+    adapter_name="stratum",
 ):
     """Create visual debugging function for training loop.
     
@@ -50,8 +53,11 @@ def create_visual_debug_fn(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
-    # Load a fixed set of samples for consistent monitoring
-    debug_samples = _load_debug_samples(shard_dir, num_samples, device)
+    # Load fixed samples once (use dataset logic without shuffling)
+    debug_samples = _load_debug_samples(
+        shard_dir, num_samples, device, 
+        source=source, stratum_dir=stratum_dir, adapter_name=adapter_name
+    )
     
     @torch.no_grad()
     def debug_fn(model, step):
@@ -79,30 +85,38 @@ def create_visual_debug_fn(
         # Generate images for each debug sample
         for idx, sample in enumerate(debug_samples):
             # Extract conditioning
-            dino_emb = sample['dino'].unsqueeze(0)  # (1, 1024)
-            dino_patches = sample['dino_patches'].unsqueeze(0)  # (1, num_patches, 1024)
-            text_emb = sample['text_emb'].unsqueeze(0)  # (1, 500, 1024)
-            text_mask = sample['text_mask'].unsqueeze(0)  # (1, 500)
-            pose_kpts = sample['pose_kpts'].unsqueeze(0)  # (1, 133, 3)
-            caption = sample['caption']
+            if adapter_name == "eidolon":
+                identity_emb = sample['identity_emb'].unsqueeze(0)  # (1, 64)
+                geometry_emb = sample['geometry_emb'].unsqueeze(0)  # (1, 50)
+            else:
+                dino_emb = sample['dino'].unsqueeze(0)  # (1, 1024)
+                dino_patches = sample['dino_patches'].unsqueeze(0)  # (1, num_patches, 1024)
+                text_emb = sample['text_emb'].unsqueeze(0)  # (1, 500, 1024)
+                text_mask = sample['text_mask'].unsqueeze(0)  # (1, 500)
+                pose_kpts = sample['pose_kpts'].unsqueeze(0)  # (1, 133, 3)
+            caption = sample.get('caption', '')
             
             # Sample at current training resolution
             sample_shape = (1, in_channels, spatial_size, spatial_size)
-            output = sampler.sample(
-                model=model,
-                shape=sample_shape,
-                dino_emb=dino_emb,
-                dino_patches=dino_patches,
-                text_emb=text_emb,
-                text_mask=text_mask,
-                device=device,
-                text_scale=text_scale,
-                dino_scale=dino_scale,
-                self_guidance=self_guidance,
-                guidance_scale=guidance_scale,
-                prediction_type=prediction_type,
-                pose_kpts=pose_kpts,
-            )
+            if adapter_name == "eidolon":
+                output = sampler.sample(
+                    model=model, shape=sample_shape,
+                    identity_emb=identity_emb, geometry_emb=geometry_emb,
+                    device=device, text_scale=text_scale,
+                    dino_scale=dino_scale, self_guidance=self_guidance,
+                    guidance_scale=guidance_scale,
+                    prediction_type=prediction_type,
+                )
+            else:
+                output = sampler.sample(
+                    model=model, shape=sample_shape,
+                    dino_emb=dino_emb, dino_patches=dino_patches,
+                    text_emb=text_emb, text_mask=text_mask,
+                    device=device, text_scale=text_scale,
+                    dino_scale=dino_scale, self_guidance=self_guidance,
+                    guidance_scale=guidance_scale,
+                    prediction_type=prediction_type, pose_kpts=pose_kpts,
+                )
             
             if pixel_space:
                 # Output is RGB [0,1] — convert to [-1, 1] for tensor_to_pil compatibility
@@ -201,45 +215,34 @@ def create_image_collage_from_tensors(images, spacing=10):
     
     return collage_array
 
-
-def _load_debug_samples(shard_dir, num_samples, device):
-    """Load a fixed set of samples for consistent visual debugging.
-    
-    Args:
-        shard_dir: Path to shard directory
-        num_samples: Number of samples to load
-        device: Device to load to
-    
-    Returns:
-        samples: List of dicts with keys: dino, dino_patches, text_emb, text_mask, caption
-    """
-    from .data import ValidationDataset
-    
-    # Create dataset with deterministic sampling
-    dataset = ValidationDataset(
+def _load_debug_samples(
+    shard_dir, num_samples, device, source="webdataset", stratum_dir="/workspace/stratum", adapter_name="stratum"
+):
+    """Load a fixed set of samples for consistent visual debugging."""
+    from .data import get_deterministic_validation_dataloader
+    debug_samples = []
+    val_dataloader = get_deterministic_validation_dataloader(
         shard_dir=shard_dir,
-        target_latent_size=128,  # 1024x1024 target resolution
-        batch_size=1,
-        shuffle=False,  # No shuffle for deterministic order
-        deterministic=True,  # Set seeds for reproducible sampling
+        batch_size=num_samples,
+        target_latent_size=64, # Default debug size
+        source=source,
+        stratum_dir=stratum_dir,
+        adapter_name=adapter_name,
     )
-    
-    # Load first N samples directly from iterator (yields batched dicts)
-    samples = []
-    for idx, batch in enumerate(dataset):
-        if idx >= num_samples:
-            break
-        
-        # Extract single sample from batch (batch_size=1)
-        # collate_fn returns: dino_embedding, dinov3_patches, t5_hidden, t5_mask, captions (list), image_ids (list)
-        sample = {
-            'dino': batch['dino_embedding'][0].to(device),  # (1024,)
-            'dino_patches': batch['dinov3_patches'][0].to(device),  # (num_patches, 1024)
-            'text_emb': batch['t5_hidden'][0].to(device),  # (500, 1024)
-            'text_mask': batch['t5_mask'][0].to(device),  # (500,)
-            'caption': batch['captions'][0],
-            'pose_kpts': batch['pose_keypoints'][0].to(device),  # (133, 3)
-        }
-        samples.append(sample)
-    
-    return samples
+    for batch in val_dataloader:
+        for i in range(min(num_samples, batch['image_data'].shape[0])):
+            sample = {k: v[i] if isinstance(v, torch.Tensor) else v[i] for k, v in batch.items()}
+            # Move to device
+            for k, v in sample.items():
+                if isinstance(v, torch.Tensor):
+                    sample[k] = v.to(device)
+            # Add legacy alias keys for sample.py expectations
+            if 'dino_embedding' in sample:
+                sample['dino'] = sample['dino_embedding']
+            if 'dinov3_patches' in sample:
+                sample['dino_patches'] = sample['dinov3_patches']
+            if 'captions' in sample:
+                sample['caption'] = sample['captions']
+            debug_samples.append(sample)
+        break
+    return debug_samples
