@@ -315,3 +315,119 @@ class TestStratumAdapterMaskRegression:
         out = adapter(dino_emb=dino_emb, text_emb=text_emb)
 
         assert out.sequence_mask is None
+
+
+# ── Task 3: EidolonAdapter ──────────────────────────────────────────────────
+
+class TestEidolonAdapterShape:
+    """Shape tests for EidolonAdapter."""
+
+    def test_output_shapes(self):
+        """Produces correct shapes: global_cond (B,H), sequence_cond (B,50,H), mask (B,50)."""
+        from production.adapters import EidolonAdapter
+        B, H = 2, 768
+        identity_dim = 64
+        z_g_dim = 50
+
+        adapter = EidolonAdapter(
+            hidden_size=H, identity_dim=identity_dim, z_g_dim=z_g_dim,
+        )
+
+        identity_emb = torch.randn(B, identity_dim)
+        geometry_emb = torch.randn(B, z_g_dim)
+
+        out = adapter(identity_emb=identity_emb, geometry_emb=geometry_emb)
+
+        assert out.global_cond.shape == (B, H)
+        assert out.sequence_cond.shape == (B, z_g_dim, H)
+        assert out.sequence_mask.shape == (B, z_g_dim)
+        assert (out.sequence_mask == 1).all()
+
+    def test_with_t_emb(self):
+        """t_emb is added to identity_cond for global conditioning."""
+        from production.adapters import EidolonAdapter
+        B, H = 2, 768
+
+        adapter = EidolonAdapter(hidden_size=H, identity_dim=64, z_g_dim=50)
+
+        identity_emb = torch.zeros(B, 64)
+        geometry_emb = torch.randn(B, 50)
+        t_emb = torch.ones(B, H)
+
+        out_no_t = adapter(identity_emb=identity_emb, geometry_emb=geometry_emb)
+        out_with_t = adapter(identity_emb=identity_emb, geometry_emb=geometry_emb, t_emb=t_emb)
+
+        # t_emb is added, so global_cond should differ
+        assert not torch.allclose(out_no_t.global_cond, out_with_t.global_cond)
+        # But sequence_cond should be unaffected (geometry only)
+        assert torch.allclose(out_no_t.sequence_cond, out_with_t.sequence_cond)
+
+
+class TestEidolonAdapterCFG:
+    """CFG dropout tests for EidolonAdapter."""
+
+    def test_identity_cfg_drop(self):
+        """Identity CFG drop replaces with null."""
+        from production.adapters import EidolonAdapter
+        B, H = 2, 768
+
+        adapter = EidolonAdapter(hidden_size=H, identity_dim=64, z_g_dim=50)
+
+        identity_emb = torch.randn(B, 64)
+        geometry_emb = torch.randn(B, 50)
+
+        out_clean = adapter(identity_emb=identity_emb, geometry_emb=geometry_emb)
+        out_drop = adapter(
+            identity_emb=identity_emb, geometry_emb=geometry_emb,
+            cfg_drop_identity=torch.tensor([True, False]),
+        )
+
+        # First item should differ (null identity), second should match
+        assert not torch.allclose(out_drop.global_cond[0], out_clean.global_cond[0])
+        assert torch.allclose(out_drop.global_cond[1], out_clean.global_cond[1])
+
+    def test_geometry_cfg_drop(self):
+        """Geometry CFG drop replaces geometry tokens with null."""
+        from production.adapters import EidolonAdapter
+        B, H = 2, 768
+
+        adapter = EidolonAdapter(hidden_size=H, identity_dim=64, z_g_dim=50)
+
+        identity_emb = torch.randn(B, 64)
+        geometry_emb = torch.randn(B, 50)
+
+        out_clean = adapter(identity_emb=identity_emb, geometry_emb=geometry_emb)
+        out_drop = adapter(
+            identity_emb=identity_emb, geometry_emb=geometry_emb,
+            cfg_drop_geometry=torch.tensor([True, False]),
+        )
+
+        # First item's sequence_cond should differ (null geometry), second should match
+        assert not torch.allclose(out_drop.sequence_cond[0], out_clean.sequence_cond[0])
+        assert torch.allclose(out_drop.sequence_cond[1], out_clean.sequence_cond[1])
+        # Global cond should be unaffected (identity not dropped)
+        assert torch.allclose(out_drop.global_cond, out_clean.global_cond)
+
+    def test_both_cfg_drop(self):
+        """Both identity and geometry dropped simultaneously."""
+        from production.adapters import EidolonAdapter
+        B, H = 2, 768
+
+        adapter = EidolonAdapter(hidden_size=H, identity_dim=64, z_g_dim=50)
+
+        identity_emb = torch.randn(B, 64)
+        geometry_emb = torch.randn(B, 50)
+
+        out_clean = adapter(identity_emb=identity_emb, geometry_emb=geometry_emb)
+        out_drop = adapter(
+            identity_emb=identity_emb, geometry_emb=geometry_emb,
+            cfg_drop_identity=torch.tensor([True, False]),
+            cfg_drop_geometry=torch.tensor([True, False]),
+        )
+
+        # First item: both dropped → differs from clean
+        assert not torch.allclose(out_drop.global_cond[0], out_clean.global_cond[0])
+        assert not torch.allclose(out_drop.sequence_cond[0], out_clean.sequence_cond[0])
+        # Second item: neither dropped → matches clean
+        assert torch.allclose(out_drop.global_cond[1], out_clean.global_cond[1])
+        assert torch.allclose(out_drop.sequence_cond[1], out_clean.sequence_cond[1])

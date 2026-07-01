@@ -180,3 +180,46 @@ class StratumAdapter(ConditioningAdapter):
             sequence_cond=combined_context,
             sequence_mask=cross_mask,
         )
+
+
+# ── EidolonAdapter: AuraFace-LDA (global) + z_g (sequence) ──────────────────
+
+class EidolonAdapter(ConditioningAdapter):
+    """Identity-driven conditioning: AuraFace-LDA for global, z_g for sequence.
+
+    Drops T5 text and DINO patches entirely.  Sequence length is just 50 tokens
+    (one per z_g component), providing a ~99% reduction in cross-attention FLOPs.
+    """
+
+    def __init__(self, hidden_size: int, identity_dim: int = 64, z_g_dim: int = 50):
+        super().__init__(hidden_size)
+        self.identity_proj = nn.Linear(identity_dim, hidden_size, bias=True)
+        self.geometry_proj = nn.Sequential(
+            nn.Linear(1, hidden_size, bias=True),
+            nn.GELU(),
+            nn.Linear(hidden_size, hidden_size, bias=True),
+        )
+        self.null_identity = nn.Parameter(torch.zeros(1, identity_dim))
+        self.null_geometry = nn.Parameter(torch.zeros(1, z_g_dim))
+        self.z_g_dim = z_g_dim
+
+    def forward(self, **kwargs) -> ConditioningOutput:
+        identity_emb = kwargs["identity_emb"]
+        geometry_emb = kwargs["geometry_emb"]
+        t_emb = kwargs.get("t_emb")
+
+        identity_emb = self.apply_cfg_drop_source(
+            identity_emb, kwargs.get("cfg_drop_identity"), self.null_identity)
+        geometry_emb = self.apply_cfg_drop_source(
+            geometry_emb, kwargs.get("cfg_drop_geometry"), self.null_geometry)
+
+        identity_cond = self.identity_proj(identity_emb)
+        global_cond = identity_cond + (t_emb if t_emb is not None else 0)
+        geometry_cond = self.geometry_proj(geometry_emb.unsqueeze(-1))  # (B, 50, hidden)
+        B = geometry_cond.shape[0]
+
+        return ConditioningOutput(
+            global_cond=global_cond,
+            sequence_cond=geometry_cond,
+            sequence_mask=torch.ones(B, self.z_g_dim, device=geometry_cond.device),
+        )
