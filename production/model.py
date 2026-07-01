@@ -231,40 +231,20 @@ class DiTBlock(nn.Module):
         nn.init.zeros_(self.adaLN_modulation[1].weight)
         nn.init.zeros_(self.adaLN_modulation[1].bias)
 
-    def _forward_impl(self, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask=None, x_mask=None):
+    def _forward_impl(self, x, global_cond, sequence_cond, sequence_mask=None, x_mask=None):
         """Internal forward implementation for checkpointing."""
-        # Get adaLN modulation parameters from DINOv3
+        # Get adaLN modulation parameters from global conditioning
         shift_msa, scale_msa, shift_ca, scale_ca, shift_mlp, scale_mlp = \
-            self.adaLN_modulation(c_dino).chunk(6, dim=1)
+            self.adaLN_modulation(global_cond).chunk(6, dim=1)
         
         # Self-attention with adaLN
         x = x + self.attn(modulate(self.norm1(x), shift_msa, scale_msa), mask=x_mask)
         
-        # Concatenate cross-attention sequence: [T5 text, DINO CLS, DINO patches(optional)]
-        if c_patches is None:
-            combined_context = torch.cat([c_text, c_dino_cls_token], dim=1)
-        else:
-            combined_context = torch.cat([c_text, c_dino_cls_token, c_patches], dim=1)
-        
-        # Build 2D combined mask from text + patches masks
-        B = x.shape[0]
-        
-        if text_mask is not None:
-            cls_mask = torch.ones(B, 1, device=text_mask.device, dtype=text_mask.dtype)
-            
-            if patches_mask is None:
-                cross_mask = torch.cat([text_mask, cls_mask], dim=1)
-            else:
-                patches_mask = patches_mask.to(device=text_mask.device, dtype=text_mask.dtype)
-                cross_mask = torch.cat([text_mask, cls_mask, patches_mask], dim=1)
-        else:
-            cross_mask = None
-        
-        # Cross-attention to combined sequence with adaLN
+        # Cross-attention to pre-assembled sequence with adaLN
         x = x + self.cross_attn(
             modulate(self.norm2(x), shift_ca, scale_ca),
-            context=combined_context,
-            mask=cross_mask
+            context=sequence_cond,
+            mask=sequence_mask
         )
         
         # MLP with adaLN
@@ -272,24 +252,22 @@ class DiTBlock(nn.Module):
         
         return x
 
-    def forward(self, x, c_dino, c_text, text_mask=None, c_dino_cls_token=None, c_patches=None, patches_mask=None, x_mask=None):
+    def forward(self, x, global_cond, sequence_cond, sequence_mask=None, x_mask=None):
         """
         Args:
             x: (B, N, C) latent tokens
-            c_dino: (B, C) DINOv3 conditioning for adaLN
-            c_text: (B, M, C) T5 conditioning
-            text_mask: (B, M) attention mask for T5
-            c_dino_cls_token: (B, 1, C) DINO CLS token for cross-attention
-            c_patches: (B, num_patches, C) DINO patch tokens for cross-attention (variable length)
-            patches_mask: (B, num_patches) attention mask for DINO patches
+            global_cond: (B, C) adaLN conditioning vector
+            sequence_cond: (B, S, C) pre-assembled cross-attention context
+            sequence_mask: (B, S) attention mask for cross-attention (or None)
             x_mask: (B, N) attention mask for self-attention
         """
         if self.use_checkpoint and self.training:
             return torch.utils.checkpoint.checkpoint(
-                self._forward_impl, x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask, x_mask, use_reentrant=False
-            )
+                self._forward_impl, x, global_cond, sequence_cond,
+                sequence_mask, x_mask, use_reentrant=False)
         else:
-            return self._forward_impl(x, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask, x_mask)
+            return self._forward_impl(x, global_cond, sequence_cond,
+                                      sequence_mask, x_mask)
 
 class MaskDiTDecoder(nn.Module):
     """Lightweight decoder for MaskDiT masked token reconstruction.
@@ -309,8 +287,7 @@ class MaskDiTDecoder(nn.Module):
             for _ in range(depth)
         ])
     
-    def forward(self, x_visible, visible_idx, masked_idx, N_total, pos_embed,
-                c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask=None):
+    def forward(self, x_visible, visible_idx, masked_idx, N_total, pos_embed, cond):
         """
         Args:
             x_visible: (B, N_vis, C) encoder output for visible tokens
@@ -318,7 +295,7 @@ class MaskDiTDecoder(nn.Module):
             masked_idx: (N_mask,) indices of masked tokens
             N_total: int, total number of tokens
             pos_embed: (1, N_total, C) positional embeddings for all tokens
-            c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask: conditioning
+            cond: ConditioningOutput with global_cond, sequence_cond, sequence_mask
         
         Returns:
             x_full: (B, N_total, C) decoded output for all token positions
@@ -338,7 +315,7 @@ class MaskDiTDecoder(nn.Module):
         
         # Run through decoder blocks
         for block in self.blocks:
-            x_full = block(x_full, c_dino, c_text, text_mask, c_dino_cls_token, c_patches, patches_mask)
+            x_full = block(x_full, cond.global_cond, cond.sequence_cond, cond.sequence_mask)
         
         return x_full
 
@@ -372,6 +349,7 @@ class NanoDiT(nn.Module):
         maskdit_decoder_depth=4,
         dino_patches_enabled=True,
         dino_pool_factor=None,        # Integer pooling factor for DINO patches (e.g. 2 for 2x2 pooling)
+        adapter_kwargs=None,           # Dict with adapter name + params (moved from flat kwargs)
     ):
         super().__init__()
         self.input_size = input_size  # For backward compatibility, but not used
@@ -385,10 +363,6 @@ class NanoDiT(nn.Module):
         self.tread_route_end = tread_route_end
         self.tread_routing_prob = tread_routing_prob
         self.tread_enabled = tread_route_start is not None and tread_route_end is not None
-        self.dino_patches_enabled = dino_patches_enabled
-        self.dino_pool_factor = dino_pool_factor
-        self.num_pose_joints = num_pose_joints
-        self.pose_confidence_threshold = pose_confidence_threshold
         
         # Patch embedding
         self.x_embedder = PatchEmbed(patch_size, in_channels, hidden_size, bottleneck_size=bottleneck_size)
@@ -399,18 +373,33 @@ class NanoDiT(nn.Module):
         # Timestep embedding
         self.t_embedder = TimestepEmbedder(hidden_size)
         
-        # Conditioning projections (keep bias for these)
-        self.dino_proj = nn.Linear(dino_dim, hidden_size, bias=True)
-        self.dino_patch_proj = nn.Linear(dino_patch_dim, hidden_size, bias=True)
-        self.text_proj = nn.Linear(text_dim, hidden_size, bias=True)
+        # ── Conditioning adapter (replaces all old projectors) ──────────
+        from production.adapters import StratumAdapter, EidolonAdapter
         
-        # Pose conditioning: MLP projector + learned joint-type embeddings
-        self.pose_proj = nn.Sequential(
-            nn.Linear(pose_dim, hidden_size, bias=True),
-            nn.GELU(),
-            nn.Linear(hidden_size, hidden_size, bias=True),
-        )
-        self.pose_joint_embed = nn.Embedding(num_pose_joints, hidden_size)
+        if adapter_kwargs is None:
+            adapter_kwargs = {}
+        adapter_name = adapter_kwargs.pop("name", "stratum")
+        
+        if adapter_name == "stratum":
+            self.adapter = StratumAdapter(
+                hidden_size=hidden_size,
+                dino_dim=dino_dim,
+                dino_patch_dim=dino_patch_dim,
+                text_dim=text_dim,
+                dino_patches_enabled=dino_patches_enabled,
+                num_pose_joints=num_pose_joints,
+                pose_dim=pose_dim,
+                pose_confidence_threshold=pose_confidence_threshold,
+                dino_pool_factor=dino_pool_factor,
+                **adapter_kwargs,
+            )
+        elif adapter_name == "eidolon":
+            self.adapter = EidolonAdapter(
+                hidden_size=hidden_size,
+                **adapter_kwargs,
+            )
+        else:
+            raise ValueError(f"Unknown adapter: {adapter_name}")
         
         # Transformer blocks
         self.blocks = nn.ModuleList([
@@ -440,13 +429,6 @@ class NanoDiT(nn.Module):
         
         # Initialize weights
         self.initialize_weights()
-        
-        # Learnable null embeddings for CFG
-        self.null_dino = nn.Parameter(torch.zeros(1, dino_dim))
-        self.null_dino_patch_token = nn.Parameter(torch.zeros(1, 1, dino_patch_dim))
-        self.null_text = nn.Parameter(torch.zeros(1, 1, text_dim))
-        # [NULL_POSE]: learned token the model sees when pose is dropped during CFG
-        self.null_pose = nn.Parameter(torch.zeros(1, num_pose_joints, hidden_size))
     
     def get_pos_embed(self, h, w, device):
         """Generate 2D sinusoidal positional embeddings for given spatial size.
@@ -508,27 +490,15 @@ class NanoDiT(nn.Module):
         latents = x.reshape(B, self.in_channels, h * self.patch_size, w * self.patch_size)
         return latents
 
-    def forward(self, x, t, dino_emb, text_emb, dino_patches=None, text_mask=None, dino_patches_mask=None,
-                cfg_drop_text=None, cfg_drop_dino_cls=None, cfg_drop_dino_patches=None,
-                pose_kpts=None, cfg_drop_pose=None,
-                return_repa_hidden=False, tread_enabled=None, maskdit_enabled=None):
+    def forward(self, x, t, return_repa_hidden=False, tread_enabled=None, maskdit_enabled=None, **adapter_kwargs):
         """
         Args:
             x: (B, C, H, W) noisy latents (H and W can vary for different aspect ratios)
             t: (B,) timesteps
-            dino_emb: (B, 1024) DINOv3 CLS embeddings
-            text_emb: (B, seq_len, 1024) T5 hidden states (seq_len=500 for full captions)
-            dino_patches: (B, num_patches, 1024) DINOv3 spatial patches (VARIABLE LENGTH!)
-            text_mask: (B, seq_len) T5 attention mask (1=valid, 0=padding)
-            dino_patches_mask: (B, num_patches) DINOv3 patches attention mask
-            cfg_drop_text: (B,) bool mask for dropping text
-            cfg_drop_dino_cls: (B,) bool mask for dropping DINO CLS
-            cfg_drop_dino_patches: (B,) bool mask for dropping DINO patches
-            pose_kpts: (B, 133, 3) pose keypoints [x_norm, y_norm, confidence]
-            cfg_drop_pose: (B,) bool mask for dropping pose (swaps to [NULL_POSE])
             return_repa_hidden: if True, return (v_pred, repa_hidden, tread_visible_idx, maskdit_info) tuple
             tread_enabled: override for TREAD routing (None = use self.training when configured)
             maskdit_enabled: override for MaskDiT masking (None = use self.maskdit_enabled when training)
+            **adapter_kwargs: all conditioning inputs forwarded to self.adapter(**kwargs)
         
         Returns:
             v: (B, C, H, W) predicted velocity
@@ -538,37 +508,6 @@ class NanoDiT(nn.Module):
             x0_pred_masked (decoder output for masked positions) when masking is on
         """
         B, C, H, W = x.shape
-        
-        # Get number of patches (varies per bucket)
-        if dino_patches is not None:
-            num_patches = dino_patches.shape[1]
-        else:
-            # Default: use null patches for debugging/fallback
-            num_patches = 3880  # Approximate typical count
-            dino_patches = self.null_dino_patch_token.expand(B, num_patches, -1)
-        
-        # Apply CFG dropout independently
-        if cfg_drop_dino_cls is not None:
-            dino_emb = torch.where(
-                cfg_drop_dino_cls.unsqueeze(1),
-                self.null_dino.expand(B, -1),
-                dino_emb
-            )
-            
-        if cfg_drop_dino_patches is not None:
-            null_patches = self.null_dino_patch_token.expand(B, num_patches, -1)
-            dino_patches = torch.where(
-                cfg_drop_dino_patches.unsqueeze(1).unsqueeze(2),
-                null_patches,
-                dino_patches
-            )
-        
-        if cfg_drop_text is not None:
-            text_emb = torch.where(
-                cfg_drop_text.unsqueeze(1).unsqueeze(2),
-                self.null_text.expand(B, text_emb.shape[1], -1),
-                text_emb
-            )
         
         # Embed inputs with dynamic positional encoding
         x = self.x_embedder(x)  # (B, N, hidden_size) where N = (H//patch_size) * (W//patch_size)
@@ -596,99 +535,16 @@ class NanoDiT(nn.Module):
         
         t_emb = self.t_embedder(t)  # (B, hidden_size)
         
-        # Project conditioning (after CFG dropout)
-        dino_cond = self.dino_proj(dino_emb) + t_emb  # (B, hidden_size) - for adaLN
-        dino_cls_token = dino_cond.unsqueeze(1)  # (B, 1, hidden_size) - for cross-attention
-        text_cond = self.text_proj(text_emb)  # (B, seq_len, hidden_size)
+        # ── Adapter-driven conditioning (single dispatch point) ───────────
+        cond = self.adapter(t_emb=t_emb, **adapter_kwargs)
         
-        if self.dino_patches_enabled and dino_patches is not None:
-            patches_cond = self.dino_patch_proj(dino_patches)  # (B, num_patches, hidden_size)
-            
-            # Pool patches if factor provided
-            if self.dino_pool_factor is not None:
-                factor = self.dino_pool_factor
-                B, num_p, C = patches_cond.shape
-                
-                # Use original bucket dimensions for exact pooling
-                h_p = h_patches
-                w_p = num_p // h_p
-                while h_p * w_p < num_p: w_p += 1
-                while h_p * w_p > num_p: h_p -= 1
-                
-                # Calculate pad needed to make divisible by factor
-                pad_h = (factor - (h_p % factor)) % factor
-                pad_w = (factor - (w_p % factor)) % factor
-                
-                # Reshape to 2D
-                patches_spatial = patches_cond.transpose(1, 2).reshape(B, C, h_p, w_p)
-                
-                # Pad spatial dims if needed
-                if pad_h > 0 or pad_w > 0:
-                    patches_spatial = F.pad(patches_spatial, (0, pad_w, 0, pad_h))
-                
-                # Pool
-                pooled = F.avg_pool2d(patches_spatial, kernel_size=factor, stride=factor)
-                
-                # Flatten back
-                patches_cond = pooled.flatten(2).transpose(1, 2)
-                
-                # Update mask (assume all pooled patches are valid for simplicity)
-                if dino_patches_mask is not None:
-                    dino_patches_mask = torch.ones(B, patches_cond.shape[1], device=patches_cond.device, dtype=dino_patches_mask.dtype)
-        else:
-            patches_cond = None
-            dino_patches_mask = None
-        
-        # Pose conditioning: project keypoints and add joint-type embeddings
-        if pose_kpts is not None:
-            if cfg_drop_pose is not None:
-                null_pose_expanded = self.null_pose.expand(B, -1, -1)
-                pose_proj = self.pose_proj(pose_kpts) + self.pose_joint_embed.weight
-                conf = pose_kpts[:, :, 2]
-                low_conf = conf < self.pose_confidence_threshold
-                pose_proj = torch.where(low_conf.unsqueeze(2), null_pose_expanded, pose_proj)
-                pose_tokens = torch.where(
-                    cfg_drop_pose.unsqueeze(1).unsqueeze(2),
-                    null_pose_expanded, pose_proj,
-                )
-            else:
-                pose_tokens = self.pose_proj(pose_kpts) + self.pose_joint_embed.weight
-                conf = pose_kpts[:, :, 2]
-                low_conf = conf < self.pose_confidence_threshold
-                null_pose_expanded = self.null_pose.expand(B, -1, -1)
-                pose_tokens = torch.where(low_conf.unsqueeze(2), null_pose_expanded, pose_tokens)
-            
-            if patches_cond is not None:
-                patches_cond = torch.cat([patches_cond, pose_tokens], dim=1)
-                if dino_patches_mask is not None:
-                    pose_mask = torch.ones(B, self.num_pose_joints, device=dino_patches_mask.device, dtype=dino_patches_mask.dtype)
-                    dino_patches_mask = torch.cat([dino_patches_mask, pose_mask], dim=1)
-            else:
-                patches_cond = pose_tokens
-                if text_mask is not None:
-                    dino_patches_mask = torch.ones(B, self.num_pose_joints, device=text_mask.device, dtype=text_mask.dtype)
-        
-        # Dynamic Tensor Masking for context sequence (Rule of 16)
-        S_ctx = text_cond.shape[1] + 1 + (patches_cond.shape[1] if patches_cond is not None else 0)
-        
-        # When compiled dynamically, this forces pad_ctx to be an int (no unbacked SymInt issue)
-        # since it's just Python modulo arithmetic on known symbolic shapes.
-        # But we must avoid conditional branching on SymInts. F.pad handles SymInts fine.
-        
+        # Apply DTM padding for context sequence (Rule of 16) to prevent
+        # torch.compile graph breaks from dynamic sequence lengths.
+        S_ctx = cond.sequence_cond.shape[1]
         pad_ctx = (16 - (S_ctx % 16)) % 16
-        
-        # We must avoid 'if pad_ctx > 0:' when pad_ctx is a SymInt.
-        # Instead, we just unconditionally pad. F.pad with 0 padding is a no-op anyway.
-        if patches_cond is not None:
-            patches_cond = F.pad(patches_cond, (0, 0, 0, pad_ctx))
-        if text_mask is None:
-            text_mask = torch.ones(B, text_cond.shape[1], device=text_cond.device, dtype=torch.long)
-        if dino_patches_mask is None:
-            if patches_cond is not None:
-                original_patches_len = patches_cond.shape[1] - pad_ctx
-                dino_patches_mask = torch.ones(B, original_patches_len, device=patches_cond.device, dtype=text_mask.dtype)
-        if dino_patches_mask is not None:
-            dino_patches_mask = F.pad(dino_patches_mask, (0, pad_ctx), value=0)
+        cond.sequence_cond = F.pad(cond.sequence_cond, (0, 0, 0, pad_ctx))
+        if cond.sequence_mask is not None:
+            cond.sequence_mask = F.pad(cond.sequence_mask, (0, pad_ctx), value=0)
         
         # MaskDiT: randomly mask image tokens during training
         use_maskdit = self.maskdit_enabled and (maskdit_enabled if maskdit_enabled is not None else self.training)
@@ -741,13 +597,15 @@ class NanoDiT(nn.Module):
             visible_x_mask = x_mask[:, visible_idx] if x_mask is not None else None
             
             for i in range(self.tread_route_start):
-                x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask, x_mask=x_mask)
+                x = self.blocks[i](x, cond.global_cond, cond.sequence_cond,
+                                   cond.sequence_mask, x_mask=x_mask)
             
             routed_tokens = x[:, routed_idx]
             x = x[:, visible_idx]
             
             for i in range(self.tread_route_start, self.tread_route_end + 1):
-                x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask, x_mask=visible_x_mask)
+                x = self.blocks[i](x, cond.global_cond, cond.sequence_cond,
+                                   cond.sequence_mask, x_mask=visible_x_mask)
                 if return_repa_hidden and i == self.repa_block_idx:
                     repa_hidden = self.repa_proj(x)
             
@@ -757,12 +615,14 @@ class NanoDiT(nn.Module):
             x = full_x
             
             for i in range(self.tread_route_end + 1, len(self.blocks)):
-                x = self.blocks[i](x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask, x_mask=x_mask)
+                x = self.blocks[i](x, cond.global_cond, cond.sequence_cond,
+                                   cond.sequence_mask, x_mask=x_mask)
                 if return_repa_hidden and i == self.repa_block_idx:
                     repa_hidden = self.repa_proj(x)
         else:
             for i, block in enumerate(self.blocks):
-                x = block(x, dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, patches_mask=dino_patches_mask, x_mask=x_mask)
+                x = block(x, cond.global_cond, cond.sequence_cond,
+                          cond.sequence_mask, x_mask=x_mask)
                 if return_repa_hidden and i == self.repa_block_idx:
                     repa_hidden = self.repa_proj(x)
         
@@ -771,7 +631,7 @@ class NanoDiT(nn.Module):
             x = self.maskdit_decoder(
                 x, maskdit_info['visible_idx'], maskdit_info['masked_idx'],
                 maskdit_info['N_total'], maskdit_info['pos_embed'],
-                dino_cond, text_cond, text_mask, dino_cls_token, patches_cond, dino_patches_mask,
+                cond,
             )
             
         # Slice off padding tokens if added
