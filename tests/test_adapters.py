@@ -93,3 +93,225 @@ class TestApplyCfgDropSource:
         assert result.shape == (B, S, D)
         assert (result[0] == 0).all()
         assert (result[1] == 1).all()
+
+
+# ── Task 2: StratumAdapter ──────────────────────────────────────────────────
+
+class TestStratumAdapterShape:
+    """Shape tests for StratumAdapter."""
+
+    def test_output_shapes_basic(self):
+        """Produces correct shapes for global_cond, sequence_cond, sequence_mask."""
+        from production.adapters import StratumAdapter
+        B, H = 2, 768
+        T_len, P_len = 77, 256
+
+        adapter = StratumAdapter(
+            hidden_size=H, dino_patches_enabled=True,
+            dino_dim=1024, text_dim=1024, dino_patch_dim=1024,
+        )
+
+        dino_emb = torch.randn(B, 1024)
+        text_emb = torch.randn(B, T_len, 1024)
+        text_mask = torch.ones(B, T_len)
+        dino_patches = torch.randn(B, P_len, 1024)
+        dino_patches_mask = torch.ones(B, P_len)
+
+        out = adapter(
+            dino_emb=dino_emb,
+            text_emb=text_emb,
+            text_mask=text_mask,
+            dino_patches=dino_patches,
+            dino_patches_mask=dino_patches_mask,
+        )
+
+        assert out.global_cond.shape == (B, H)
+        assert out.sequence_cond.shape == (B, T_len + 1 + P_len, H)
+        assert out.sequence_mask.shape == (B, T_len + 1 + P_len)
+
+    def test_without_patches(self):
+        """When dino_patches not provided, sequence is [text, CLS] only."""
+        from production.adapters import StratumAdapter
+        B, H = 2, 768
+        T_len = 77
+
+        adapter = StratumAdapter(
+            hidden_size=H, dino_patches_enabled=True,
+            dino_dim=1024, text_dim=1024, dino_patch_dim=1024,
+        )
+
+        dino_emb = torch.randn(B, 1024)
+        text_emb = torch.randn(B, T_len, 1024)
+        text_mask = torch.ones(B, T_len)
+
+        out = adapter(
+            dino_emb=dino_emb,
+            text_emb=text_emb,
+            text_mask=text_mask,
+        )
+
+        assert out.global_cond.shape == (B, H)
+        assert out.sequence_cond.shape == (B, T_len + 1, H)
+        assert out.sequence_mask.shape == (B, T_len + 1)
+
+    def test_with_t_emb(self):
+        """t_emb is added to global_cond."""
+        from production.adapters import StratumAdapter
+        B, H = 2, 768
+
+        adapter = StratumAdapter(
+            hidden_size=H, dino_patches_enabled=False,
+            dino_dim=1024, text_dim=1024,
+        )
+
+        dino_emb = torch.zeros(B, 1024)
+        text_emb = torch.randn(B, 32, 1024)
+        text_mask = torch.ones(B, 32)
+        t_emb = torch.ones(B, H)
+
+        out_no_t = adapter(dino_emb=dino_emb, text_emb=text_emb, text_mask=text_mask)
+        out_with_t = adapter(dino_emb=dino_emb, text_emb=text_emb, text_mask=text_mask, t_emb=t_emb)
+
+        # t_emb is added, so with_t should differ from without
+        assert not torch.allclose(out_no_t.global_cond, out_with_t.global_cond)
+
+
+class TestStratumAdapterCFG:
+    """CFG dropout tests for StratumAdapter."""
+
+    def test_dino_cfg_drop(self):
+        """DINO CFG drop replaces with null."""
+        from production.adapters import StratumAdapter
+        B, H = 2, 768
+
+        adapter = StratumAdapter(
+            hidden_size=H, dino_patches_enabled=False,
+            dino_dim=1024, text_dim=1024,
+        )
+
+        dino_emb = torch.randn(B, 1024)
+        text_emb = torch.randn(B, 32, 1024)
+        text_mask = torch.ones(B, 32)
+
+        out_clean = adapter(dino_emb=dino_emb, text_emb=text_emb, text_mask=text_mask)
+        out_drop = adapter(dino_emb=dino_emb, text_emb=text_emb, text_mask=text_mask,
+                           cfg_drop_dino=torch.tensor([True, False]))
+
+        # First item should differ (null), second should match
+        assert not torch.allclose(out_drop.global_cond[0], out_clean.global_cond[0])
+        assert torch.allclose(out_drop.global_cond[1], out_clean.global_cond[1])
+
+    def test_text_cfg_drop(self):
+        """Text CFG drop replaces with null."""
+        from production.adapters import StratumAdapter
+        B, H = 2, 768
+
+        adapter = StratumAdapter(
+            hidden_size=H, dino_patches_enabled=False,
+            dino_dim=1024, text_dim=1024,
+        )
+
+        dino_emb = torch.randn(B, 1024)
+        text_emb = torch.randn(B, 32, 1024)
+        text_mask = torch.ones(B, 32)
+
+        out_clean = adapter(dino_emb=dino_emb, text_emb=text_emb, text_mask=text_mask)
+        out_drop = adapter(dino_emb=dino_emb, text_emb=text_emb, text_mask=text_mask,
+                           cfg_drop_text=torch.tensor([True, False]))
+
+        assert not torch.allclose(out_drop.sequence_cond[0], out_clean.sequence_cond[0])
+        assert torch.allclose(out_drop.sequence_cond[1], out_clean.sequence_cond[1])
+
+
+class TestStratumAdapterPoolingGuard:
+    """dino_pool_factor is not ported — must raise NotImplementedError."""
+
+    def test_pooling_guard(self):
+        """Passing dino_pool_factor raises NotImplementedError."""
+        from production.adapters import StratumAdapter
+        with pytest.raises(NotImplementedError):
+            StratumAdapter(
+                hidden_size=768,
+                dino_dim=1024, text_dim=1024,
+                dino_patches_enabled=True,
+                dino_pool_factor=2,
+            )
+
+
+class TestStratumAdapterMaskRegression:
+    """Verify combined mask matches what the old DiTBlock produced."""
+
+    def _old_ditblock_combined_mask(self, text_mask, patches_mask):
+        """Replicate the mask assembly that DiTBlock._forward_impl used to do."""
+        B = text_mask.shape[0]
+        cls_mask = torch.ones(B, 1, device=text_mask.device, dtype=text_mask.dtype)
+        if patches_mask is not None:
+            patches_mask = patches_mask.to(device=text_mask.device, dtype=text_mask.dtype)
+            return torch.cat([text_mask, cls_mask, patches_mask], dim=1)
+        else:
+            return torch.cat([text_mask, cls_mask], dim=1)
+
+    def test_mask_without_patches_matches_old_behavior(self):
+        """Mask = [text_mask, ones(B,1)] — identical to old DiTBlock."""
+        from production.adapters import StratumAdapter
+        B, H = 2, 768
+        T_len = 77
+
+        adapter = StratumAdapter(
+            hidden_size=H, dino_patches_enabled=False,
+            dino_dim=1024, text_dim=1024,
+        )
+
+        dino_emb = torch.randn(B, 1024)
+        text_emb = torch.randn(B, T_len, 1024)
+        text_mask = torch.ones(B, T_len)
+        text_mask[0, 40:] = 0  # variable length text
+
+        out = adapter(dino_emb=dino_emb, text_emb=text_emb, text_mask=text_mask)
+
+        expected = self._old_ditblock_combined_mask(text_mask, None)
+        assert torch.equal(out.sequence_mask, expected)
+
+    def test_mask_with_patches_matches_old_behavior(self):
+        """Mask = [text_mask, ones(B,1), patches_mask] — identical to old DiTBlock."""
+        from production.adapters import StratumAdapter
+        B, H = 2, 768
+        T_len, P_len = 77, 256
+
+        adapter = StratumAdapter(
+            hidden_size=H, dino_patches_enabled=True,
+            dino_dim=1024, text_dim=1024, dino_patch_dim=1024,
+        )
+
+        dino_emb = torch.randn(B, 1024)
+        text_emb = torch.randn(B, T_len, 1024)
+        text_mask = torch.ones(B, T_len)
+        text_mask[0, 30:] = 0  # shorter text
+        dino_patches = torch.randn(B, P_len, 1024)
+        patches_mask = torch.ones(B, P_len)
+        patches_mask[0, 200:] = 0  # shorter patches
+
+        out = adapter(
+            dino_emb=dino_emb, text_emb=text_emb, text_mask=text_mask,
+            dino_patches=dino_patches, dino_patches_mask=patches_mask,
+        )
+
+        expected = self._old_ditblock_combined_mask(text_mask, patches_mask)
+        assert torch.equal(out.sequence_mask, expected)
+
+    def test_none_text_mask_produces_none_cross_mask(self):
+        """When text_mask is None, the old DiTBlock produced None — adapter should too."""
+        from production.adapters import StratumAdapter
+        B, H = 2, 768
+
+        adapter = StratumAdapter(
+            hidden_size=H, dino_patches_enabled=False,
+            dino_dim=1024, text_dim=1024,
+        )
+
+        dino_emb = torch.randn(B, 1024)
+        text_emb = torch.randn(B, 32, 1024)
+
+        out = adapter(dino_emb=dino_emb, text_emb=text_emb)
+
+        assert out.sequence_mask is None
