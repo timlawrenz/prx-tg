@@ -28,6 +28,30 @@ class ModelConfig:
 
 
 @dataclass
+class AdapterConfig:
+    """Conditioning adapter configuration (Phase 6 neutral DiT refactor).
+
+    When `adapter:` is absent from a YAML config, the loader synthesizes
+    a StratumAdapter-compatible AdapterConfig from existing model:/training:
+    values — old configs keep working unchanged.
+    """
+    name: str = "stratum"            # "stratum" or "eidolon"
+    # --- eidolon fields ---
+    identity_dim: int = 64
+    z_g_dim: int = 50
+    cfg_dropout: Optional[dict] = None  # {"p_uncond": 0.10, "p_identity_only": 0.20, ...}
+    # --- stratum fields (previously flat NanoDiT constructor kwargs) ---
+    dino_dim: int = 1024
+    dino_patch_dim: int = 1024
+    text_dim: int = 1024
+    dino_patches_enabled: bool = True
+    num_pose_joints: int = 133
+    pose_dim: int = 3
+    pose_confidence_threshold: float = 0.05
+    dino_pool_factor: Optional[int] = None
+
+
+@dataclass
 class MuonConfig:
     """Muon optimizer configuration (for 2D weight matrices)."""
     momentum: float = 0.95
@@ -313,6 +337,7 @@ class Config:
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     paths: PathConfig = field(default_factory=PathConfig)
+    adapter: AdapterConfig = field(default_factory=AdapterConfig)
 
 
 def load_config(config_path: str | Path) -> Config:
@@ -378,6 +403,7 @@ def load_config(config_path: str | Path) -> Config:
                             'checkpoint': CheckpointConfig,
                             'validation': ValidationConfig,
                             'sampling': SamplingConfig,
+                            'adapter': AdapterConfig,
                         }
                         if key in known_dataclass_fields:
                             is_dataclass = True
@@ -401,7 +427,23 @@ def load_config(config_path: str | Path) -> Config:
         
         return cls(**kwargs)
     
-    return build_dataclass(Config, config_dict)
+    config = build_dataclass(Config, config_dict)
+    
+    # ── Backward compat: synthesize AdapterConfig from model/training when
+    # the YAML has no explicit adapter: block.  This keeps all legacy configs
+    # working unchanged (they get a StratumAdapter with their original fields).
+    if "adapter" not in config_dict:
+        mc = config.model
+        tc = config.training
+        config.adapter = AdapterConfig(
+            name="stratum",
+            dino_patches_enabled=getattr(tc, 'dino_patches', DinoPatchesConfig()).enabled,
+            num_pose_joints=mc.num_pose_joints,
+            pose_confidence_threshold=mc.pose_confidence_threshold,
+            dino_pool_factor=getattr(tc, 'dino_pool_factor', None),
+        )
+    
+    return config
 
 
 def save_config(config: Config, config_path: str | Path):
