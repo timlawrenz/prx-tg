@@ -307,17 +307,22 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     # Request extended return when we need REPA hidden states OR maskdit info
     return_extended = use_repa or use_maskdit
     
-    # Predict velocity (with DINO patches)
+    # Predict velocity (adapter-driven — all conditioning forwarded as kwargs)
     model_output = model(
-        zt, t, dino_emb, text_emb, dino_patches, text_mask, dino_patches_mask=dino_patches_mask,
-        cfg_drop_text=drop_text,
-        cfg_drop_dino_cls=drop_dino_cls,
-        cfg_drop_dino_patches=drop_dino_patches_mask,
-        pose_kpts=pose_kpts,
-        cfg_drop_pose=drop_pose,
+        zt, t,
         return_repa_hidden=return_extended,
         tread_enabled=tread_enabled,
         maskdit_enabled=use_maskdit,
+        dino_emb=dino_emb,
+        text_emb=text_emb,
+        dino_patches=dino_patches,
+        text_mask=text_mask,
+        dino_patches_mask=dino_patches_mask,
+        cfg_drop_dino=drop_dino_cls,
+        cfg_drop_text=drop_text,
+        cfg_drop_dino_patches=drop_dino_patches_mask,
+        pose_kpts=pose_kpts,
+        cfg_drop_pose=drop_pose,
     )
     
     maskdit_info = None

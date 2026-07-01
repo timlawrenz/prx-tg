@@ -678,7 +678,7 @@ if __name__ == "__main__":
     mask = torch.ones(B, 512)
     
     with torch.no_grad():
-        v = model(x, t, dino, text, text_mask=mask)
+        v = model(x, t, dino_emb=dino, text_emb=text, text_mask=mask)
     
     print(f"Input shape: {x.shape}")
     print(f"Output shape: {v.shape}")
@@ -687,6 +687,6 @@ if __name__ == "__main__":
     pose = torch.randn(B, 133, 3)
     pose[:, :, 2] = torch.rand(B, 133)  # Confidence in [0, 1]
     with torch.no_grad():
-        v_pose = model(x, t, dino, text, pose_kpts=pose, text_mask=mask)
+        v_pose = model(x, t, dino_emb=dino, text_emb=text, text_mask=mask, pose_kpts=pose)
     print(f"Output shape (with pose): {v_pose.shape}")
     print("✓ Model test passed")
