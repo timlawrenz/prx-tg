@@ -1457,6 +1457,7 @@ class ProductionTrainer(Trainer):
         models = self._quality_metrics_models
         
         print(f"  Running quality metrics at step {step}...")
+        adapter_name = self.config.adapter.name if hasattr(self.config, 'adapter') else "stratum"
         run_evaluation(
             str(checkpoint_path),
             config_path,
@@ -1468,6 +1469,7 @@ class ProductionTrainer(Trainer):
             aesthetic_model=models['aesthetic_model'],
             dwpose=models['dwpose'],
             t5=models['t5'],
+            adapter_name=adapter_name,
         )
         
         # Parse results and log to TensorBoard

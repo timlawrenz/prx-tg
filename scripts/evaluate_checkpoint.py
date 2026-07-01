@@ -96,7 +96,7 @@ def load_aesthetic_predictor(device):
 # -----------------------------------------------------------------------------
 # Main Evaluator Logic
 # -----------------------------------------------------------------------------
-def run_evaluation(checkpoint_path, config_path, output_dir, device='cuda', clip_model=None, clip_preprocess=None, clip_tokenizer=None, aesthetic_model=None, dwpose=None, t5=None):
+def run_evaluation(checkpoint_path, config_path, output_dir, device='cuda', clip_model=None, clip_preprocess=None, clip_tokenizer=None, aesthetic_model=None, dwpose=None, t5=None, adapter_name="stratum"):
     print(f"--- PRX-TG Checkpoint Evaluator ---")
     print(f"Checkpoint: {checkpoint_path}")
     print(f"Output Dir: {output_dir}\n")
@@ -156,56 +156,70 @@ def run_evaluation(checkpoint_path, config_path, output_dir, device='cuda', clip
         
         # Generation
         torch.manual_seed(seed)
-        text_emb, text_mask = t5.encode(prompt)
         
-        # Pass dummy DINO
-        b, _, h, w = 1, 3, 1024, 1024
-        dino_emb = torch.zeros(1, 1024, device=device)
-        dino_patches = torch.zeros(1, 256, 1024, device=device)
-        
-        gen_tensor = sampler.generate(
-            dino_emb=dino_emb,
-            dino_patches=dino_patches,
-            text_emb=text_emb,
-            text_mask=text_mask,
-            latent_size=h,
-            self_guidance=False, # Override instance setting to be safe
-            dino_scale=0.0
-        )
+        if adapter_name == "eidolon":
+            # Eidolon: use random identity + geometry vectors (no text)
+            identity_dim = config.get("adapter", {}).get("identity_dim", 64)
+            z_g_dim = config.get("adapter", {}).get("z_g_dim", 50)
+            identity_emb = torch.randn(1, identity_dim, device=device)
+            geometry_emb = torch.randn(1, z_g_dim, device=device)
+            # Use pixel-space latent_size from config
+            input_size = mc.get("input_size", 1024)
+            latent_size = input_size
+            gen_tensor = sampler.generate(
+                identity_emb=identity_emb,
+                geometry_emb=geometry_emb,
+                latent_size=latent_size,
+                self_guidance=False,
+            )
+        else:
+            text_emb, text_mask = t5.encode(prompt)
+            b, _, h, w = 1, 3, 1024, 1024
+            dino_emb = torch.zeros(1, 1024, device=device)
+            dino_patches = torch.zeros(1, 256, 1024, device=device)
+            gen_tensor = sampler.generate(
+                dino_emb=dino_emb,
+                dino_patches=dino_patches,
+                text_emb=text_emb,
+                text_mask=text_mask,
+                latent_size=h,
+                self_guidance=False,
+                dino_scale=0.0
+            )
         
         pil_img = tensor_to_pil(gen_tensor[0])
         pil_images.append(pil_img)
         
         # --- Evaluate: DWPose ---
-        # convert to uint8 HWC BGR for cv2/onnx
-        img_cv2 = np.array(pil_img)[:, :, ::-1] 
+        img_cv2 = np.array(pil_img)[:, :, ::-1]
         keypoints, scores, bboxes = dwpose(img_cv2, single_person=True)
         
         if len(scores) > 0:
-            face_scores = scores[0][23:91] # COCO-WholeBody face keypoints are 23-90
+            face_scores = scores[0][23:91]
             mean_face_conf = float(np.mean(face_scores))
             total_face_kp = int(np.sum(face_scores > 0.1))
         else:
             mean_face_conf = 0.0
             total_face_kp = 0
             
-        # --- Evaluate: CLIP & Aesthetic ---
+        # --- Evaluate: Aesthetic (image-only, applies to both adapter modes) ---
         clip_input = clip_preprocess(pil_img).unsqueeze(0).to(device)
-        text_tokens = clip_tokenizer(prompt).to(device)
-        
         with torch.no_grad():
             img_features = clip_model.encode_image(clip_input)
-            text_features = clip_model.encode_text(text_tokens)
-            
             img_features /= img_features.norm(dim=-1, keepdim=True)
-            text_features /= text_features.norm(dim=-1, keepdim=True)
-            
-            clip_score = float((img_features @ text_features.T).item())
-            
             aes_score = float(aesthetic_model(img_features).item())
-            
+        
+        # CLIP (text-image alignment): applicable only when text conditioning is used
+        clip_score = None
+        if adapter_name != "eidolon":
+            text_tokens = clip_tokenizer(prompt).to(device)
+            with torch.no_grad():
+                text_features = clip_model.encode_text(text_tokens)
+                text_features /= text_features.norm(dim=-1, keepdim=True)
+                clip_score = float((img_features @ text_features.T).item())
+        
         results[f"prompt_{i}"] = {
-            "prompt": prompt,
+            "prompt": prompt if adapter_name != "eidolon" else f"eidolon_seed{seed}",
             "seed": seed,
             "clip_score": clip_score,
             "aesthetic_score": aes_score,
@@ -214,22 +228,27 @@ def run_evaluation(checkpoint_path, config_path, output_dir, device='cuda', clip
             "time_sec": time.time() - t_start
         }
         
-        print(f"  [{i+1}/10] Aesthetic: {aes_score:.2f} | CLIP: {clip_score:.3f} | FaceConf: {mean_face_conf:.3f}")
+        clip_str = f"CLIP: {clip_score:.3f} | " if clip_score is not None else ""
+        print(f"  [{i+1}/10] Aesthetic: {aes_score:.2f} | {clip_str}FaceConf: {mean_face_conf:.3f}")
 
     # Summary
     mean_aes = np.mean([r["aesthetic_score"] for r in results.values()])
-    mean_clip = np.mean([r["clip_score"] for r in results.values()])
     mean_face_conf = np.mean([r["dwpose_mean_face_conf"] for r in results.values()])
+    clip_scores = [r["clip_score"] for r in results.values() if r["clip_score"] is not None]
+    mean_clip = np.mean(clip_scores) if clip_scores else None
     
-    results["summary"] = {
+    summary = {
         "mean_aesthetic_score": mean_aes,
-        "mean_clip_score": mean_clip,
         "mean_dwpose_face_conf": mean_face_conf
     }
+    if mean_clip is not None:
+        summary["mean_clip_score"] = mean_clip
+    results["summary"] = summary
     
     print(f"\n--- SUMMARY ---")
     print(f"Mean Aesthetic Score: {mean_aes:.2f}")
-    print(f"Mean CLIP Score:      {mean_clip:.3f}")
+    if mean_clip is not None:
+        print(f"Mean CLIP Score:      {mean_clip:.3f}")
     print(f"Mean Face Confidence: {mean_face_conf:.3f}")
     
     # Outputs
