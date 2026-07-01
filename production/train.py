@@ -1209,6 +1209,13 @@ class ProductionTrainer(Trainer):
         checkpoint_cfg = config.checkpoint
         logging_cfg = config.logging
         
+        # CFG probs: use adapter-specific schema when available
+        adapter_cfg = getattr(config, 'adapter', None)
+        if adapter_cfg is not None and adapter_cfg.cfg_dropout is not None and adapter_cfg.name == 'eidolon':
+            cfg_probs = dict(adapter_cfg.cfg_dropout)  # {'p_uncond', 'p_identity_only', 'p_geometry_only'}
+        else:
+            cfg_probs = training.cfg_dropout.to_dict()  # legacy 7-stream stratum schema
+        
         # Call parent init with extracted values
         super().__init__(
             model=model,
@@ -1221,7 +1228,7 @@ class ProductionTrainer(Trainer):
             weight_decay=training.optimizer.weight_decay,
             grad_clip=training.grad_clip,
             ema_decay=training.ema_decay,
-            cfg_probs=training.cfg_dropout.to_dict(),
+            cfg_probs=cfg_probs,
             grad_accumulation_steps=training.grad_accumulation_steps,
             checkpoint_every=checkpoint_cfg.save_every,
             log_every=logging_cfg.log_every,
