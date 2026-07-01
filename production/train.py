@@ -613,7 +613,7 @@ class Trainer:
         cfg_probs=None,
         grad_accumulation_steps=1,
         checkpoint_every=1000,
-        log_every=50,
+        log_every=2,
         checkpoint_dir='checkpoints',
         optimizer_config=None,
     ):

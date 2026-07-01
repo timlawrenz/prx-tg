@@ -311,7 +311,7 @@ class CheckpointConfig:
 @dataclass
 class LoggingConfig:
     """Logging and monitoring configuration."""
-    log_every: int = 50
+    log_every: int = 2
     log_file: str = "training.log"
     
     monitor_velocity_norm: bool = True
