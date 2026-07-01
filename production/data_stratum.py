@@ -74,7 +74,7 @@ def _collate(batch: list[dict]) -> dict:
             p = torch.cat([p, pad], dim=0)
         padded_patches.append(p)
 
-    return {
+    result = {
         'image_data':          torch.stack([s['image_data']      for s in batch]),
         'dino_embedding':      torch.stack([s['dino_embedding']   for s in batch]),
         'dinov3_patches':      torch.stack(padded_patches),
@@ -86,6 +86,11 @@ def _collate(batch: list[dict]) -> dict:
         'captions':            [s['caption']   for s in batch],
         'image_ids':           [s['image_id']  for s in batch],
     }
+    if 'identity_emb' in batch[0]:
+        result['identity_emb'] = torch.stack([s['identity_emb'] for s in batch])
+    if 'geometry_emb' in batch[0]:
+        result['geometry_emb'] = torch.stack([s['geometry_emb'] for s in batch])
+    return result
 
 
 from torch.utils.data import IterableDataset
@@ -105,6 +110,7 @@ class StratumDataset(IterableDataset):
         target_latent_size=1024,
         num_workers: int = 0,
         max_samples: Optional[int] = None,
+        adapter_name: str = "stratum",
     ):
         """
         Args:
@@ -114,11 +120,14 @@ class StratumDataset(IterableDataset):
             target_latent_size: Resize pixel.npy to this spatial size (int or (H,W))
             num_workers: Reserved for future DataLoader integration; ignored for now
             max_samples: If set, only iterate up to this many samples instead of 70000
+            adapter_name: "stratum" (default) or "eidolon" — controls which extra
+                          embeddings are loaded (eidolon loads auraface_lda + z_g)
         """
         self.stratum_dir = Path(stratum_dir)
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.target_latent_size = target_latent_size
+        self.adapter_name = adapter_name
 
         # Generate paths directly from the known naming convention (00000–69999).
         # Avoids scandir/iterdir over NAS which can block for several seconds on
@@ -163,6 +172,21 @@ class StratumDataset(IterableDataset):
             'image_id':       meta.get('image_id', d.name),
         }
 
+    def _load_sample_eidolon(self, d: Path) -> dict:
+        """Load sample + eidolon-specific embeddings (auraface_lda, z_g)."""
+        sample = self._load_sample(d)
+        identity_emb = np.load(d / 'auraface_lda.npy')   # (64,) float64
+        geometry_emb = np.load(d / 'z_g.npy')            # (50,) float32
+        sample['identity_emb'] = torch.from_numpy(identity_emb).float()
+        sample['geometry_emb'] = torch.from_numpy(geometry_emb).float()
+        return sample
+
+    def _load(self, d: Path) -> dict:
+        """Dispatch to the correct loader based on adapter_name."""
+        if self.adapter_name == "eidolon":
+            return self._load_sample_eidolon(d)
+        return self._load_sample(d)
+
     # ------------------------------------------------------------------
     # Iteration
     # ------------------------------------------------------------------
@@ -186,7 +210,7 @@ class StratumDataset(IterableDataset):
             batch_buf = []
             for d in dirs:
                 try:
-                    sample = self._load_sample(d)
+                    sample = self._load(d)
                 except Exception as e:
                     print(f"[StratumDataset] skipping {d.name}: {e}")
                     continue
@@ -203,6 +227,7 @@ def get_stratum_dataloader(
     shuffle: bool = True,
     target_latent_size=1024,
     max_samples: Optional[int] = None,
+    adapter_name: str = "stratum",
 ) -> StratumDataset:
     """Create a StratumDataset dataloader.
 
@@ -216,6 +241,8 @@ def get_stratum_dataloader(
         shuffle: Randomise order each pass
         target_latent_size: Resize pixel to this size (int or (H, W))
         max_samples: If set, only iterate up to this many samples
+        adapter_name: "stratum" (default) or "eidolon" — controls which extra
+                      embeddings are loaded
     """
     return StratumDataset(
         stratum_dir=stratum_dir,
@@ -223,4 +250,5 @@ def get_stratum_dataloader(
         shuffle=shuffle,
         target_latent_size=target_latent_size,
         max_samples=max_samples,
+        adapter_name=adapter_name,
     )

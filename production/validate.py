@@ -176,20 +176,102 @@ class ValidationRunner:
             
             for i in range(batch_size):
                 if sample_count <= max_idx:
-                    samples.append({
+                    sample = {
                         'image_data': batch['image_data'][i].cpu(),
-                        'dino_embedding': batch['dino_embedding'][i].cpu(),
-                        'dinov3_patches': batch['dinov3_patches'][i].cpu(),  # NEW - spatial patches
-                        't5_hidden': batch['t5_hidden'][i].cpu(),
-                        't5_mask': batch['t5_mask'][i].cpu(),
-                        'caption': batch['captions'][i],
                         'image_id': batch['image_ids'][i],
-                    })
+                    }
+                    # Stratum fields (always present)
+                    if 'dino_embedding' in batch:
+                        sample['dino_embedding'] = batch['dino_embedding'][i].cpu()
+                    if 'dinov3_patches' in batch:
+                        sample['dinov3_patches'] = batch['dinov3_patches'][i].cpu()
+                    if 't5_hidden' in batch:
+                        sample['t5_hidden'] = batch['t5_hidden'][i].cpu()
+                    if 't5_mask' in batch:
+                        sample['t5_mask'] = batch['t5_mask'][i].cpu()
+                    if 'captions' in batch:
+                        sample['caption'] = batch['captions'][i]
+                    # Eidolon fields
+                    if 'identity_emb' in batch:
+                        sample['identity_emb'] = batch['identity_emb'][i].cpu()
+                    if 'geometry_emb' in batch:
+                        sample['geometry_emb'] = batch['geometry_emb'][i].cpu()
+                    samples.append(sample)
                     sample_count += 1
         
         self.validation_samples = samples
         print(f"Loaded {len(samples)} validation samples")
         return samples
+    
+    def _get_adapter_name(self):
+        """Detect which adapter the model is using."""
+        from production.adapters import EidolonAdapter
+        if isinstance(self.model.adapter, EidolonAdapter):
+            return "eidolon"
+        return "stratum"
+    
+    def _build_conditioning_kwargs(self, sample, batch_dim=True):
+        """Build adapter-specific conditioning kwargs from a cached sample.
+        
+        Args:
+            sample: cached validation sample dict
+            batch_dim: if True, add batch dimension via .unsqueeze(0)
+            
+        Returns:
+            dict of kwargs for sampler.generate(**kwargs)
+        """
+        adapter_name = self._get_adapter_name()
+        kwargs = {}
+        
+        if adapter_name == "stratum":
+            dino_emb = sample['dino_embedding']
+            dino_patches = sample['dinov3_patches']
+            text_emb = sample['t5_hidden']
+            text_mask = sample['t5_mask']
+            if batch_dim:
+                dino_emb = dino_emb.unsqueeze(0)
+                dino_patches = dino_patches.unsqueeze(0)
+                text_emb = text_emb.unsqueeze(0)
+                text_mask = text_mask.unsqueeze(0)
+            kwargs['dino_emb'] = dino_emb
+            kwargs['dino_patches'] = dino_patches
+            kwargs['text_emb'] = text_emb
+            kwargs['text_mask'] = text_mask
+        elif adapter_name == "eidolon":
+            identity_emb = sample['identity_emb']
+            geometry_emb = sample['geometry_emb']
+            if batch_dim:
+                identity_emb = identity_emb.unsqueeze(0)
+                geometry_emb = geometry_emb.unsqueeze(0)
+            kwargs['identity_emb'] = identity_emb
+            kwargs['geometry_emb'] = geometry_emb
+        else:
+            raise ValueError(f"Unknown adapter: {adapter_name}")
+        
+        return kwargs
+    
+    def _build_batch_conditioning_kwargs(self, batch_samples):
+        """Build adapter-specific conditioning kwargs from a list of cached samples.
+        
+        Args:
+            batch_samples: list of cached validation sample dicts
+            
+        Returns:
+            dict of kwargs for sampler.generate(**kwargs)
+        """
+        adapter_name = self._get_adapter_name()
+        kwargs = {}
+        
+        if adapter_name == "stratum":
+            kwargs['dino_emb'] = torch.stack([s['dino_embedding'] for s in batch_samples])
+            kwargs['dino_patches'] = torch.stack([s['dinov3_patches'] for s in batch_samples])
+            kwargs['text_emb'] = torch.stack([s['t5_hidden'] for s in batch_samples])
+            kwargs['text_mask'] = torch.stack([s['t5_mask'] for s in batch_samples])
+        elif adapter_name == "eidolon":
+            kwargs['identity_emb'] = torch.stack([s['identity_emb'] for s in batch_samples])
+            kwargs['geometry_emb'] = torch.stack([s['geometry_emb'] for s in batch_samples])
+        
+        return kwargs
     
     def _get_latent_size(self):
         """Compute latent size from current resolution scale.
@@ -203,7 +285,10 @@ class ValidationRunner:
         return latent_size
     
     def run_reconstruction_test(self, step, sampler, latent_size=None):
-        """Test 1: Generate from original caption + DINO, measure LPIPS.
+        """Test 1: Generate from original conditioning, measure LPIPS.
+        
+        For stratum: uses DINO + T5 conditioning.
+        For eidolon: uses identity_emb + geometry_emb conditioning.
         
         Args:
             step: current training step
@@ -232,19 +317,19 @@ class ValidationRunner:
             
             # Gather batch
             batch_samples = [samples[idx] for idx in batch_indices]
-            
-            dino_emb = torch.stack([s['dino_embedding'] for s in batch_samples])
-            dino_patches = torch.stack([s['dinov3_patches'] for s in batch_samples])  # NEW - patches
-            text_emb = torch.stack([s['t5_hidden'] for s in batch_samples])
-            text_mask = torch.stack([s['t5_mask'] for s in batch_samples])
             gt_images_raw = torch.stack([s['image_data'] for s in batch_samples])
             image_ids = [s['image_id'] for s in batch_samples]
             
+            # Build adapter-specific conditioning kwargs
+            cond_kwargs = self._build_batch_conditioning_kwargs(batch_samples)
+            
             # Generate images at current training resolution
-            gen_images = sampler.generate(dino_emb, dino_patches, text_emb, text_mask,
-                                          latent_size=latent_size,
-                                          text_scale=self.text_scale/2.0,
-                                          dino_scale=self.dino_scale/2.0)
+            gen_images = sampler.generate(
+                latent_size=latent_size,
+                text_scale=self.text_scale/2.0,
+                dino_scale=self.dino_scale/2.0,
+                **cond_kwargs,
+            )
             
             # Resize GT to match generation resolution
             if latent_size is not None:
@@ -275,7 +360,7 @@ class ValidationRunner:
             )
             
             # Clear GPU memory after each batch
-            del dino_emb, dino_patches, text_emb, text_mask, gen_images, gt_images
+            del cond_kwargs, gen_images, gt_images
             torch.cuda.empty_cache()
         
         mean_lpips = sum(lpips_scores) / len(lpips_scores)
@@ -291,7 +376,7 @@ class ValidationRunner:
         }
     
     def run_dino_swap_test(self, step, sampler, latent_size=None):
-        """Test 2: Swap DINO embeddings, keep original captions.
+        """Test 2: Swap DINO embeddings, keep original captions. Stratum only.
         
         For each pair (A, B):
         - Generate with caption_A + dino_A (reference)
@@ -310,6 +395,10 @@ class ValidationRunner:
         Returns:
             dict with test results
         """
+        adapter_name = self._get_adapter_name()
+        if adapter_name != "stratum":
+            return {'skipped': True, 'reason': f'DINO swap not applicable to {adapter_name} adapter'}
+        
         print(f"Running DINO swap test (step {step})...")
         
         samples = self.load_validation_samples()
@@ -322,37 +411,35 @@ class ValidationRunner:
             sample_a = samples[idx_a]
             sample_b = samples[idx_b]
             
-            # 1. Reference: A's caption + A's DINO
+            # Build kwargs for each variant using the helper
+            kwargs_a = self._build_conditioning_kwargs(sample_a, batch_dim=True)
+            kwargs_b = self._build_conditioning_kwargs(sample_b, batch_dim=True)
+            
+            # 1. Reference: A's conditioning
             gen_a_ref = sampler.generate(
-                sample_a['dino_embedding'].unsqueeze(0),
-                sample_a['dinov3_patches'].unsqueeze(0),
-                sample_a['t5_hidden'].unsqueeze(0),
-                sample_a['t5_mask'].unsqueeze(0),
                 latent_size=latent_size,
                 text_scale=self.text_scale/2.0,
                 dino_scale=self.dino_scale/2.0,
+                **kwargs_a,
             )[0]  # (3, H, W)
             
-            # 2. Swapped: A's caption + B's DINO (swap CLS + patches together)
+            # 2. Swapped: A's text + B's DINO (swap CLS + patches together)
+            kwargs_swap = dict(kwargs_a)
+            kwargs_swap['dino_emb'] = kwargs_b['dino_emb']
+            kwargs_swap['dino_patches'] = kwargs_b['dino_patches']
             gen_a_swap = sampler.generate(
-                sample_b['dino_embedding'].unsqueeze(0),
-                sample_b['dinov3_patches'].unsqueeze(0),
-                sample_a['t5_hidden'].unsqueeze(0),
-                sample_a['t5_mask'].unsqueeze(0),
                 latent_size=latent_size,
                 text_scale=self.text_scale/2.0,
                 dino_scale=self.dino_scale/2.0,
+                **kwargs_swap,
             )[0]  # (3, H, W)
             
-            # 3. Reference: B's caption + B's DINO
+            # 3. Reference: B's conditioning
             gen_b_ref = sampler.generate(
-                sample_b['dino_embedding'].unsqueeze(0),
-                sample_b['dinov3_patches'].unsqueeze(0),
-                sample_b['t5_hidden'].unsqueeze(0),
-                sample_b['t5_mask'].unsqueeze(0),
                 latent_size=latent_size,
                 text_scale=self.text_scale/2.0,
                 dino_scale=self.dino_scale/2.0,
+                **kwargs_b,
             )[0]  # (3, H, W)
             
             # Create collage: [A_ref | A_swap | B_ref]
@@ -365,7 +452,6 @@ class ValidationRunner:
             
             # Log to TensorBoard (if available)
             if self.tb_writer is not None:
-                # TensorBoard expects (C, H, W) in [0, 255] or (H, W, C) in [0, 1]
                 collage_tensor = torch.from_numpy(collage_array).permute(2, 0, 1)  # (3, H, W)
                 self.tb_writer.add_image(
                     f'validation/dino_swap_pair{pair_idx}',
@@ -378,8 +464,8 @@ class ValidationRunner:
                 'pair_idx': pair_idx,
                 'idx_a': idx_a,
                 'idx_b': idx_b,
-                'caption_a': sample_a['caption'][:100] + '...',
-                'caption_b': sample_b['caption'][:100] + '...',
+                'caption_a': sample_a.get('caption', '(no caption)')[:100] + '...',
+                'caption_b': sample_b.get('caption', '(no caption)')[:100] + '...',
             })
             
             # Clear GPU memory
@@ -400,6 +486,7 @@ class ValidationRunner:
         - Pass 2: scale_text=0.0, scale_dino=2.0 (DINO-only, no text)
         
         This proves that text and DINO conditioning are truly independent.
+        Stratum only.
         
         Args:
             step: current training step
@@ -409,6 +496,10 @@ class ValidationRunner:
         Returns:
             dict with test results
         """
+        adapter_name = self._get_adapter_name()
+        if adapter_name != "stratum":
+            return {'skipped': True, 'reason': f'Divergence test not applicable to {adapter_name} adapter'}
+        
         print(f"Running CFG divergence test (step {step})...")
         
         samples = self.load_validation_samples()
@@ -421,6 +512,7 @@ class ValidationRunner:
         
         for test_idx, sample_idx in enumerate(test_indices):
             sample = samples[sample_idx]
+            kwargs = self._build_conditioning_kwargs(sample, batch_dim=True)
             
             # Generate from same noise with extreme CFG scales
             # Fix random seed for reproducibility
@@ -428,13 +520,10 @@ class ValidationRunner:
             
             # Generate: text-only (scale_text=4.0, scale_dino=0.0)
             gen_text_only = sampler.generate(
-                sample['dino_embedding'].unsqueeze(0),
-                sample['dinov3_patches'].unsqueeze(0),
-                sample['t5_hidden'].unsqueeze(0),
-                sample['t5_mask'].unsqueeze(0),
                 latent_size=latent_size,
                 text_scale=4.0,
                 dino_scale=0.0,
+                **kwargs,
             )[0]  # (3, H, W)
             
             # Reset seed to same starting noise
@@ -442,13 +531,10 @@ class ValidationRunner:
             
             # Generate: DINO-only (scale_text=0.0, scale_dino=2.0)
             gen_dino_only = sampler.generate(
-                sample['dino_embedding'].unsqueeze(0),
-                sample['dinov3_patches'].unsqueeze(0),
-                sample['t5_hidden'].unsqueeze(0),
-                sample['t5_mask'].unsqueeze(0),
                 latent_size=latent_size,
                 text_scale=0.0,
                 dino_scale=2.0,
+                **kwargs,
             )[0]  # (3, H, W)
             
             # Reset seed again for reference generation with both
@@ -456,11 +542,8 @@ class ValidationRunner:
             
             # Generate: both (default scales)
             gen_both = sampler.generate(
-                sample['dino_embedding'].unsqueeze(0),
-                sample['dinov3_patches'].unsqueeze(0),
-                sample['t5_hidden'].unsqueeze(0),
-                sample['t5_mask'].unsqueeze(0),
                 latent_size=latent_size,
+                **kwargs,
             )[0]  # (3, H, W)
             
             # Create collage: [text-only | DINO-only | both]
@@ -483,7 +566,7 @@ class ValidationRunner:
             
             results.append({
                 'sample_idx': sample_idx,
-                'caption': sample['caption'][:100] + '...',
+                'caption': sample.get('caption', '(no caption)')[:100] + '...',
             })
             
             # Clear GPU memory
@@ -496,7 +579,7 @@ class ValidationRunner:
         }
     
     def run_text_only_test(self, step, sampler, latent_size=None):
-        """Test 2c: Generate from text ONLY (no DINO guidance).
+        """Test 2c: Generate from text ONLY (no DINO guidance). Stratum only.
         
         Simulates pure text-to-image generation for future use cases.
         Sets dino_scale=0.0 to disable DINO conditioning entirely.
@@ -512,6 +595,10 @@ class ValidationRunner:
         Returns:
             dict with lpips_scores and mean_lpips
         """
+        adapter_name = self._get_adapter_name()
+        if adapter_name != "stratum":
+            return {'skipped': True, 'reason': f'Text-only test not applicable to {adapter_name} adapter'}
+        
         print(f"Running text-only generation test (step {step})...")
         
         # Move LPIPS to GPU for this test
@@ -531,27 +618,20 @@ class ValidationRunner:
             
             # Gather batch
             batch_samples = [samples[idx] for idx in batch_indices]
-            
-            # NOTE: We still pass DINO embeddings to avoid tensor shape issues,
-            # but set dino_scale=0.0 so they have zero influence
-            dino_emb = torch.stack([s['dino_embedding'] for s in batch_samples])
-            dino_patches = torch.stack([s['dinov3_patches'] for s in batch_samples])
-            text_emb = torch.stack([s['t5_hidden'] for s in batch_samples])
-            text_mask = torch.stack([s['t5_mask'] for s in batch_samples])
             gt_images_raw = torch.stack([s['image_data'] for s in batch_samples])
             image_ids = [s['image_id'] for s in batch_samples]
+            
+            # Build adapter-specific conditioning kwargs
+            cond_kwargs = self._build_batch_conditioning_kwargs(batch_samples)
             
             # Generate images with TEXT ONLY (dino_scale=0.0 disables DINO CLS + patches)
             # Force dual-CFG path even in self-guidance mode
             gen_images = sampler.generate(
-                dino_emb,
-                dino_patches,
-                text_emb, 
-                text_mask,
                 latent_size=latent_size,
                 self_guidance=False,
                 dino_scale=0.0,  # Zero DINO influence
                 text_scale=3.0,  # Normal text guidance
+                **cond_kwargs,
             )
             
             # Resize GT to match generation resolution
@@ -583,7 +663,7 @@ class ValidationRunner:
             )
             
             # Clear GPU memory after each batch
-            del dino_emb, dino_patches, text_emb, text_mask, gen_images, gt_images
+            del cond_kwargs, gen_images, gt_images
             torch.cuda.empty_cache()
         
         mean_lpips = sum(lpips_scores) / len(lpips_scores)
@@ -656,7 +736,9 @@ class ValidationRunner:
         return hidden_states, attention_mask
     
     def run_text_manip_test(self, step, sampler, latent_size=None):
-        """Test 3: Modify caption, keep DINO embedding.
+        """Test 3: Modify caption, keep DINO embedding. Stratum only.
+        
+        NOT applicable to eidolon (no T5). Skip when adapter_name == "eidolon".
         
         Dynamically finds text to replace from a list of common patterns.
         
@@ -668,6 +750,10 @@ class ValidationRunner:
         Returns:
             dict with test results and LPIPS comparison scores
         """
+        adapter_name = self._get_adapter_name()
+        if adapter_name == "eidolon":
+            return {'skipped': True, 'reason': 'Text manipulation not applicable to eidolon (no T5)'}
+        
         print(f"Running text manipulation test (step {step})...")
         
         # Move LPIPS to GPU for this test
@@ -707,25 +793,32 @@ class ValidationRunner:
             # Modified caption (string replace)
             modified_caption = original_caption.replace(original_text, modified_text)
             
-            dino_emb = sample['dino_embedding'].unsqueeze(0)
-            dino_patches = sample['dinov3_patches'].unsqueeze(0)
+            # Build kwargs for original conditioning
+            kwargs_orig = self._build_conditioning_kwargs(sample, batch_dim=True)
             
             # Generate with original caption
-            text_emb_orig = sample['t5_hidden'].unsqueeze(0)
-            text_mask_orig = sample['t5_mask'].unsqueeze(0)
-            gen_orig = sampler.generate(dino_emb, dino_patches, text_emb_orig, text_mask_orig,
-                                        latent_size=latent_size,
-                                        text_scale=self.text_scale/2.0,
-                                        dino_scale=self.dino_scale/2.0)[0]  # (3, H, W)
+            gen_orig = sampler.generate(
+                latent_size=latent_size,
+                text_scale=self.text_scale/2.0,
+                dino_scale=self.dino_scale/2.0,
+                **kwargs_orig,
+            )[0]  # (3, H, W)
             
             # Re-encode modified caption with T5
             text_emb_mod, text_mask_mod = self.encode_caption(modified_caption)
             
+            # Build kwargs with modified text
+            kwargs_mod = dict(kwargs_orig)
+            kwargs_mod['text_emb'] = text_emb_mod
+            kwargs_mod['text_mask'] = text_mask_mod
+            
             # Generate with modified caption
-            gen_mod = sampler.generate(dino_emb, dino_patches, text_emb_mod, text_mask_mod,
-                                       latent_size=latent_size,
-                                       text_scale=self.text_scale/2.0,
-                                       dino_scale=self.dino_scale/2.0)[0]  # (3, H, W)
+            gen_mod = sampler.generate(
+                latent_size=latent_size,
+                text_scale=self.text_scale/2.0,
+                dino_scale=self.dino_scale/2.0,
+                **kwargs_mod,
+            )[0]  # (3, H, W)
             
             # Compute LPIPS between original and modified generations
             lpips_val = self.lpips_fn(gen_orig.unsqueeze(0), gen_mod.unsqueeze(0)).item()
@@ -764,7 +857,7 @@ class ValidationRunner:
             })
             
             # Clear GPU memory
-            del dino_emb, dino_patches, text_emb_orig, text_mask_orig, text_emb_mod, text_mask_mod
+            del kwargs_orig, kwargs_mod, text_emb_mod, text_mask_mod
             del gen_orig, gen_mod
             torch.cuda.empty_cache()
         
@@ -795,8 +888,186 @@ class ValidationRunner:
             'results': results,
         }
     
+    # ── Eidolon-specific validation tests ────────────────────────────────────
+    
+    EIDOLON_SWAP_TEST_PAIRS = [
+        (5, 42),   # Pair 1
+        (12, 78),  # Pair 2
+        (23, 56),  # Pair 3
+        (34, 91),  # Pair 4
+        (47, 63),  # Pair 5
+    ]
+    
+    def run_eidolon_identity_swap_test(self, step, sampler, latent_size=None):
+        """Eidolon Test: Identity swap — same geometry_emb, different identity_emb.
+        
+        For each pair (A, B):
+        - Generate with identity_A + geometry_A (reference A)
+        - Generate with identity_B + geometry_A (identity swapped)
+        - Generate with identity_B + geometry_B (reference B)
+        
+        Visual comparison: A_ref vs A_swap should look different (different identity).
+        External metric: AuraFace cosine should distinguish.
+        
+        Args:
+            step: current training step
+            sampler: ValidationSampler instance
+            latent_size: spatial size for generation
+        
+        Returns:
+            dict with test results
+        """
+        print(f"Running eidolon identity swap test (step {step})...")
+        
+        samples = self.load_validation_samples()
+        output_dir = self.output_dir / f'step{step:07d}' / 'eidolon_identity_swap'
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        results = []
+        
+        for pair_idx, (idx_a, idx_b) in enumerate(self.EIDOLON_SWAP_TEST_PAIRS):
+            sample_a = samples[idx_a]
+            sample_b = samples[idx_b]
+            
+            kwargs_a = self._build_conditioning_kwargs(sample_a, batch_dim=True)
+            kwargs_b = self._build_conditioning_kwargs(sample_b, batch_dim=True)
+            
+            # 1. Reference: identity_A + geometry_A
+            gen_a_ref = sampler.generate(
+                latent_size=latent_size,
+                **kwargs_a,
+            )[0]  # (3, H, W)
+            
+            # 2. Identity swap: identity_B + geometry_A
+            kwargs_swap = dict(kwargs_a)
+            kwargs_swap['identity_emb'] = kwargs_b['identity_emb']
+            gen_a_swap = sampler.generate(
+                latent_size=latent_size,
+                **kwargs_swap,
+            )[0]  # (3, H, W)
+            
+            # 3. Reference: identity_B + geometry_B
+            gen_b_ref = sampler.generate(
+                latent_size=latent_size,
+                **kwargs_b,
+            )[0]  # (3, H, W)
+            
+            # Create collage: [A_ref | A_swap | B_ref]
+            collage_array = create_image_collage([gen_a_ref, gen_a_swap, gen_b_ref])
+            
+            collage_img = Image.fromarray(collage_array)
+            collage_path = output_dir / f'pair{pair_idx}_collage.png'
+            collage_img.save(collage_path)
+            
+            if self.tb_writer is not None:
+                collage_tensor = torch.from_numpy(collage_array).permute(2, 0, 1)
+                self.tb_writer.add_image(
+                    f'validation/eidolon_identity_swap_pair{pair_idx}',
+                    collage_tensor,
+                    global_step=step,
+                    dataformats='CHW'
+                )
+            
+            results.append({
+                'pair_idx': pair_idx,
+                'idx_a': idx_a,
+                'idx_b': idx_b,
+            })
+            
+            del gen_a_ref, gen_a_swap, gen_b_ref
+            torch.cuda.empty_cache()
+        
+        return {
+            'num_pairs': len(self.EIDOLON_SWAP_TEST_PAIRS),
+            'results': results,
+        }
+    
+    EIDOLON_GEOMETRY_SWEEP_INDICES = [10, 30, 50]
+    EIDOLON_GEOMETRY_SWEEP_DIM = 0  # which z_g dimension to sweep
+    EIDOLON_GEOMETRY_SWEEP_VALUES = [-2.0, -1.0, 0.0, 1.0, 2.0]
+    
+    def run_eidolon_geometry_sweep_test(self, step, sampler, latent_size=None):
+        """Eidolon Test: Geometry sweep — fix identity, sweep one z_g dimension.
+        
+        Fixes identity_emb, sweeps one z_g dimension through multiple values.
+        DWPose should track pose change, AuraFace should hold (same identity).
+        
+        Args:
+            step: current training step
+            sampler: ValidationSampler instance
+            latent_size: spatial size for generation
+        
+        Returns:
+            dict with test results
+        """
+        print(f"Running eidolon geometry sweep test (step {step})...")
+        
+        samples = self.load_validation_samples()
+        output_dir = self.output_dir / f'step{step:07d}' / 'eidolon_geometry_sweep'
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        results = []
+        sweep_dim = self.EIDOLON_GEOMETRY_SWEEP_DIM
+        
+        for sample_idx in self.EIDOLON_GEOMETRY_SWEEP_INDICES:
+            sample = samples[sample_idx]
+            base_kwargs = self._build_conditioning_kwargs(sample, batch_dim=True)
+            identity_emb = base_kwargs['identity_emb'].clone()
+            base_geometry = base_kwargs['geometry_emb'].clone()
+            
+            sweep_images = []
+            sweep_labels = []
+            
+            for val in self.EIDOLON_GEOMETRY_SWEEP_VALUES:
+                modified_geometry = base_geometry.clone()
+                modified_geometry[:, sweep_dim] = val
+                
+                sweep_kwargs = {
+                    'identity_emb': identity_emb,
+                    'geometry_emb': modified_geometry,
+                }
+                
+                gen = sampler.generate(
+                    latent_size=latent_size,
+                    **sweep_kwargs,
+                )[0]  # (3, H, W)
+                
+                sweep_images.append(gen)
+                sweep_labels.append(f'z_g[{sweep_dim}]={val:.1f}')
+            
+            # Create collage of all sweep values
+            collage_array = create_image_collage(sweep_images, labels=sweep_labels)
+            
+            collage_img = Image.fromarray(collage_array)
+            collage_path = output_dir / f'sample{sample_idx}_sweep.png'
+            collage_img.save(collage_path)
+            
+            if self.tb_writer is not None:
+                collage_tensor = torch.from_numpy(collage_array).permute(2, 0, 1)
+                self.tb_writer.add_image(
+                    f'validation/eidolon_geometry_sweep_{sample_idx}',
+                    collage_tensor,
+                    global_step=step,
+                    dataformats='CHW'
+                )
+            
+            results.append({
+                'sample_idx': sample_idx,
+                'sweep_dim': sweep_dim,
+                'sweep_values': self.EIDOLON_GEOMETRY_SWEEP_VALUES,
+            })
+            
+            del sweep_images, sweep_kwargs
+            torch.cuda.empty_cache()
+        
+        return {
+            'num_samples': len(self.EIDOLON_GEOMETRY_SWEEP_INDICES),
+            'sweep_dim': sweep_dim,
+            'results': results,
+        }
+    
     def run_validation(self, step):
-        """Run all validation tests.
+        """Run all validation tests, dispatched by adapter type.
         
         Args:
             step: current training step
@@ -808,9 +1079,11 @@ class ValidationRunner:
         latent_size = self._get_latent_size()
         base_size = getattr(self.model, 'input_size', 128)
         scale = latent_size / base_size if base_size > 0 else 1.0
+        adapter_name = self._get_adapter_name()
         
         print(f"\n{'='*60}")
         print(f"VALIDATION AT STEP {step}")
+        print(f"  Adapter: {adapter_name}")
         if latent_size != base_size:
             print(f"  Resolution scale: {scale:.2f}x ({latent_size}×{latent_size} latent → {latent_size*8}px)")
         print(f"{'='*60}\n")
@@ -841,25 +1114,38 @@ class ValidationRunner:
         )
         
         try:
-            # Run tests
+            # Reconstruction test runs for ALL adapters
             results = {
                 'step': step,
                 'latent_size': latent_size,
+                'adapter': adapter_name,
                 'reconstruction': self.run_reconstruction_test(step, sampler, latent_size=latent_size),
             }
             
-            if self.self_guidance:
-                # Divergence test is not meaningful with self-guidance
-                print("  Skipping divergence test (not applicable with self-guidance)")
-                results['divergence'] = {'skipped': True, 'reason': 'self-guidance mode'}
-            else:
-                results['divergence'] = self.run_divergence_test(step, sampler, latent_size=latent_size)
-            
-            # Text-only test always runs (uses dual-CFG path regardless of guidance mode)
-            results['text_only'] = self.run_text_only_test(step, sampler, latent_size=latent_size)
-            
-            # Text manipulation skipped — not relevant for spatial window ablation
-            results['text_manip'] = {'skipped': True, 'reason': 'not relevant for spatial window comparison'}
+            if adapter_name == "stratum":
+                # Stratum-specific tests
+                if self.self_guidance:
+                    results['divergence'] = {'skipped': True, 'reason': 'self-guidance mode'}
+                else:
+                    results['divergence'] = self.run_divergence_test(step, sampler, latent_size=latent_size)
+                
+                # Text-only test (uses dual-CFG path)
+                results['text_only'] = self.run_text_only_test(step, sampler, latent_size=latent_size)
+                
+                # DINO swap and text manipulation tests
+                results['dino_swap'] = self.run_dino_swap_test(step, sampler, latent_size=latent_size)
+                results['text_manip'] = self.run_text_manip_test(step, sampler, latent_size=latent_size)
+                
+            elif adapter_name == "eidolon":
+                # Eidolon-specific tests
+                results['dino_swap'] = {'skipped': True, 'reason': 'eidolon adapter'}
+                results['divergence'] = {'skipped': True, 'reason': 'eidolon adapter'}
+                results['text_only'] = {'skipped': True, 'reason': 'eidolon adapter (no text)'}
+                results['text_manip'] = {'skipped': True, 'reason': 'eidolon adapter (no T5)'}
+                results['eidolon_identity_swap'] = self.run_eidolon_identity_swap_test(
+                    step, sampler, latent_size=latent_size)
+                results['eidolon_geometry_sweep'] = self.run_eidolon_geometry_sweep_test(
+                    step, sampler, latent_size=latent_size)
         finally:
             # Clean up sampler to prevent memory leak
             del sampler
@@ -875,34 +1161,55 @@ class ValidationRunner:
         
         # Save results
         results_file = self.output_dir / f'step{step:07d}' / 'results.json'
+        results_file.parent.mkdir(parents=True, exist_ok=True)
         with open(results_file, 'w') as f:
             json.dump(results, f, indent=2)
         
         # Log to TensorBoard
         if self.tb_writer is not None:
             self.tb_writer.add_scalar('validation/reconstruction_lpips', results['reconstruction']['mean_lpips'], step)
-            if not results['text_only'].get('skipped'):
+            if not results.get('text_only', {}).get('skipped'):
                 self.tb_writer.add_scalar('validation/text_only_lpips', results['text_only']['mean_lpips'], step)
-            # Text manipulation TensorBoard logging skipped (not relevant for spatial window ablation)
         
         # Print summary
         print(f"\n{'='*60}")
         print("VALIDATION SUMMARY")
+        print(f"  Adapter: {adapter_name}")
         if self.self_guidance:
             print(f"  (self-guidance mode, scale={self.guidance_scale})")
         if latent_size != base_size:
             print(f"  (resolution: {scale:.2f}x, {latent_size*8}px)")
         print(f"{'='*60}")
-        print(f"Reconstruction LPIPS: {results['reconstruction']['mean_lpips']:.4f} (text+DINO, 25 samples)")
-        if results['text_only'].get('skipped'):
-            print(f"Text-only LPIPS: SKIPPED (self-guidance mode)")
-        else:
-            print(f"Text-only LPIPS: {results['text_only']['mean_lpips']:.4f} (text only, 20 samples)")
-        # DINO swap and text manipulation skipped — not relevant for spatial window comparison
-        if results['divergence'].get('skipped'):
-            print(f"CFG Divergence: SKIPPED (self-guidance mode)")
-        else:
-            print(f"CFG Divergence: {results['divergence']['num_samples']} samples (text-only vs DINO-only vs both)")
+        print(f"Reconstruction LPIPS: {results['reconstruction']['mean_lpips']:.4f} ({results['reconstruction']['num_samples']} samples)")
+        
+        if adapter_name == "stratum":
+            if results.get('text_only', {}).get('skipped'):
+                print(f"Text-only LPIPS: SKIPPED")
+            else:
+                print(f"Text-only LPIPS: {results['text_only']['mean_lpips']:.4f} ({results['text_only']['num_samples']} samples)")
+            if results.get('divergence', {}).get('skipped'):
+                print(f"CFG Divergence: SKIPPED")
+            else:
+                print(f"CFG Divergence: {results['divergence']['num_samples']} samples")
+            if results.get('dino_swap', {}).get('skipped'):
+                print(f"DINO Swap: SKIPPED")
+            else:
+                print(f"DINO Swap: {results['dino_swap']['num_pairs']} pairs")
+            if results.get('text_manip', {}).get('skipped'):
+                print(f"Text Manip: SKIPPED")
+            else:
+                print(f"Text Manip: {results['text_manip']['num_successful']}/{results['text_manip']['num_cases']} cases, mean LPIPS diff: {results['text_manip']['mean_lpips_difference']:.4f}")
+        
+        elif adapter_name == "eidolon":
+            if results.get('eidolon_identity_swap', {}).get('skipped'):
+                print(f"Identity Swap: SKIPPED")
+            else:
+                print(f"Identity Swap: {results['eidolon_identity_swap']['num_pairs']} pairs")
+            if results.get('eidolon_geometry_sweep', {}).get('skipped'):
+                print(f"Geometry Sweep: SKIPPED")
+            else:
+                print(f"Geometry Sweep: {results['eidolon_geometry_sweep']['num_samples']} samples, dim={results['eidolon_geometry_sweep']['sweep_dim']}")
+        
         print(f"Results saved to: {results_file}")
         print(f"{'='*60}\n")
         
@@ -921,6 +1228,7 @@ def create_validation_fn(
     prediction_type="v_prediction",
     source="webdataset",
     stratum_dir="/workspace/stratum",
+    adapter_name="stratum",
 ):
     """Create validation function for training loop.
     
@@ -963,6 +1271,7 @@ def create_validation_fn(
                 target_latent_size=getattr(model, 'input_size', 128),
                 source=source,
                 stratum_dir=stratum_dir,
+                adapter_name=adapter_name,
             )
         
         if runner is None:

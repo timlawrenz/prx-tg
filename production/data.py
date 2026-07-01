@@ -230,6 +230,7 @@ def get_deterministic_validation_dataloader(
     target_latent_size=64,
     source="webdataset",
     stratum_dir="/workspace/stratum",
+    adapter_name="stratum",
 ):
     """Create deterministic validation dataloader for consistent testing.
 
@@ -256,6 +257,7 @@ def get_deterministic_validation_dataloader(
             shuffle=False,  # deterministic
             target_latent_size=target_latent_size,
             max_samples=100,  # use first 100 for validation
+            adapter_name=adapter_name,
         )
     
     dataset = ValidationDataset(
@@ -333,12 +335,18 @@ def _bucket_target_pixel_size(bucket_name: str) -> tuple[int, int]:
     return (h_px, w_px)
 
 
-def get_production_dataloader(config, device='cuda'):
+def get_production_dataloader(config, device='cuda', adapter_name='stratum'):
     """Create production dataloader from config.
 
     Dispatches on data.source:
       "webdataset" (default) — bucket-aware loader from shard tars
       "stratum"              — flat loader from per-image stratum dirs
+
+    Args:
+        config: Production config object
+        device: Torch device string
+        adapter_name: "stratum" (default) or "eidolon" — controls which extra
+                      embeddings the stratum loader loads
     """
     from .config_loader import Config
     from torch.utils.data import DataLoader
@@ -363,6 +371,7 @@ def get_production_dataloader(config, device='cuda'):
             shuffle=True,
             target_latent_size=config.model.input_size,
             max_samples=data_cfg.stratum_max_samples,
+            adapter_name=adapter_name,
         )
         return DataLoader(
             dataset,
