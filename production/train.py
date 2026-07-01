@@ -831,12 +831,14 @@ class Trainer:
         
         # Collect per-layer gradient norms for monitoring patch learning
         layer_grad_norms = {}
-        if hasattr(self.model, 'dino_patch_proj') and self.model.dino_patch_proj.weight.grad is not None:
-            layer_grad_norms['patch_proj'] = self.model.dino_patch_proj.weight.grad.norm().item()
-        if hasattr(self.model, 'text_proj') and self.model.text_proj.weight.grad is not None:
-            layer_grad_norms['text_proj'] = self.model.text_proj.weight.grad.norm().item()
-        if hasattr(self.model, 'dino_proj') and self.model.dino_proj.weight.grad is not None:
-            layer_grad_norms['dino_proj'] = self.model.dino_proj.weight.grad.norm().item()
+        adapter = getattr(self.model, 'adapter', None)
+        if adapter is not None:
+            if hasattr(adapter, 'dino_patch_proj') and adapter.dino_patch_proj.weight.grad is not None:
+                layer_grad_norms['patch_proj'] = adapter.dino_patch_proj.weight.grad.norm().item()
+            if hasattr(adapter, 'text_proj') and adapter.text_proj.weight.grad is not None:
+                layer_grad_norms['text_proj'] = adapter.text_proj.weight.grad.norm().item()
+            if hasattr(adapter, 'dino_proj') and adapter.dino_proj.weight.grad is not None:
+                layer_grad_norms['dino_proj'] = adapter.dino_proj.weight.grad.norm().item()
         
         if is_accumulation_step:
             # Gradient clipping (unscale first if using GradScaler)
@@ -896,21 +898,22 @@ class Trainer:
             # Debug: always log that we're trying
             metrics['debug/weights_check'] = 1.0
             
-            if hasattr(model, 'dino_patch_proj'):
-                w = model.dino_patch_proj.weight.data
+            adapter = getattr(model, 'adapter', None)
+            if adapter is not None and hasattr(adapter, 'dino_patch_proj'):
+                w = adapter.dino_patch_proj.weight.data
                 metrics['weights/patch_proj_std'] = w.std().item()
                 metrics['weights/patch_proj_mean'] = w.mean().item()
             else:
                 metrics['debug/no_patch_proj'] = 1.0
                 
-            if hasattr(model, 'text_proj'):
-                w = model.text_proj.weight.data
+            if adapter is not None and hasattr(adapter, 'text_proj'):
+                w = adapter.text_proj.weight.data
                 metrics['weights/text_proj_std'] = w.std().item()
             else:
                 metrics['debug/no_text_proj'] = 1.0
                 
-            if hasattr(model, 'null_dino_patch_token'):
-                w = model.null_dino_patch_token.data
+            if adapter is not None and hasattr(adapter, 'null_dino_patch_token'):
+                w = adapter.null_dino_patch_token.data
                 metrics['weights/null_patch_token_norm'] = w.norm().item()
             else:
                 metrics['debug/no_null_token'] = 1.0

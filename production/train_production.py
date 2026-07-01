@@ -324,13 +324,16 @@ def main():
         tread_route_end=tread_route_end,
         tread_routing_prob=tread_routing_prob,
         bottleneck_size=config.model.bottleneck_size,
-        num_pose_joints=config.model.num_pose_joints,
-        pose_confidence_threshold=config.model.pose_confidence_threshold,
         maskdit_enabled=maskdit_enabled,
         maskdit_mask_ratio=maskdit_mask_ratio,
         maskdit_decoder_depth=maskdit_decoder_depth,
-        dino_patches_enabled=dino_patches_enabled,
-        dino_pool_factor=getattr(config.training, 'dino_pool_factor', None)
+        adapter_kwargs={
+            "name": config.adapter.name,
+            "num_pose_joints": config.model.num_pose_joints,
+            "pose_confidence_threshold": config.model.pose_confidence_threshold,
+            "dino_patches_enabled": dino_patches_enabled,
+            "dino_pool_factor": getattr(config.training, 'dino_pool_factor', None),
+        },
     ).to(device)
 
     # Enable FP8 via torchao and torch.compile
@@ -343,13 +346,11 @@ def main():
                 """
                 Keep global conditioning and output layers in BF16 to prevent
                 Batch-Size hardware alignment crashes (K dimension < 16).
+                Adapter-driven: exclude the entire adapter.* subtree.
                 """
                 exclude_keywords = [
-                    "pose_proj",          # Input dim 3
+                    "adapter.",           # All adapter projectors (DINO, T5, pose, identity, geometry)
                     "t_embedder",         # Global timestep (B, D)
-                    "dino_proj",          # Global DINO CLS (B, D)
-                    "text_proj",          # Text projection 
-                    "dino_patch_proj",    # Patch projection
                     "adaLN_modulation",   # Block-level global scale/shift
                     "final_proj"          # Output head
                 ]

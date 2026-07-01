@@ -14,9 +14,14 @@ model = NanoDiT(
 )
 model.train()
 
+# Check adapter has dino_patch_proj (StratumAdapter only — Eidolon skips)
+if not hasattr(model.adapter, 'dino_patch_proj'):
+    print(f"\nSKIP: adapter {type(model.adapter).__name__} has no dino_patch_proj (eidolon mode)")
+    exit(0)
+
 print("\nInitial patch projection weights:")
-initial_weight = model.dino_patch_proj.weight.data.clone()
-initial_bias = model.dino_patch_proj.bias.data.clone()
+initial_weight = model.adapter.dino_patch_proj.weight.data.clone()
+initial_bias = model.adapter.dino_patch_proj.bias.data.clone()
 print(f"  weight: mean={initial_weight.mean():.6f}, std={initial_weight.std():.6f}")
 print(f"  bias: mean={initial_bias.mean():.6f}, std={initial_bias.std():.6f}")
 
@@ -32,8 +37,8 @@ dino_patches = torch.randn(B, 4096, 1024)  # Real patches
 text_emb = torch.randn(B, 500, 1024)
 text_mask = torch.ones(B, 500)
 
-# Forward pass
-v_pred = model(x, t, dino_emb, text_emb, dino_patches, text_mask)
+# Forward pass (adapter-driven kwargs)
+v_pred = model(x, t, dino_emb=dino_emb, text_emb=text_emb, dino_patches=dino_patches, text_mask=text_mask)
 
 # Compute loss
 v_target = torch.randn_like(v_pred)
@@ -46,12 +51,12 @@ optimizer.zero_grad()
 loss.backward()
 
 # Check gradients
-if model.dino_patch_proj.weight.grad is not None:
-    grad_norm = model.dino_patch_proj.weight.grad.norm().item()
+if model.adapter.dino_patch_proj.weight.grad is not None:
+    grad_norm = model.adapter.dino_patch_proj.weight.grad.norm().item()
     print(f"\n✓ Gradient exists!")
     print(f"  grad norm: {grad_norm:.6f}")
-    print(f"  grad mean: {model.dino_patch_proj.weight.grad.mean():.6f}")
-    print(f"  grad std: {model.dino_patch_proj.weight.grad.std():.6f}")
+    print(f"  grad mean: {model.adapter.dino_patch_proj.weight.grad.mean():.6f}")
+    print(f"  grad std: {model.adapter.dino_patch_proj.weight.grad.std():.6f}")
 else:
     print(f"\n✗ NO GRADIENT!")
 
@@ -59,8 +64,8 @@ else:
 optimizer.step()
 
 # Check if weights changed
-new_weight = model.dino_patch_proj.weight.data
-new_bias = model.dino_patch_proj.bias.data
+new_weight = model.adapter.dino_patch_proj.weight.data
+new_bias = model.adapter.dino_patch_proj.bias.data
 weight_diff = (new_weight - initial_weight).abs().max().item()
 bias_diff = (new_bias - initial_bias).abs().max().item()
 

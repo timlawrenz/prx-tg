@@ -49,6 +49,11 @@ print(f"  dino_patches: {dino_patches.shape}")
 model.train()
 optimizer.zero_grad()
 
+# Early exit for eidolon adapter (no dino_patch_proj)
+if not hasattr(model.adapter, 'dino_patch_proj'):
+    print(f"\nSKIP: adapter {type(model.adapter).__name__} has no dino_patch_proj (eidolon mode)")
+    exit(0)
+
 print("\n" + "="*60)
 print("RUNNING TRAINING STEP (no REPA)")
 print("="*60)
@@ -72,8 +77,8 @@ loss.backward()
 print(f"\n✓ Backward pass complete")
 
 # Check gradients
-patch_proj_grad = model.dino_patch_proj.weight.grad
-text_proj_grad = model.text_proj.weight.grad
+patch_proj_grad = model.adapter.dino_patch_proj.weight.grad
+text_proj_grad = model.adapter.text_proj.weight.grad
 
 print(f"\nGradient check:")
 print(f"  text_proj grad norm: {text_proj_grad.norm().item():.8f}")
@@ -92,8 +97,8 @@ else:
 optimizer.step()
 
 # Check if weights changed
-initial_weight = torch.randn_like(model.dino_patch_proj.weight) * 0.037
-weight_diff = (model.dino_patch_proj.weight - initial_weight).abs().max().item()
+initial_weight = torch.randn_like(model.adapter.dino_patch_proj.weight) * 0.037
+weight_diff = (model.adapter.dino_patch_proj.weight - initial_weight).abs().max().item()
 print(f"\nWeight change: {weight_diff:.8f}")
 
 # ============================================================

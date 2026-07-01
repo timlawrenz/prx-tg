@@ -166,11 +166,8 @@ class BenchmarkRunner:
                 from torchao.float8 import convert_to_float8_training
                 def filter_fn(mod, mod_name: str) -> bool:
                     exclude_keywords = [
-                        "pose_proj",
+                        "adapter.",
                         "t_embedder",
-                        "dino_proj",
-                        "text_proj",
-                        "dino_patch_proj",
                         "adaLN_modulation",
                         "final_proj"
                     ]
