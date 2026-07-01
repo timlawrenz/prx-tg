@@ -381,19 +381,28 @@ class NanoDiT(nn.Module):
         adapter_name = adapter_kwargs.pop("name", "stratum")
         
         if adapter_name == "stratum":
+            # Extract stratum-specific kwargs to avoid duplicate keyword errors
+            # if they were passed inside adapter_kwargs
+            stratum_kwargs = {
+                "dino_dim": dino_dim,
+                "dino_patch_dim": dino_patch_dim,
+                "text_dim": text_dim,
+                "dino_patches_enabled": adapter_kwargs.pop("dino_patches_enabled", dino_patches_enabled),
+                "num_pose_joints": adapter_kwargs.pop("num_pose_joints", num_pose_joints),
+                "pose_dim": pose_dim,
+                "pose_confidence_threshold": adapter_kwargs.pop("pose_confidence_threshold", pose_confidence_threshold),
+                "dino_pool_factor": adapter_kwargs.pop("dino_pool_factor", dino_pool_factor),
+            }
             self.adapter = StratumAdapter(
                 hidden_size=hidden_size,
-                dino_dim=dino_dim,
-                dino_patch_dim=dino_patch_dim,
-                text_dim=text_dim,
-                dino_patches_enabled=dino_patches_enabled,
-                num_pose_joints=num_pose_joints,
-                pose_dim=pose_dim,
-                pose_confidence_threshold=pose_confidence_threshold,
-                dino_pool_factor=dino_pool_factor,
+                **stratum_kwargs,
                 **adapter_kwargs,
             )
         elif adapter_name == "eidolon":
+            # Strip stratum-specific keys that train_production may have injected
+            for key in ("num_pose_joints", "pose_confidence_threshold", "dino_patches_enabled", "dino_pool_factor",
+                         "dino_dim", "dino_patch_dim", "text_dim", "pose_dim"):
+                adapter_kwargs.pop(key, None)
             self.adapter = EidolonAdapter(
                 hidden_size=hidden_size,
                 **adapter_kwargs,

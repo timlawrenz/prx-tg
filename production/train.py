@@ -203,35 +203,15 @@ def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="c
     return per_token_loss.mean()
 
 
-def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, cfg_probs, dino_patches_mask=None, pose_kpts=None, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05, maskdit_config=None, global_step=0, seg_map=None, seg_weight_config=None, asymflow_config=None):
-    """Compute flow matching loss with mutually exclusive CFG dropout.
-    
-    Supports two prediction modes:
-    - v_prediction: model predicts velocity v = z1 - x0 (original)
-    - x_prediction: model predicts clean data x0, converted to v-space for MSE
-      with t clamped >= t_clamp_min (Li & He 2025)
+def flow_matching_loss(model, x0, conditioning, cfg_probs, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05, maskdit_config=None, global_step=0, seg_map=None, seg_weight_config=None, asymflow_config=None):
+    """Compute flow matching loss with adapter-aware CFG dropout.
     
     Args:
         model: NanoDiT model
         x0: (B, C, H, W) clean data (latents or pixels at t=0)
-        dino_emb: (B, 1024) DINOv3 CLS embeddings
-        dino_patches: (B, num_patches, 1024) DINOv3 spatial patches
-        text_emb: (B, seq_len, 1024) T5 hidden states
-        text_mask: (B, seq_len) T5 attention mask
-        cfg_probs: dict with CFG dropout probabilities
-        dino_patches_mask: (B, num_patches) mask for padding
-        pose_kpts: (B, 133, 3) pose keypoints [x_norm, y_norm, confidence]
+        conditioning: dict of adapter kwargs (dino_emb, text_emb, ... or identity_emb, geometry_emb, ...)
+        cfg_probs: dict with CFG dropout probabilities (adapter-specific schema)
         return_v_pred: bool, if True return (loss, v_pred, repa_loss, lpips_loss, mae_loss)
-        repa_config: optional REPAConfig
-        tread_config: optional TREADConfig
-        perceptual_module: optional PerceptualLossModule for LPIPS loss
-        perceptual_config: optional PerceptualLossConfig
-        micro_step: current micro-step (for every-N gating)
-        prediction_type: "v_prediction" or "x_prediction"
-        t_clamp_min: minimum t for x→v conversion (avoids div-by-zero)
-    
-    Returns:
-        loss: scalar tensor, or (loss, v_pred, repa_loss, lpips_loss, mae_loss) if return_v_pred=True
     """
     B = x0.shape[0]
     device = x0.device
@@ -243,57 +223,75 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
     z1 = torch.randn_like(x0)
     
     # Linear interpolation: z_t = (1-t) * x0 + t * z1
-    # At t=0: zt = x0 (clean data)
-    # At t=1: zt = z1 (pure noise)
     t_expanded = t.view(B, 1, 1, 1)
     zt = (1 - t_expanded) * x0 + t_expanded * z1
     
     # Rectified flow target: velocity field v_t = d(z_t)/dt = z1 - x0
-    # This points from data (x0) towards noise (z1)
-    # Integrating forward in time: z_t -> z_{t+dt} moves toward noise
-    # Integrating backward in time (sampling): z_t -> z_{t-dt} moves toward data
     if hasattr(asymflow_config, 'enabled') and getattr(asymflow_config, 'enabled', False):
         z1_projected = apply_asymflow_projection(
-            z1, 
-            model.patch_size, 
-            getattr(asymflow_config, 'rank', 8)
+            z1, model.patch_size, getattr(asymflow_config, 'rank', 8)
         )
         v_target = z1_projected - x0
     else:
         v_target = z1 - x0
     
-    # Mutually exclusive CFG dropout (categorical sampling)
-    # Categories: uncond, text-only, dino-cls-only, dino-patches-only,
-    #             drop-pose-only, pose-only, all-present
-    rand = torch.rand(B, device=device)
-    p_both = cfg_probs['p_uncond']
-    p_text = cfg_probs['p_text_only']
-    p_dino_cls = cfg_probs['p_dino_cls_only']
-    p_dino_patches = cfg_probs['p_dino_patches_only']
-    p_drop_pose = cfg_probs.get('p_drop_pose', 0.0)
-    p_pose_only = cfg_probs.get('p_pose_only', 0.0)
+    # ── Adapter-aware CFG dropout ─────────────────────────────────────
+    from production.adapters import EidolonAdapter
+    is_eidolon = isinstance(model.adapter, EidolonAdapter)
     
-    # Assign to exclusive categories (thresholds accumulate)
-    t1 = p_both
-    t2 = t1 + p_text
-    t3 = t2 + p_dino_cls
-    t4 = t3 + p_dino_patches
-    t5 = t4 + p_drop_pose
-    t6 = t5 + p_pose_only
-    
-    drop_both = rand < t1                       # fully unconditional
-    drop_dino = (rand >= t1) & (rand < t2)      # text-only (drop DINO + pose)
-    drop_text_and_patches = (rand >= t2) & (rand < t3)  # DINO-CLS-only
-    drop_text_and_cls = (rand >= t3) & (rand < t4)      # DINO-patches-only
-    cat_drop_pose = (rand >= t4) & (rand < t5)          # drop only pose
-    cat_pose_only = (rand >= t5) & (rand < t6)          # pose only (drop text + DINO)
-    # Remainder has all conditionings present
-    
-    # Combine masks for specific components
-    drop_text = drop_both | drop_text_and_patches | drop_text_and_cls | cat_pose_only
-    drop_dino_cls = drop_both | drop_dino | drop_text_and_cls | cat_pose_only
-    drop_dino_patches_mask = drop_both | drop_dino | drop_text_and_patches | cat_pose_only
-    drop_pose = drop_both | drop_dino | drop_text_and_patches | drop_text_and_cls | cat_drop_pose
+    if is_eidolon:
+        # 3-stream eidolon CFG: uncond, identity-only, geometry-only
+        rand = torch.rand(B, device=device)
+        p_uncond = cfg_probs.get('p_uncond', 0.10)
+        p_identity_only = cfg_probs.get('p_identity_only', 0.20)
+        p_geometry_only = cfg_probs.get('p_geometry_only', 0.15)
+        
+        t1 = p_uncond
+        t2 = t1 + p_identity_only
+        t3 = t2 + p_geometry_only
+        
+        drop_both = rand < t1
+        drop_geometry = (rand >= t1) & (rand < t2)    # identity-only
+        drop_identity = (rand >= t2) & (rand < t3)     # geometry-only
+        # Remainder has both present
+        
+        model_kwargs = dict(conditioning)
+        model_kwargs['cfg_drop_identity'] = drop_both | drop_identity
+        model_kwargs['cfg_drop_geometry'] = drop_both | drop_geometry
+    else:
+        # 7-stream stratum CFG: uncond, text-only, dino-cls-only, dino-patches-only, drop-pose, pose-only
+        rand = torch.rand(B, device=device)
+        p_both = cfg_probs.get('p_uncond', 0.10)
+        p_text = cfg_probs.get('p_text_only', 0.25)
+        p_dino_cls = cfg_probs.get('p_dino_cls_only', 0.05)
+        p_dino_patches = cfg_probs.get('p_dino_patches_only', 0.05)
+        p_drop_pose = cfg_probs.get('p_drop_pose', 0.10)
+        p_pose_only = cfg_probs.get('p_pose_only', 0.05)
+        
+        t1 = p_both
+        t2 = t1 + p_text
+        t3 = t2 + p_dino_cls
+        t4 = t3 + p_dino_patches
+        t5 = t4 + p_drop_pose
+        t6 = t5 + p_pose_only
+        
+        drop_both = rand < t1
+        drop_dino = (rand >= t1) & (rand < t2)
+        drop_text_and_patches = (rand >= t2) & (rand < t3)
+        drop_text_and_cls = (rand >= t3) & (rand < t4)
+        cat_drop_pose = (rand >= t4) & (rand < t5)
+        cat_pose_only = (rand >= t5) & (rand < t6)
+        
+        drop_text = drop_both | drop_text_and_patches | drop_text_and_cls | cat_pose_only
+        drop_dino_cls = drop_both | drop_dino | drop_text_and_cls | cat_pose_only
+        drop_dino_patches_mask = drop_both | drop_dino | drop_text_and_patches | cat_pose_only
+        drop_pose = drop_both | drop_dino | drop_text_and_patches | drop_text_and_cls | cat_drop_pose
+        
+        model_kwargs = dict(conditioning)
+        model_kwargs['cfg_drop_dino'] = drop_dino_cls
+        model_kwargs['cfg_drop_text'] = drop_text
+        model_kwargs['cfg_drop_dino_patches'] = drop_dino_patches_mask
+        model_kwargs['cfg_drop_pose'] = drop_pose
     
     # Determine if we need REPA hidden states or MaskDiT info
     use_repa = repa_config is not None and repa_config.enabled
@@ -313,16 +311,7 @@ def flow_matching_loss(model, x0, dino_emb, dino_patches, text_emb, text_mask, c
         return_repa_hidden=return_extended,
         tread_enabled=tread_enabled,
         maskdit_enabled=use_maskdit,
-        dino_emb=dino_emb,
-        text_emb=text_emb,
-        dino_patches=dino_patches,
-        text_mask=text_mask,
-        dino_patches_mask=dino_patches_mask,
-        cfg_drop_dino=drop_dino_cls,
-        cfg_drop_text=drop_text,
-        cfg_drop_dino_patches=drop_dino_patches_mask,
-        pose_kpts=pose_kpts,
-        cfg_drop_pose=drop_pose,
+        **model_kwargs,
     )
     
     maskdit_info = None
@@ -768,14 +757,30 @@ class Trainer:
         
         # Move batch to device
         x0 = batch['image_data'].to(self.device)
-        dino_emb = batch['dino_embedding'].to(self.device)
-        dino_patches = batch['dinov3_patches'].to(self.device)
-        text_emb = batch['t5_hidden'].to(self.device)
-        text_mask = batch['t5_mask'].to(self.device)
-        dino_patches_mask = batch.get('dinov3_patches_mask')
-        if dino_patches_mask is not None:
-            dino_patches_mask = dino_patches_mask.to(self.device)
-        pose_kpts = batch['pose_keypoints'].to(self.device)
+        
+        # Build adapter-specific conditioning dict from batch
+        adapter = self.model.adapter
+        from production.adapters import EidolonAdapter
+        is_eidolon = isinstance(adapter, EidolonAdapter)
+        
+        if is_eidolon:
+            conditioning = {
+                'identity_emb': batch['identity_emb'].to(self.device),
+                'geometry_emb': batch['geometry_emb'].to(self.device),
+            }
+        else:
+            # StratumAdapter path
+            conditioning = {
+                'dino_emb': batch['dino_embedding'].to(self.device),
+                'dino_patches': batch['dinov3_patches'].to(self.device),
+                'text_emb': batch['t5_hidden'].to(self.device),
+                'text_mask': batch['t5_mask'].to(self.device),
+            }
+            dino_patches_mask = batch.get('dinov3_patches_mask')
+            if dino_patches_mask is not None:
+                conditioning['dino_patches_mask'] = dino_patches_mask.to(self.device)
+            conditioning['pose_kpts'] = batch['pose_keypoints'].to(self.device)
+        
         seg_map = batch.get('seg_map')  # (B, TG, TG) int16 — may be absent in webdataset path
         
         # Determine autocast dtype
@@ -786,8 +791,8 @@ class Trainer:
         ctx = torch.amp.autocast('cuda', enabled=use_amp, dtype=amp_dtype if use_amp else torch.float32)
         with ctx:
             loss, v_pred, repa_loss, lpips_loss, mae_loss = flow_matching_loss(
-                self.model, x0, dino_emb, dino_patches, text_emb, text_mask, self.cfg_probs, 
-                dino_patches_mask=dino_patches_mask, pose_kpts=pose_kpts, return_v_pred=True,
+                self.model, x0, conditioning, self.cfg_probs, 
+                return_v_pred=True,
                 repa_config=self.repa_config,
                 tread_config=self.tread_config,
                 perceptual_module=getattr(self, 'perceptual_module', None),
