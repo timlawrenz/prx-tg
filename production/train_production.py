@@ -272,7 +272,7 @@ def main():
     
     # Create dataloader
     print("Creating dataloader...")
-    dataloader = get_production_dataloader(config, device)
+    dataloader = get_production_dataloader(config, device, adapter_name=config.adapter.name)
     print(f"Dataloader created")
     
     # Create model
@@ -410,6 +410,7 @@ def main():
             prediction_type=config.model.prediction_type,
             source=getattr(config.data, 'source', 'webdataset'),
             stratum_dir=getattr(config.data, 'stratum_dir', '/workspace/stratum'),
+            adapter_name=config.adapter.name,
         )
     
     # Create visual debugging function (if enabled)
@@ -430,6 +431,9 @@ def main():
             self_guidance=config.sampling.self_guidance,
             guidance_scale=config.sampling.guidance_scale,
             prediction_type=config.model.prediction_type,
+            source=getattr(config.data, 'source', 'webdataset'),
+            stratum_dir=getattr(config.data, 'stratum_dir', '/workspace/stratum'),
+            adapter_name=config.adapter.name,
         )
     
     # Create trainer
