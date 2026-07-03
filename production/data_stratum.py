@@ -173,13 +173,32 @@ class StratumDataset(IterableDataset):
         }
 
     def _load_sample_eidolon(self, d: Path) -> dict:
-        """Load sample + eidolon-specific embeddings (auraface_lda, z_g)."""
-        sample = self._load_sample(d)
+        """Load minimal eidolon sample (pixel + identity + geometry only).
+
+        Does NOT load T5, DINO, pose, or seg — the EidolonAdapter drops them.
+        Returns zero-filled stubs for fields the collate function expects.
+        """
+        pixel       = np.load(d / 'pixel.npy')           # (3, H, W) f16
         identity_emb = np.load(d / 'auraface_lda.npy')   # (64,) float64
         geometry_emb = np.load(d / 'z_g.npy')            # (50,) float32
-        sample['identity_emb'] = torch.from_numpy(identity_emb).float()
-        sample['geometry_emb'] = torch.from_numpy(geometry_emb).float()
-        return sample
+        meta        = json.loads((d / 'metadata.json').read_text())
+
+        image_data = _resize_image(pixel, self.target_latent_size)
+
+        return {
+            'image_data':     image_data,
+            'identity_emb':   torch.from_numpy(identity_emb).float(),
+            'geometry_emb':   torch.from_numpy(geometry_emb).float(),
+            # Stubs for collate compatibility (not used by EidolonAdapter)
+            'dino_embedding': torch.zeros(1024),
+            'dinov3_patches': torch.zeros(1, 1024),
+            't5_hidden':      torch.zeros(1, 1024),
+            't5_mask':        torch.zeros(1, dtype=torch.int64),
+            'pose_keypoints': torch.zeros(133, 3),
+            'seg_map':        torch.zeros(64, 64, dtype=torch.int16),
+            'caption':        meta.get('persona', ''),
+            'image_id':       meta.get('image_id', d.name),
+        }
 
     def _load(self, d: Path) -> dict:
         """Dispatch to the correct loader based on adapter_name."""
