@@ -129,11 +129,14 @@ class StratumDataset(IterableDataset):
         self.target_latent_size = target_latent_size
         self.adapter_name = adapter_name
 
-        # Generate paths directly from the known naming convention (00000–69999).
-        # Avoids scandir/iterdir over NAS which can block for several seconds on
-        # 70k entries. Corrupt/missing dirs are handled gracefully in _load_sample.
-        limit = max_samples if max_samples is not None else 70000
-        self._dirs = [self.stratum_dir / f"{i:05d}" for i in range(limit)]
+        # Scan directory for available samples (stable across rebuilds)
+        existing = sorted([
+            d for d in self.stratum_dir.iterdir()
+            if d.is_dir() and (d / "pixel.npy").exists()
+        ])
+        if max_samples is not None and len(existing) > max_samples:
+            existing = existing[:max_samples]
+        self._dirs = existing
         print(f"[StratumDataset] {len(self._dirs)} samples in {self.stratum_dir}")
 
     # ------------------------------------------------------------------
