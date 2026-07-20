@@ -329,6 +329,9 @@ def main():
         maskdit_decoder_depth=maskdit_decoder_depth,
         adapter_kwargs={
             "name": config.adapter.name,
+            "identity_dim": config.adapter.identity_dim,
+            "z_g_dim": config.adapter.z_g_dim,
+            "geometry_token_basis": config.adapter.geometry_token_basis,
             "num_pose_joints": config.model.num_pose_joints,
             "pose_confidence_threshold": config.model.pose_confidence_threshold,
             "dino_patches_enabled": dino_patches_enabled,

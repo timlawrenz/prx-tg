@@ -191,7 +191,8 @@ class EidolonAdapter(ConditioningAdapter):
     (one per z_g component), providing a ~99% reduction in cross-attention FLOPs.
     """
 
-    def __init__(self, hidden_size: int, identity_dim: int = 64, z_g_dim: int = 50):
+    def __init__(self, hidden_size: int, identity_dim: int = 64, z_g_dim: int = 50,
+                 geometry_token_basis: bool = False):
         super().__init__(hidden_size)
         self.identity_proj = nn.Linear(identity_dim, hidden_size, bias=True)
         self.geometry_proj = nn.Sequential(
@@ -202,6 +203,9 @@ class EidolonAdapter(ConditioningAdapter):
         self.null_identity = nn.Parameter(torch.zeros(1, identity_dim))
         self.null_geometry = nn.Parameter(torch.zeros(1, z_g_dim))
         self.z_g_dim = z_g_dim
+        self.geometry_token_basis = geometry_token_basis
+        if geometry_token_basis:
+            self.geo_basis = nn.Parameter(torch.randn(z_g_dim, hidden_size) * 0.02)
 
     def forward(self, **kwargs) -> ConditioningOutput:
         identity_emb = kwargs["identity_emb"]
@@ -217,6 +221,16 @@ class EidolonAdapter(ConditioningAdapter):
         global_cond = identity_cond + (t_emb if t_emb is not None else 0)
         geometry_cond = self.geometry_proj(geometry_emb.unsqueeze(-1))  # (B, 50, hidden)
         B = geometry_cond.shape[0]
+
+        # Per-dim token basis — gives each z_g[dim] a distinct identity
+        # so cross-attention can address specific axes (e.g. dim0 = yaw).
+        # CFG GUARD (Arm O fix vs Arm N): only add the basis when geometry
+        # is live.  On CFG-dropped steps (p_geometry_only=0.30), geometry
+        # is zeroed and the basis would be pure noise — skip it.
+        if self.geometry_token_basis:
+            cfg_drop_geo = kwargs.get("cfg_drop_geometry")
+            if cfg_drop_geo is None or not cfg_drop_geo.all():
+                geometry_cond = geometry_cond + self.geo_basis.unsqueeze(0)
 
         return ConditioningOutput(
             global_cond=global_cond,

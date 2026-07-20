@@ -39,6 +39,7 @@ class AdapterConfig:
     # --- eidolon fields ---
     identity_dim: int = 64
     z_g_dim: int = 50
+    geometry_token_basis: bool = False  # per-dim geo token identity (Arm N/O)
     cfg_dropout: Optional[dict] = None  # {"p_uncond": 0.10, "p_identity_only": 0.20, ...}
     # --- stratum fields (previously flat NanoDiT constructor kwargs) ---
     dino_dim: int = 1024
