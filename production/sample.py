@@ -110,7 +110,8 @@ class EulerSampler:
                 # 1. Unconditional
                 v_uncond = model(zt, t_batch, **uncond_kwargs)
                 
-                # Build text-only kwargs: keep text, drop DINO/pose/identity/geometry
+                # Build text-only kwargs: keep text, drop DINO/pose
+                # Eidolon: this is the IDENTITY-ONLY pass (keep identity, drop geometry)
                 text_kwargs = dict(adapter_kwargs)
                 if 'cfg_drop_dino' in adapter_kwargs or 'dino_emb' in adapter_kwargs:
                     text_kwargs['cfg_drop_text'] = keep_all
@@ -119,13 +120,14 @@ class EulerSampler:
                 if 'pose_kpts' in adapter_kwargs:
                     text_kwargs['cfg_drop_pose'] = drop_all
                 if 'cfg_drop_identity' in adapter_kwargs or 'identity_emb' in adapter_kwargs:
-                    text_kwargs['cfg_drop_identity'] = drop_all
-                    text_kwargs['cfg_drop_geometry'] = drop_all
+                    text_kwargs['cfg_drop_identity'] = keep_all    # KEEP identity
+                    text_kwargs['cfg_drop_geometry'] = drop_all    # DROP geometry
                 
                 # 2. Text-only
                 v_text = model(zt, t_batch, **text_kwargs)
                 
-                # Build DINO-only kwargs: keep DINO, drop text/pose/identity/geometry
+                # Build DINO-only kwargs: keep DINO, drop text/pose
+                # Eidolon: this is the GEOMETRY-ONLY pass (keep geometry, drop identity)
                 dino_kwargs = dict(adapter_kwargs)
                 if 'cfg_drop_dino' in adapter_kwargs or 'dino_emb' in adapter_kwargs:
                     dino_kwargs['cfg_drop_text'] = drop_all
@@ -134,8 +136,8 @@ class EulerSampler:
                 if 'pose_kpts' in adapter_kwargs:
                     dino_kwargs['cfg_drop_pose'] = drop_all
                 if 'cfg_drop_identity' in adapter_kwargs or 'identity_emb' in adapter_kwargs:
-                    dino_kwargs['cfg_drop_identity'] = drop_all
-                    dino_kwargs['cfg_drop_geometry'] = drop_all
+                    dino_kwargs['cfg_drop_identity'] = drop_all    # DROP identity
+                    dino_kwargs['cfg_drop_geometry'] = keep_all    # KEEP geometry
                 
                 # 3. DINO-only
                 v_dino = model(zt, t_batch, **dino_kwargs)
