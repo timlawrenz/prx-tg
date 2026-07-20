@@ -1138,7 +1138,18 @@ class Trainer:
                     # Check if visual_debug_interval is configured (ProductionTrainer only)
                     interval = getattr(self, 'visual_debug_interval', 0)
                     if interval > 0 and self.step % interval == 0:
-                        visual_debug_fn(self.ema.model if self.ema else self.model, self.step)
+                        # Use EMA weights for visual_debug (same as validation)
+                        if self.ema:
+                            model_backup = {k: v.cpu() for k, v in self.model.state_dict().items()}
+                            self.ema.copy_to(self.model)
+                        self.model.eval()
+                        try:
+                            visual_debug_fn(self.model, self.step)
+                        finally:
+                            if self.ema:
+                                self.model.load_state_dict(model_backup)
+                                del model_backup
+                            self.model.train()
                 
                 # Checkpointing
                 if self.step % self.checkpoint_every == 0:
