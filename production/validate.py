@@ -1091,16 +1091,10 @@ class ValidationRunner:
         # Free up memory before validation
         torch.cuda.empty_cache()
         
-        # Backup current model weights to CPU (save GPU memory)
-        print("Backing up model weights to CPU...")
-        model_backup = {k: v.cpu() for k, v in self.model.state_dict().items()}
-        
-        # Load EMA weights into main model (in-place)
-        print("Loading EMA weights for validation...")
-        self.ema.copy_to(self.model)
+        # Use training weights directly (EMA can lag at early steps)
         self.model.eval()
         
-        # Create sampler using main model (now with EMA weights)
+        # Create sampler using main model with training weights
         sampler = ValidationSampler(
             self.model,
             self.vae,
@@ -1149,14 +1143,7 @@ class ValidationRunner:
         finally:
             # Clean up sampler to prevent memory leak
             del sampler
-            
-            # Restore original weights
-            print("Restoring training weights...")
-            self.model.load_state_dict(model_backup)
             self.model.train()
-            
-            # Delete backup and clear cache
-            del model_backup
             torch.cuda.empty_cache()
         
         # Save results
