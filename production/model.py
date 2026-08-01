@@ -393,6 +393,9 @@ class NanoDiT(nn.Module):
                 "pose_confidence_threshold": adapter_kwargs.pop("pose_confidence_threshold", pose_confidence_threshold),
                 "dino_pool_factor": adapter_kwargs.pop("dino_pool_factor", dino_pool_factor),
             }
+            # Strip eidolon-only kwargs that train_production always injects
+            for key in ("identity_dim", "z_g_dim", "geometry_token_basis", "cfg_dropout"):
+                adapter_kwargs.pop(key, None)
             self.adapter = StratumAdapter(
                 hidden_size=hidden_size,
                 **stratum_kwargs,

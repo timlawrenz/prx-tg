@@ -375,8 +375,11 @@ def flow_matching_loss(model, x0, conditioning, cfg_probs, return_v_pred=False, 
     # REPA alignment loss
     repa_loss = None
     if use_repa and repa_hidden is not None:
+        # Extract dino_patches from conditioning dict (passed as model_kwargs)
+        repa_dino_patches = model_kwargs.get('dino_patches')
+        repa_dino_patches_mask = model_kwargs.get('dino_patches_mask')
         repa_loss = compute_repa_loss(
-            repa_hidden, dino_patches, dino_patches_mask, repa_config.loss_type,
+            repa_hidden, repa_dino_patches, repa_dino_patches_mask, repa_config.loss_type,
             visible_idx=tread_visible_idx if tread_enabled else None,
         )
         effective_repa_weight = repa_config.get_weight(global_step)
@@ -592,7 +595,7 @@ class EMAModel:
         self.ema_params = {}
         for name, param in model.named_parameters():
             if param.requires_grad:
-                self.ema_params[name] = param.data.clone()
+                self.ema_params[name] = param.data.detach().clone()
     
     def get_decay(self):
         """Get current EMA decay with linear warmup."""
