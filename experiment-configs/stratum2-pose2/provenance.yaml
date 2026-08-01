@@ -1,0 +1,28 @@
+arm: pose2
+hypothesis: >
+  308-keypoint Sapiens 2 pose (pose2.npy, 274 face landmarks vs 68 in DWPose)
+  improves face generation quality over the 133-keypoint DWPose baseline on FFHQ.
+differs_from: production baseline (config.yaml)
+diff_summary: |
+  Single variable changed:
+  - model.num_pose_joints: 133 → 308
+  - adapter.num_pose_joints: 133 → 308
+  - Data loader loads pose2.npy when available (v1 fallback for unenriched images)
+  Everything else is identical to the production config:
+  - seg_weight: disabled (same as production)
+  - geometry_3d: disabled
+  - matting_edge: disabled
+  - All hyperparameters unchanged
+git_commit: 10dd28c
+git_dirty: false
+training_host: TBD
+training_gpu: NVIDIA RTX 4090 (24GB VRAM)
+training_steps: 5000
+data_source: FFHQ 70k Stratum (mixed v1/v2 — pose2 enrichment in progress)
+evaluation: Aesthetic score + CLIP Score + DWPose confidence trajectories
+notes: >
+  FFHQ pose2 enrichment is actively running on 4090 + Strix Halo. The data
+  loader uses v1 fallback (133kp) for images without pose2.npy, so training
+  starts immediately. Images with pose2 get 308kp (274 face landmarks);
+  images without get 133kp (68 face landmarks). The model's pose_joint_embed
+  table has 308 entries — v1 images use the first 133.

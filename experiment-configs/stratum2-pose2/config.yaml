@@ -1,10 +1,7 @@
-# Arm B: Stratum2 pose2 + seg2 on FFHQ
-# Tests: Does 308-kp Sapiens 2 pose + 29-class segmentation loss weighting
-#        improve face generation quality over 133-kp DWPose baseline?
-# Differs from baseline (Arm A): pose2.npy (308kp) + seg2.npy (29-class, v2 taxonomy)
-# All other settings: identical to production config
-# Expected: improved facial geometry from 274 face landmarks (vs 68),
-#           improved mouth/teeth rendering from granular seg weighting
+# Arm: pose2 — 308-keypoint Sapiens 2 pose (single-variable ablation)
+# Tests: Does 308-kp pose2 (274 face landmarks vs 68) improve face generation?
+# Differs from production baseline: ONLY num_pose_joints 133→308 + pose2.npy loading
+# seg_weight stays disabled, no geometry_3d, no matting — isolated single variable.
 
 model:
   hidden_size: 768
@@ -15,19 +12,19 @@ model:
   in_channels: 3
   prediction_type: x_prediction
   input_size: 1024
-  num_pose_joints: 308           # CHANGED: 133 → 308 (Sapiens 2)
+  num_pose_joints: 308           # ONLY CHANGE: 133 → 308 (Sapiens 2)
   pose_confidence_threshold: 0.05
 
 adapter:
   name: stratum
-  num_pose_joints: 308           # CHANGED: must match model
-  geometry_3d_enabled: false     # Phase 2 — not yet
+  num_pose_joints: 308           # ONLY CHANGE: must match model
+  geometry_3d_enabled: false
 
 training:
   total_steps: 5000
-  warmup_steps: 500
+  warmup_steps: 1000
   batch_size: 4
-  grad_accumulation_steps: 64    # Effective batch = 256
+  grad_accumulation_steps: 64
 
   optimizer:
     type: Muon
@@ -47,21 +44,21 @@ training:
   ema_warmup_steps: 1000
 
   cfg_dropout:
-    p_uncond: 0.10
+    p_uncond: 0.1
     p_text_only: 0.25
     p_dino_cls_only: 0.05
     p_dino_patches_only: 0.05
     p_drop_pose: 0.10
     p_pose_only: 0.05
-    p_drop_geometry_3d: 0.0      # Disabled — Phase 2
+    p_drop_geometry_3d: 0.0
 
   repa:
     enabled: true
     weight: 0.5
     block_index: -1
     loss_type: cosine
-    decay_start_step: 1000       # Scaled for 5k steps (20%)
-    decay_end_step: 2500         # REPA reaches 0 at 50%
+    decay_start_step: 8000
+    decay_end_step: 16000
 
   tread:
     enabled: true
@@ -77,24 +74,17 @@ training:
 
   gradient_checkpointing: false
   mixed_precision: true
-  precision: bfloat16           # bf16 for ablation (FP8 adds complexity)
+  precision: bfloat16
 
   asymflow:
     enabled: true
     rank: 8
 
   seg_weight:
-    enabled: true                # ENABLED for stratum2
-    taxonomy_version: 2          # Sapiens 2 29-class DOME_CLASSES_29
-    mouth_weight: 4.0           # Lips, teeth, tongue
-    face_skin_weight: 3.0       # Face_Neck
-    hair_weight: 2.0           # Hair
-    bg_weight: 0.5
-    other_weight: 1.0
-    normalize: true
+    enabled: false               # UNCHANGED — disabled, same as production
 
   matting_edge:
-    enabled: false               # Phase 3 — not yet
+    enabled: false               # UNCHANGED — not in this arm
 
   dino_patches:
     spatial_window_radius: null
