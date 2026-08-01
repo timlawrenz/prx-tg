@@ -1,0 +1,29 @@
+arm: b
+hypothesis: >
+  308-keypoint Sapiens 2 pose (pose2.npy) + 29-class segmentation loss
+  weighting (seg2.npy, DOME_CLASSES_29 taxonomy) improves face generation
+  quality over the 133-keypoint DWPose baseline on FFHQ.
+differs_from: stratum2-baseline
+diff_summary: |
+  - model.num_pose_joints: 133 → 308
+  - adapter.num_pose_joints: 133 → 308
+  - training.seg_weight.enabled: false → true
+  - training.seg_weight.taxonomy_version: 2 (Sapiens 2 29-class)
+  - training.seg_weight.mouth_weight: 4.0 (new — lips, teeth, tongue)
+  - training.seg_weight.face_skin_weight: 3.0 (new — face/neck skin)
+  - training.seg_weight.hair_weight: 2.0 (new — hair)
+  - Data: pose2.npy + seg2.npy (Sapiens 2) with v1 fallback (pose.npy + seg.npy)
+  - All other settings identical to production baseline
+git_commit: 10dd28c
+git_dirty: false
+training_host: TBD
+training_gpu: NVIDIA RTX 4090 (24GB VRAM)
+training_steps: 5000
+data_source: FFHQ 70k Stratum (mixed v1/v2 — enrichment in progress)
+evaluation: Aesthetic score + CLIP Score + DWPose confidence + NN retrieval
+notes: >
+  FFHQ stratum2 enrichment is actively running. As of 2026-08-01, ~884/70k
+  images have pose2+seg2. The data loader uses v1 fallback for images without
+  v2 artifacts, so training can start immediately and will naturally benefit
+  more as enrichment progresses. For a clean ablation, should be re-run once
+  enrichment completes.

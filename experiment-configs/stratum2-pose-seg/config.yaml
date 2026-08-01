@@ -1,0 +1,135 @@
+# Arm B: Stratum2 pose2 + seg2 on FFHQ
+# Tests: Does 308-kp Sapiens 2 pose + 29-class segmentation loss weighting
+#        improve face generation quality over 133-kp DWPose baseline?
+# Differs from baseline (Arm A): pose2.npy (308kp) + seg2.npy (29-class, v2 taxonomy)
+# All other settings: identical to production config
+# Expected: improved facial geometry from 274 face landmarks (vs 68),
+#           improved mouth/teeth rendering from granular seg weighting
+
+model:
+  hidden_size: 768
+  depth: 18
+  num_heads: 12
+  patch_size: 16
+  mlp_ratio: 4.0
+  in_channels: 3
+  prediction_type: x_prediction
+  input_size: 1024
+  num_pose_joints: 308           # CHANGED: 133 → 308 (Sapiens 2)
+  pose_confidence_threshold: 0.05
+
+adapter:
+  name: stratum
+  num_pose_joints: 308           # CHANGED: must match model
+  geometry_3d_enabled: false     # Phase 2 — not yet
+
+training:
+  total_steps: 5000
+  warmup_steps: 500
+  batch_size: 4
+  grad_accumulation_steps: 64    # Effective batch = 256
+
+  optimizer:
+    type: Muon
+    lr: 3.0e-4
+    min_lr: 1.0e-6
+    betas: [0.9, 0.95]
+    weight_decay: 0.03
+    eps: 1.0e-8
+    muon:
+      momentum: 0.95
+      nesterov: true
+      ns_steps: 5
+      adjust_lr_fn: match_rms_adamw
+
+  grad_clip: 1.0
+  ema_decay: 0.9999
+  ema_warmup_steps: 1000
+
+  cfg_dropout:
+    p_uncond: 0.10
+    p_text_only: 0.25
+    p_dino_cls_only: 0.05
+    p_dino_patches_only: 0.05
+    p_drop_pose: 0.10
+    p_pose_only: 0.05
+    p_drop_geometry_3d: 0.0      # Disabled — Phase 2
+
+  repa:
+    enabled: true
+    weight: 0.5
+    block_index: -1
+    loss_type: cosine
+    decay_start_step: 1000       # Scaled for 5k steps (20%)
+    decay_end_step: 2500         # REPA reaches 0 at 50%
+
+  tread:
+    enabled: true
+    routing_probability: 0.5
+    route_start: 1
+    route_end: -1
+    self_guidance: true
+    guidance_scale: 3.0
+
+  timestep_sampling: logit_normal
+  logit_normal_loc: 0.0
+  logit_normal_scale: 1.0
+
+  gradient_checkpointing: false
+  mixed_precision: true
+  precision: bfloat16           # bf16 for ablation (FP8 adds complexity)
+
+  asymflow:
+    enabled: true
+    rank: 8
+
+  seg_weight:
+    enabled: true                # ENABLED for stratum2
+    taxonomy_version: 2          # Sapiens 2 29-class DOME_CLASSES_29
+    mouth_weight: 4.0           # Lips, teeth, tongue
+    face_skin_weight: 3.0       # Face_Neck
+    hair_weight: 2.0           # Hair
+    bg_weight: 0.5
+    other_weight: 1.0
+    normalize: true
+
+  matting_edge:
+    enabled: false               # Phase 3 — not yet
+
+  dino_patches:
+    spatial_window_radius: null
+
+data:
+  source: stratum
+  stratum_dir: "$STRATUM_DIR"
+  stratum_max_samples: 70000
+  num_workers: 8
+  prefetch_factor: 2
+  pin_memory: true
+
+sampling:
+  num_steps: 35
+  text_scale: 3.0
+  dino_scale: 2.5
+  self_guidance: true
+  guidance_scale: 3.0
+
+validation:
+  enabled: true
+  interval_steps: 500
+  num_samples: 25
+  quality_metrics:
+    enabled: true
+    num_prompts: 10
+
+checkpoint:
+  save_every: 500
+  keep_last_n: 10
+  save_optimizer: true
+
+logging:
+  log_every: 2
+  monitor_velocity_norm: true
+  monitor_grad_norm: true
+  velocity_norm_warning: 10.0
+  grad_norm_warning: 10.0
