@@ -372,6 +372,7 @@ def get_production_dataloader(config, device='cuda', adapter_name='stratum'):
             target_latent_size=config.model.input_size,
             max_samples=data_cfg.stratum_max_samples,
             adapter_name=adapter_name,
+            require_pose2=getattr(data_cfg, 'require_pose2', False),
         )
         return DataLoader(
             dataset,

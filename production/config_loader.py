@@ -299,6 +299,7 @@ class DataConfig:
     # Stratum-specific options (used when source="stratum")
     stratum_dir: str = "/mnt/nas-ai-models/training-data/ffhq/stratum"
     stratum_max_samples: Optional[int] = None
+    require_pose2: bool = False       # Skip images without pose2.npy (for pose2 ablation)
 
     num_workers: int = 4
     prefetch_factor: int = 2

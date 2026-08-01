@@ -134,6 +134,7 @@ class StratumDataset(IterableDataset):
         num_workers: int = 0,
         max_samples: Optional[int] = None,
         adapter_name: str = "stratum",
+        require_pose2: bool = False,
     ):
         """
         Args:
@@ -145,22 +146,27 @@ class StratumDataset(IterableDataset):
             max_samples: If set, only iterate up to this many samples instead of 70000
             adapter_name: "stratum" (default) or "eidolon" — controls which extra
                           embeddings are loaded (eidolon loads auraface_lda + z_g)
+            require_pose2: If True, skip directories without pose2.npy.
+                           Use for pose2 ablation to ensure consistent 308kp conditioning.
         """
         self.stratum_dir = Path(stratum_dir)
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.target_latent_size = target_latent_size
         self.adapter_name = adapter_name
+        self.require_pose2 = require_pose2
 
         # Scan directory for available samples (stable across rebuilds)
         existing = sorted([
             d for d in self.stratum_dir.iterdir()
             if d.is_dir() and (d / "pixel.npy").exists()
+            and (not require_pose2 or (d / "pose2.npy").exists())
         ])
         if max_samples is not None and len(existing) > max_samples:
             existing = existing[:max_samples]
         self._dirs = existing
-        print(f"[StratumDataset] {len(self._dirs)} samples in {self.stratum_dir}")
+        print(f"[StratumDataset] {len(self._dirs)} samples in {self.stratum_dir}"
+              + (f" (require_pose2=True)" if require_pose2 else ""))
 
     # ------------------------------------------------------------------
 
@@ -345,6 +351,7 @@ def get_stratum_dataloader(
     target_latent_size=1024,
     max_samples: Optional[int] = None,
     adapter_name: str = "stratum",
+    require_pose2: bool = False,
 ) -> StratumDataset:
     """Create a StratumDataset dataloader.
 
@@ -360,6 +367,7 @@ def get_stratum_dataloader(
         max_samples: If set, only iterate up to this many samples
         adapter_name: "stratum" (default) or "eidolon" — controls which extra
                       embeddings are loaded
+        require_pose2: If True, skip directories without pose2.npy.
     """
     return StratumDataset(
         stratum_dir=stratum_dir,
@@ -368,4 +376,5 @@ def get_stratum_dataloader(
         target_latent_size=target_latent_size,
         max_samples=max_samples,
         adapter_name=adapter_name,
+        require_pose2=require_pose2,
     )

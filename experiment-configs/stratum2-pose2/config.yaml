@@ -93,6 +93,7 @@ data:
   source: stratum
   stratum_dir: "$STRATUM_DIR"
   stratum_max_samples: 70000
+  require_pose2: true           # ONLY USE images with pose2.npy — skip unenriched
   num_workers: 8
   prefetch_factor: 2
   pin_memory: true
