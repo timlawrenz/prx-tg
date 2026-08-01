@@ -52,6 +52,7 @@ class StratumAdapter(ConditioningAdapter):
         pose_dim: int = 3,
         pose_confidence_threshold: float = 0.05,
         dino_pool_factor: Optional[int] = None,
+        geometry_3d_enabled: bool = False,
     ):
         super().__init__(hidden_size)
 
@@ -62,6 +63,7 @@ class StratumAdapter(ConditioningAdapter):
         self.dino_patches_enabled = dino_patches_enabled
         self.num_pose_joints = num_pose_joints
         self.pose_confidence_threshold = pose_confidence_threshold
+        self.geometry_3d_enabled = geometry_3d_enabled
 
         # Conditioning projections (bias=True matching original NanoDiT)
         self.dino_proj = nn.Linear(dino_dim, hidden_size, bias=True)
@@ -82,6 +84,22 @@ class StratumAdapter(ConditioningAdapter):
         self.null_text = nn.Parameter(torch.zeros(1, 1, text_dim))
         # null_pose is in post-projection space (matching original NanoDiT design)
         self.null_pose = nn.Parameter(torch.zeros(1, num_pose_joints, hidden_size))
+
+        # ── 3D geometry conditioning (pointmap + normals combined) ──────
+        if geometry_3d_enabled:
+            self.geometry_3d_grid_size = 16  # 16×16 = 256 tokens
+            self.geometry_3d_dim = 6          # 3 (XYZ) + 3 (normal XYZ)
+            self.geometry_3d_proj = nn.Sequential(
+                nn.Linear(self.geometry_3d_dim, hidden_size, bias=True),
+                nn.GELU(),
+                nn.Linear(hidden_size, hidden_size, bias=True),
+            )
+            self.geometry_3d_pos_embed = nn.Parameter(
+                torch.randn(1, self.geometry_3d_grid_size ** 2, hidden_size) * 0.02
+            )
+            self.null_geometry_3d = nn.Parameter(
+                torch.zeros(1, self.geometry_3d_grid_size ** 2, self.geometry_3d_dim)
+            )
 
     def forward(self, **kwargs) -> ConditioningOutput:
         dino_emb = kwargs["dino_emb"]                       # (B, dino_dim)
@@ -154,6 +172,30 @@ class StratumAdapter(ConditioningAdapter):
                 patches_cond = pose_tokens
                 if text_mask is not None:
                     dino_patches_mask = torch.ones(B, self.num_pose_joints,
+                                                   device=text_mask.device,
+                                                   dtype=text_mask.dtype)
+
+        # ── 3D geometry conditioning (pointmap + normals combined) ─────
+        geometry_3d = kwargs.get('geometry_3d')  # (B, 256, 6) or None
+        if geometry_3d is not None and self.geometry_3d_enabled:
+            geometry_3d = self.apply_cfg_drop_source(
+                geometry_3d, kwargs.get('cfg_drop_geometry_3d'),
+                self.null_geometry_3d)
+            geo_tokens = self.geometry_3d_proj(geometry_3d)   # (B, 256, hidden)
+            geo_tokens = geo_tokens + self.geometry_3d_pos_embed
+
+            # Append geometry tokens to patches_cond
+            if patches_cond is not None:
+                patches_cond = torch.cat([patches_cond, geo_tokens], dim=1)
+                if dino_patches_mask is not None:
+                    geo_mask = torch.ones(B, geo_tokens.shape[1],
+                                           device=dino_patches_mask.device,
+                                           dtype=dino_patches_mask.dtype)
+                    dino_patches_mask = torch.cat([dino_patches_mask, geo_mask], dim=1)
+            else:
+                patches_cond = geo_tokens
+                if text_mask is not None:
+                    dino_patches_mask = torch.ones(B, geo_tokens.shape[1],
                                                    device=text_mask.device,
                                                    dtype=text_mask.dtype)
 

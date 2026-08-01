@@ -336,6 +336,7 @@ def main():
             "pose_confidence_threshold": config.model.pose_confidence_threshold,
             "dino_patches_enabled": dino_patches_enabled,
             "dino_pool_factor": getattr(config.training, 'dino_pool_factor', None),
+            "geometry_3d_enabled": getattr(config.adapter, 'geometry_3d_enabled', False),
         },
     ).to(device)
 

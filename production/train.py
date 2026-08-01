@@ -203,7 +203,7 @@ def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="c
     return per_token_loss.mean()
 
 
-def flow_matching_loss(model, x0, conditioning, cfg_probs, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05, maskdit_config=None, global_step=0, seg_map=None, seg_weight_config=None, asymflow_config=None):
+def flow_matching_loss(model, x0, conditioning, cfg_probs, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05, maskdit_config=None, global_step=0, seg_map=None, seg_weight_config=None, asymflow_config=None, matting=None, matting_edge_config=None):
     """Compute flow matching loss with adapter-aware CFG dropout.
     
     Args:
@@ -259,7 +259,7 @@ def flow_matching_loss(model, x0, conditioning, cfg_probs, return_v_pred=False, 
         model_kwargs['cfg_drop_identity'] = drop_both | drop_identity
         model_kwargs['cfg_drop_geometry'] = drop_both | drop_geometry
     else:
-        # 7-stream stratum CFG: uncond, text-only, dino-cls-only, dino-patches-only, drop-pose, pose-only
+        # 7-stream (or 8-stream with geometry_3d) stratum CFG
         rand = torch.rand(B, device=device)
         p_both = cfg_probs.get('p_uncond', 0.10)
         p_text = cfg_probs.get('p_text_only', 0.25)
@@ -267,31 +267,38 @@ def flow_matching_loss(model, x0, conditioning, cfg_probs, return_v_pred=False, 
         p_dino_patches = cfg_probs.get('p_dino_patches_only', 0.05)
         p_drop_pose = cfg_probs.get('p_drop_pose', 0.10)
         p_pose_only = cfg_probs.get('p_pose_only', 0.05)
-        
+        p_drop_geo3d = cfg_probs.get('p_drop_geometry_3d', 0.0)  # 0 = disabled (v1 compat)
+
         t1 = p_both
         t2 = t1 + p_text
         t3 = t2 + p_dino_cls
         t4 = t3 + p_dino_patches
         t5 = t4 + p_drop_pose
         t6 = t5 + p_pose_only
-        
+        t7 = t6 + p_drop_geo3d  # geometry_3d stream (0 if disabled)
+
         drop_both = rand < t1
         drop_dino = (rand >= t1) & (rand < t2)
         drop_text_and_patches = (rand >= t2) & (rand < t3)
         drop_text_and_cls = (rand >= t3) & (rand < t4)
         cat_drop_pose = (rand >= t4) & (rand < t5)
         cat_pose_only = (rand >= t5) & (rand < t6)
-        
+        cat_drop_geo3d = (rand >= t6) & (rand < t7)  # only active if p_drop_geo3d > 0
+
         drop_text = drop_both | drop_text_and_patches | drop_text_and_cls | cat_pose_only
         drop_dino_cls = drop_both | drop_dino | drop_text_and_cls | cat_pose_only
         drop_dino_patches_mask = drop_both | drop_dino | drop_text_and_patches | cat_pose_only
         drop_pose = drop_both | drop_dino | drop_text_and_patches | drop_text_and_cls | cat_drop_pose
-        
+        # geometry_3d is dropped in: uncond, and its own dedicated stream
+        drop_geometry_3d = drop_both | cat_drop_geo3d
+
         model_kwargs = dict(conditioning)
         model_kwargs['cfg_drop_dino'] = drop_dino_cls
         model_kwargs['cfg_drop_text'] = drop_text
         model_kwargs['cfg_drop_dino_patches'] = drop_dino_patches_mask
         model_kwargs['cfg_drop_pose'] = drop_pose
+        if p_drop_geo3d > 0:
+            model_kwargs['cfg_drop_geometry_3d'] = drop_geometry_3d
     
     # Determine if we need REPA hidden states or MaskDiT info
     use_repa = repa_config is not None and repa_config.enabled
@@ -340,9 +347,28 @@ def flow_matching_loss(model, x0, conditioning, cfg_probs, return_v_pred=False, 
         and seg_weight_config is not None
         and seg_weight_config.enabled
     )
-    if use_seg_weight:
+    # Matting edge-aware loss weighting
+    use_matting_edge = (
+        matting is not None
+        and matting_edge_config is not None
+        and matting_edge_config.enabled
+    )
+
+    if use_seg_weight and use_matting_edge:
+        seg_w = build_seg_weight(seg_map.to(x0.device), x0.shape, seg_weight_config)
+        matting_w = build_matting_edge_weight(
+            matting.to(x0.device), x0.shape, matting_edge_config)
+        total_w = seg_w * matting_w
+        # Re-normalize so expected loss magnitude matches unweighted baseline
+        total_w = total_w / total_w.mean(dim=[1, 2, 3], keepdim=True).clamp(min=1e-6)
+        loss = (sq_err * total_w).mean()
+    elif use_seg_weight:
         seg_w = build_seg_weight(seg_map.to(x0.device), x0.shape, seg_weight_config)
         loss = (sq_err * seg_w).mean()
+    elif use_matting_edge:
+        matting_w = build_matting_edge_weight(
+            matting.to(x0.device), x0.shape, matting_edge_config)
+        loss = (sq_err * matting_w).mean()
     else:
         loss = sq_err.mean()
     
@@ -400,16 +426,25 @@ def build_seg_weight(seg_map, x0_shape, seg_weight_config):
     """Build a spatial loss weight tensor from a segmentation token-grid map.
 
     Args:
-        seg_map: (B, TG, TG) int16 tensor — Sapiens Goliath class IDs at token resolution
+        seg_map: (B, TG, TG) int16 tensor — segmentation class IDs at token resolution
         x0_shape: tuple (B, C, H, W) — used to derive patch_size and pixel grid
         seg_weight_config: SegWeightConfig instance
 
     Returns:
         weight: (B, 1, H, W) float32 tensor broadcastable onto (B, C, H, W) loss
 
-    Class mapping (Sapiens Goliath 28-class):
+    Supports two taxonomies via seg_weight_config.taxonomy_version:
+
+    taxonomy_version=1 (Sapiens v1, 28-class — legacy):
         0            → bg_weight
         2,3,23-27    → face_weight
+        *            → other_weight
+
+    taxonomy_version=2 (Sapiens 2, DOME_CLASSES_29):
+        0            → bg_weight
+        3            → face_skin_weight      (Face_Neck)
+        4            → hair_weight           (Hair)
+        24-28        → mouth_weight          (Lips, Teeth, Tongue)
         *            → other_weight
 
     normalize=True: divide each sample's weight map by its mean so the
@@ -418,14 +453,24 @@ def build_seg_weight(seg_map, x0_shape, seg_weight_config):
     B, C, H, W = x0_shape
     cfg = seg_weight_config
 
-    FACE_CLASSES = {2, 3, 23, 24, 25, 26, 27}
-
     # Build per-token weight (B, TG, TG) float32
     seg_f = seg_map.float()                           # (B, TG, TG)
     weight = torch.full_like(seg_f, cfg.other_weight)
-    weight[seg_f == 0] = cfg.bg_weight
-    for cls in FACE_CLASSES:
-        weight[seg_f == cls] = cfg.face_weight
+
+    if cfg.taxonomy_version == 2:
+        # Sapiens 2 DOME_CLASSES_29
+        weight[seg_f == 0] = cfg.bg_weight
+        weight[seg_f == 3] = cfg.face_skin_weight      # Face_Neck
+        weight[seg_f == 4] = cfg.hair_weight            # Hair
+        MOUTH_CLASSES_V2 = {24, 25, 26, 27, 28}        # Lower_Lip, Upper_Lip, Lower_Teeth, Upper_Teeth, Tongue
+        for cls in MOUTH_CLASSES_V2:
+            weight[seg_f == cls] = cfg.mouth_weight
+    else:
+        # Sapiens v1 28-class (legacy)
+        FACE_CLASSES = {2, 3, 23, 24, 25, 26, 27}
+        weight[seg_f == 0] = cfg.bg_weight
+        for cls in FACE_CLASSES:
+            weight[seg_f == cls] = cfg.face_weight
 
     # Upsample token grid → pixel grid (nearest-neighbor, preserves hard boundaries)
     weight = weight.unsqueeze(1)                      # (B, 1, TG, TG)
@@ -435,6 +480,35 @@ def build_seg_weight(seg_map, x0_shape, seg_weight_config):
         # Per-sample mean normalisation: keeps expected magnitude == unweighted MSE
         mean = weight.mean(dim=[1, 2, 3], keepdim=True).clamp(min=1e-6)
         weight = weight / mean
+
+    return weight
+
+
+def build_matting_edge_weight(matting, x0_shape, matting_edge_config):
+    """Build a spatial loss weight tensor from an alpha matte boundary zone.
+
+    Args:
+        matting: (B, TG, TG) float32 tensor — alpha matte at token-grid resolution
+        x0_shape: tuple (B, C, H, W) — used to upsample to pixel grid
+        matting_edge_config: MattingEdgeConfig instance
+
+    Returns:
+        weight: (B, 1, H, W) float32 tensor — base 1.0 everywhere, boosted at
+                soft-alpha boundary pixels (edge_low < alpha < edge_high).
+    """
+    B, C, H, W = x0_shape
+    cfg = matting_edge_config
+
+    # matting: (B, TG, TG) → upsample to (B, 1, H, W)
+    m = matting.unsqueeze(1)  # (B, 1, TG, TG)
+    m = F.interpolate(m, size=(H, W), mode='bilinear', align_corners=False)
+
+    # Boundary zone: soft alpha region
+    edge = (m > cfg.edge_low) & (m < cfg.edge_high)  # (B, 1, H, W) bool
+
+    # Boost: base 1.0 + edge_boost at boundaries
+    weight = torch.ones_like(m)
+    weight[edge] = 1.0 + cfg.edge_boost
 
     return weight
 
@@ -780,6 +854,11 @@ class Trainer:
             if dino_patches_mask is not None:
                 conditioning['dino_patches_mask'] = dino_patches_mask.to(self.device)
             conditioning['pose_kpts'] = batch['pose_keypoints'].to(self.device)
+
+            # 3D geometry (pointmap + normals combined, 256 tokens of 6D)
+            geometry_3d = batch.get('geometry_3d')
+            if geometry_3d is not None:
+                conditioning['geometry_3d'] = geometry_3d.to(self.device)
         
         seg_map = batch.get('seg_map')  # (B, TG, TG) int16 — may be absent in webdataset path
         
@@ -791,7 +870,7 @@ class Trainer:
         ctx = torch.amp.autocast('cuda', enabled=use_amp, dtype=amp_dtype if use_amp else torch.float32)
         with ctx:
             loss, v_pred, repa_loss, lpips_loss, mae_loss = flow_matching_loss(
-                self.model, x0, conditioning, self.cfg_probs, 
+                self.model, x0, conditioning, self.cfg_probs,
                 return_v_pred=True,
                 repa_config=self.repa_config,
                 tread_config=self.tread_config,
@@ -805,6 +884,8 @@ class Trainer:
                 seg_map=seg_map,
                 seg_weight_config=getattr(self, 'seg_weight_config', None),
                 asymflow_config=getattr(self, 'asymflow_config', None),
+                matting=batch.get('matting'),
+                matting_edge_config=getattr(self, 'matting_edge_config', None),
             )
         
         # Scale loss by accumulation steps
@@ -1269,6 +1350,10 @@ class ProductionTrainer(Trainer):
         self.seg_weight_config = getattr(training, 'seg_weight', None)
         if self.seg_weight_config and not self.seg_weight_config.enabled:
             self.seg_weight_config = None
+
+        self.matting_edge_config = getattr(training, 'matting_edge', None)
+        if self.matting_edge_config and not self.matting_edge_config.enabled:
+            self.matting_edge_config = None
 
         # AsymFlow config
         self.asymflow_config = getattr(training, 'asymflow', None)

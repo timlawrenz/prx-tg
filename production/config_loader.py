@@ -23,7 +23,7 @@ class ModelConfig:
     prediction_type: Literal["v_prediction", "x_prediction"] = "x_prediction"
     t_clamp_min: float = 0.05       # Minimum t for x→v conversion (avoids div-by-zero)
     bottleneck_size: int = 0        # PatchEmbed bottleneck (0 = disabled)
-    num_pose_joints: int = 133      # DWPose whole-body keypoints
+    num_pose_joints: int = 133      # DWPose (v1: 133) or Sapiens 2 (v2: 308) keypoints
     pose_confidence_threshold: float = 0.05  # Hard-mask joints below this with [NULL_POSE]
 
 
@@ -50,6 +50,8 @@ class AdapterConfig:
     pose_dim: int = 3
     pose_confidence_threshold: float = 0.05
     dino_pool_factor: Optional[int] = None
+    # --- stratum2 fields ---
+    geometry_3d_enabled: bool = False    # 3D geometry cross-attention tokens (pointmap+normals)
 
 
 @dataclass
@@ -82,7 +84,8 @@ class CFGDropoutConfig:
     p_dino_patches_only: float = 0.05  # Keep DINO patches, drop text + CLS + pose
     p_drop_pose: float = 0.10        # Drop only pose (text + DINO present)
     p_pose_only: float = 0.05        # Keep only pose (text + DINO dropped)
-    
+    p_drop_geometry_3d: float = 0.0  # Drop only 3D geometry (all else present). 0 = disabled (v1 compat)
+
     def to_dict(self):
         """Convert to dict for compatibility with training code."""
         return {
@@ -92,6 +95,7 @@ class CFGDropoutConfig:
             'p_dino_patches_only': self.p_dino_patches_only,
             'p_drop_pose': self.p_drop_pose,
             'p_pose_only': self.p_pose_only,
+            'p_drop_geometry_3d': self.p_drop_geometry_3d,
         }
 
 
@@ -149,25 +153,45 @@ class SegWeightConfig:
     Seg map is downsampled to the token grid (64×64 at patch_size=16 / 1024px)
     via nearest-neighbor, then class weights are broadcast back to pixel space.
 
-    Sapiens Goliath 28-class schema:
+    Supports two taxonomies via taxonomy_version:
+
+    taxonomy_version=1 (Sapiens v1, 28-class — legacy):
         0  = Background      → bg_weight
-        2  = Face_Neck       → face_weight
-        3  = Hair            → face_weight
-        23 = Lower_Lip       → face_weight
-        24 = Upper_Lip       → face_weight
-        25 = Lower_Teeth     → face_weight
-        26 = Upper_Teeth     → face_weight
-        27 = Tongue          → face_weight
-        *  = all others      → other_weight
+        2  = Face_Neck        → face_weight
+        3  = Hair             → face_weight
+        23 = Lower_Lip        → face_weight
+        24 = Upper_Lip        → face_weight
+        25 = Lower_Teeth      → face_weight
+        26 = Upper_Teeth      → face_weight
+        27 = Tongue           → face_weight
+        *  = all others       → other_weight
+
+    taxonomy_version=2 (Sapiens 2, DOME_CLASSES_29):
+        0  = Background      → bg_weight
+        3  = Face_Neck        → face_skin_weight
+        4  = Hair             → hair_weight
+        24 = Lower_Lip        → mouth_weight
+        25 = Upper_Lip        → mouth_weight
+        26 = Lower_Teeth      → mouth_weight
+        27 = Upper_Teeth      → mouth_weight
+        28 = Tongue           → mouth_weight
+        *  = all others       → other_weight
 
     normalize=True (recommended): per-sample mean normalisation so the
     expected loss magnitude stays comparable to an unweighted baseline.
     """
     enabled: bool = False
-    face_weight: float = 2.0
+    taxonomy_version: int = 1          # 1 = Sapiens v1 28-class, 2 = Sapiens 2 29-class
+    # v1 fields (used when taxonomy_version=1)
+    face_weight: float = 2.0           # All face classes weighted equally in v1
+    # v2 fields (used when taxonomy_version=2)
+    mouth_weight: float = 4.0          # Lips, teeth, tongue — highest failure region
+    face_skin_weight: float = 3.0      # Face_Neck skin
+    hair_weight: float = 2.0          # Hair — edge complexity
+    # shared fields
     bg_weight: float = 0.5
     other_weight: float = 1.0
-    normalize: bool = True      # normalise per-sample so mean weight = 1
+    normalize: bool = True             # normalise per-sample so mean weight = 1
 
 
 @dataclass
@@ -196,10 +220,27 @@ class GaLoreConfig:
 
 
 @dataclass
-@dataclass
 class AsymFlowConfig:
     enabled: bool = False
     rank: int = 8  # Subspace rank (e.g. 8 for ImageNet)
+
+
+@dataclass
+class MattingEdgeConfig:
+    """Alpha-matte boundary edge-aware loss weighting.
+
+    Boosts loss weight at soft-alpha boundary pixels (hair edges, body
+    silhouettes, skin-clothing boundaries) where diffusion models most
+    often produce artifacts.
+
+    Uses matting.npy (Sapiens 2 matting, alpha [0,1]) to identify the
+    boundary zone: pixels where edge_low < alpha < edge_high.
+    """
+    enabled: bool = False
+    edge_boost: float = 2.0       # Multiplier added to base weight (1.0) at boundaries
+    edge_low: float = 0.1        # Alpha below this = background
+    edge_high: float = 0.9       # Alpha above this = solid foreground
+
 
 @dataclass
 class TrainingConfig:
@@ -223,6 +264,7 @@ class TrainingConfig:
     galore: GaLoreConfig = field(default_factory=GaLoreConfig)
     seg_weight: SegWeightConfig = field(default_factory=SegWeightConfig)
     asymflow: AsymFlowConfig = field(default_factory=AsymFlowConfig)
+    matting_edge: MattingEdgeConfig = field(default_factory=MattingEdgeConfig)
     dino_patches: DinoPatchesConfig = field(default_factory=DinoPatchesConfig)
     dino_pool_factor: int | None = None
     
