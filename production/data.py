@@ -374,6 +374,13 @@ def get_production_dataloader(config, device='cuda', adapter_name='stratum'):
             adapter_name=adapter_name,
             require_pose2=getattr(data_cfg, 'require_pose2', False),
             prefer_pose2=(int(getattr(config.model, 'num_pose_joints', 133)) == 308),
+            # Load only the streams this run consumes (per-sample I/O ↓ 3-4×):
+            load_dino_patches=bool(getattr(getattr(config.training, 'dino_patches', None), 'enabled', True)),
+            load_seg=(bool(getattr(getattr(config.training, 'seg_weight', None), 'enabled', False))
+                      or bool(getattr(getattr(config.training, 'matting_edge', None), 'enabled', False))),
+            load_geometry_3d=(float(getattr(getattr(config.training, 'cfg_dropout', None),
+                                           'p_drop_geometry_3d', 0.0) or 0.0) > 0),
+            load_matting=bool(getattr(getattr(config.training, 'matting_edge', None), 'enabled', False)),
         )
         return DataLoader(
             dataset,

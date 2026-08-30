@@ -136,6 +136,10 @@ class StratumDataset(IterableDataset):
         adapter_name: str = "stratum",
         require_pose2: bool = False,
         prefer_pose2: bool = False,
+        load_dino_patches: bool = True,
+        load_seg: bool = True,
+        load_geometry_3d: bool = True,
+        load_matting: bool = False,
     ):
         """
         Args:
@@ -152,6 +156,14 @@ class StratumDataset(IterableDataset):
             prefer_pose2: If True, load pose2.npy (308kp) and filter to dirs that have it.
                           If False (default), ALWAYS load pose.npy (133kp) — the adapter
                           is built for exactly one joint count; never mix within a run.
+            load_dino_patches: Load dinov3_patches.npy (8.4MB/sample). False when
+                          training.dino_patches.enabled=false — the model never sees
+                          them; stub (1,1024) keeps the collate contract.
+            load_seg: Load seg.npy/seg2.npy (1MB) — False when seg_weight and
+                          matting_edge are both disabled.
+            load_geometry_3d: Load pointmap+normal2 (12.6MB when present) — False
+                          when the geometry_3d CFG stream is disabled.
+            load_matting: Load matting.npy (2MB) — True only for matting_edge arms.
         """
         self.stratum_dir = Path(stratum_dir)
         self.batch_size = batch_size
@@ -160,6 +172,10 @@ class StratumDataset(IterableDataset):
         self.adapter_name = adapter_name
         self.require_pose2 = require_pose2
         self.prefer_pose2 = prefer_pose2
+        self.load_dino_patches = load_dino_patches
+        self.load_seg = load_seg
+        self.load_geometry_3d = load_geometry_3d
+        self.load_matting = load_matting
 
         # Scan directory for available samples (stable across rebuilds)
         existing = sorted([
@@ -187,7 +203,12 @@ class StratumDataset(IterableDataset):
         t5_hidden  = np.load(d / 't5_hidden.npy')       # (512, 1024) f16
         t5_mask    = np.load(d / 't5_mask.npy')         # (512,) uint8
         dino_cls   = np.load(d / 'dinov3_cls.npy')      # (1024,) f16
-        dino_pat   = np.load(d / 'dinov3_patches.npy')  # (4096, 1024) f16
+        if self.load_dino_patches:
+            dino_pat = np.load(d / 'dinov3_patches.npy')  # (4096, 1024) f16 — 8.4MB
+        else:
+            # Patches disabled in this arm — stub keeps the collate contract
+            # without paying the per-sample read+cast (the model never sees them).
+            dino_pat = np.zeros((1, 1024), dtype=np.float16)
         caption    = (d / 'caption.txt').read_text().strip()
         meta       = json.loads((d / 'metadata.json').read_text())
 
@@ -215,25 +236,28 @@ class StratumDataset(IterableDataset):
             num_joints = 133
 
         # ── Segmentation: prefer seg2.npy (Sapiens 2, 29-class) over seg.npy (v1, 28-class)
-        seg2_path = d / 'seg2.npy'
-        if seg2_path.exists():
-            seg_raw = np.load(seg2_path)               # (H, W) uint8, 29-class
-        else:
-            seg_raw = np.load(d / 'seg.npy')           # (H, W) uint8, 28-class
-
-        # Downsample seg to token grid (nearest-neighbor).
-        # patch_size=16, input=1024px → token grid = 64×64.
-        seg_t   = torch.from_numpy(seg_raw.astype(np.int16)).unsqueeze(0).unsqueeze(0)  # (1,1,H,W)
+        # Skip entirely when neither seg_weight nor matting_edge consumes it.
         token_size = self.target_latent_size // 16 if isinstance(self.target_latent_size, int) else 64
-        seg_grid = F.interpolate(
-            seg_t.float(), size=(token_size, token_size), mode='nearest'
-        ).squeeze(0).squeeze(0).to(torch.int16)         # (TG, TG) int16
+        if self.load_seg:
+            seg2_path = d / 'seg2.npy'
+            if seg2_path.exists():
+                seg_raw = np.load(seg2_path)           # (H, W) uint8, 29-class
+            else:
+                seg_raw = np.load(d / 'seg.npy')       # (H, W) uint8, 28-class
+            seg_t   = torch.from_numpy(seg_raw.astype(np.int16)).unsqueeze(0).unsqueeze(0)  # (1,1,H,W)
+            seg_grid = F.interpolate(
+                seg_t.float(), size=(token_size, token_size), mode='nearest'
+            ).squeeze(0).squeeze(0).to(torch.int16)     # (TG, TG) int16
+        else:
+            seg_grid = torch.zeros(token_size, token_size, dtype=torch.int16)
+            seg2_path = d / 'seg2.npy'  # referenced by the geometry_3d gate below
 
         # ── 3D geometry: pointmap + normals combined (optional, Phase 2)
         geometry_3d = None
         pointmap_path = d / 'pointmap.npy'
         normal2_path = d / 'normal2.npy'
-        if pointmap_path.exists() and normal2_path.exists() and seg2_path.exists():
+        if (self.load_geometry_3d and pointmap_path.exists()
+                and normal2_path.exists() and seg2_path.exists()):
             pointmap = np.load(pointmap_path)           # (H, W, 3) f16, metric XYZ
             normal2  = np.load(normal2_path)            # (H, W, 3) f16, unit vectors
             seg2_full = seg_raw                          # already loaded above
@@ -260,7 +284,7 @@ class StratumDataset(IterableDataset):
         # ── Matting alpha (optional, Phase 3)
         matting = None
         matting_path = d / 'matting.npy'
-        if matting_path.exists():
+        if self.load_matting and matting_path.exists():
             matting_raw = np.load(matting_path)         # (H, W) f16, alpha [0,1]
             matting_t = torch.from_numpy(matting_raw.astype(np.float32)).unsqueeze(0).unsqueeze(0)
             matting_grid = F.interpolate(matting_t, size=(token_size, token_size), mode='area'
@@ -362,6 +386,10 @@ def get_stratum_dataloader(
     adapter_name: str = "stratum",
     require_pose2: bool = False,
     prefer_pose2: bool = False,
+    load_dino_patches: bool = True,
+    load_seg: bool = True,
+    load_geometry_3d: bool = True,
+    load_matting: bool = False,
 ) -> StratumDataset:
     """Create a StratumDataset dataloader.
 
@@ -388,4 +416,8 @@ def get_stratum_dataloader(
         adapter_name=adapter_name,
         require_pose2=require_pose2,
         prefer_pose2=prefer_pose2,
+        load_dino_patches=load_dino_patches,
+        load_seg=load_seg,
+        load_geometry_3d=load_geometry_3d,
+        load_matting=load_matting,
     )

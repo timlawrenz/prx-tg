@@ -357,7 +357,8 @@ def main():
                     "adapter.",           # All adapter projectors (DINO, T5, pose, identity, geometry)
                     "t_embedder",         # Global timestep (B, D)
                     "adaLN_modulation",   # Block-level global scale/shift
-                    "final_proj"          # Output head
+                    "final_proj",         # Output head projection
+                    "output_conv",        # Output head conv (K<16 alignment; DiP head stays BF16)
                 ]
                 return not any(kw in mod_name for kw in exclude_keywords)
 
