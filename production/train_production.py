@@ -324,6 +324,7 @@ def main():
         tread_route_end=tread_route_end,
         tread_routing_prob=tread_routing_prob,
         bottleneck_size=config.model.bottleneck_size,
+        head_type=config.model.head_type,
         maskdit_enabled=maskdit_enabled,
         maskdit_mask_ratio=maskdit_mask_ratio,
         maskdit_decoder_depth=maskdit_decoder_depth,

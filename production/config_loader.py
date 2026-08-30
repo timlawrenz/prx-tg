@@ -23,6 +23,7 @@ class ModelConfig:
     prediction_type: Literal["v_prediction", "x_prediction"] = "x_prediction"
     t_clamp_min: float = 0.05       # Minimum t for x→v conversion (avoids div-by-zero)
     bottleneck_size: int = 0        # PatchEmbed bottleneck (0 = disabled)
+    head_type: str = "linear"       # "linear" (legacy 3x3 output conv) | "dip" (DiP-style conv U-Net head)
     num_pose_joints: int = 133      # DWPose (v1: 133) or Sapiens 2 (v2: 308) keypoints
     pose_confidence_threshold: float = 0.05  # Hard-mask joints below this with [NULL_POSE]
 

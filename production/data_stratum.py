@@ -135,6 +135,7 @@ class StratumDataset(IterableDataset):
         max_samples: Optional[int] = None,
         adapter_name: str = "stratum",
         require_pose2: bool = False,
+        prefer_pose2: bool = False,
     ):
         """
         Args:
@@ -148,6 +149,9 @@ class StratumDataset(IterableDataset):
                           embeddings are loaded (eidolon loads auraface_lda + z_g)
             require_pose2: If True, skip directories without pose2.npy.
                            Use for pose2 ablation to ensure consistent 308kp conditioning.
+            prefer_pose2: If True, load pose2.npy (308kp) and filter to dirs that have it.
+                          If False (default), ALWAYS load pose.npy (133kp) — the adapter
+                          is built for exactly one joint count; never mix within a run.
         """
         self.stratum_dir = Path(stratum_dir)
         self.batch_size = batch_size
@@ -155,12 +159,14 @@ class StratumDataset(IterableDataset):
         self.target_latent_size = target_latent_size
         self.adapter_name = adapter_name
         self.require_pose2 = require_pose2
+        self.prefer_pose2 = prefer_pose2
 
         # Scan directory for available samples (stable across rebuilds)
         existing = sorted([
             d for d in self.stratum_dir.iterdir()
             if d.is_dir() and (d / "pixel.npy").exists()
             and (not require_pose2 or (d / "pose2.npy").exists())
+            and (not prefer_pose2 or (d / "pose2.npy").exists())
         ])
         if max_samples is not None and len(existing) > max_samples:
             existing = existing[:max_samples]
@@ -187,11 +193,14 @@ class StratumDataset(IterableDataset):
 
         image_data = _resize_image(pixel, self.target_latent_size)
 
-        # ── Pose: prefer pose2.npy (Sapiens 2, 308 kp) over pose.npy (v1, 133 kp)
-        pose2_path = d / 'pose2.npy'
-        if pose2_path.exists():
-            pose2 = np.load(pose2_path)              # (1, 308, 3) or (N, 308, 3) f32
-            pose2 = pose2[0]                          # (308, 3) — take first person
+        # ── Pose: serve EXACTLY ONE joint count per run — the adapter is built
+        # for a single num_pose_joints. prefer_pose2 (True only when the model
+        # config declares 308 joints) loads pose2.npy; otherwise v1 pose.npy
+        # (133kp) is always used, so mixed-enrichment datasets never inject a
+        # 308-kp tensor into a 133-kp model.
+        if self.prefer_pose2:
+            pose2 = np.load(d / 'pose2.npy')              # (1, 308, 3) or (N, 308, 3) f32
+            pose2 = pose2[0]                              # (308, 3) — take first person
             # pose2 coordinates are in absolute pixel space [0, W] × [0, H].
             # Normalize to [-1, 1] using original image dimensions from metadata.
             W_orig, H_orig = meta['width'], meta['height']
@@ -352,6 +361,7 @@ def get_stratum_dataloader(
     max_samples: Optional[int] = None,
     adapter_name: str = "stratum",
     require_pose2: bool = False,
+    prefer_pose2: bool = False,
 ) -> StratumDataset:
     """Create a StratumDataset dataloader.
 
@@ -377,4 +387,5 @@ def get_stratum_dataloader(
         max_samples=max_samples,
         adapter_name=adapter_name,
         require_pose2=require_pose2,
+        prefer_pose2=prefer_pose2,
     )

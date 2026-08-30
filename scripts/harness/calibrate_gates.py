@@ -142,9 +142,16 @@ def process_dir(d: Path):
     g0a = float(np.log10(np.std(hp[skin]) + 1e-12))
     g0c = float(np.mean(hp[skin] ** 2) / (np.mean(lum[skin] ** 2) + 1e-12))
     bs = block_stats(lum, mask)
-    out = {
+    # Mask-free variants: generated images have no seg masks; these bands make
+    # real-vs-generated comparison possible under IDENTICAL preprocessing.
+    g0a_full = float(np.log10(np.std(hp) + 1e-12))
+    g0c_full = float(np.mean(hp ** 2) / (np.mean(lum ** 2) + 1e-12))
+    bs_full = block_stats(lum, np.ones_like(mask, dtype=bool))
+    out: dict = {
         "g0a_sensor_noise_floor": g0a,
         "g0c_skin_texture_energy": g0c,
+        "g0a_sensor_noise_floor_full": g0a_full,
+        "g0c_skin_texture_energy_full": g0c_full,
     }
     if spec is not None:
         out["g0b_spectral_slope"] = spec
@@ -153,6 +160,12 @@ def process_dir(d: Path):
             "p5": float(np.percentile(bs, 5)),
             "p50": float(np.percentile(bs, 50)),
             "p95": float(np.percentile(bs, 95)),
+        }
+    if bs_full is not None:
+        out["g0d_local_contrast_full"] = {
+            "p5": float(np.percentile(bs_full, 5)),
+            "p50": float(np.percentile(bs_full, 50)),
+            "p95": float(np.percentile(bs_full, 95)),
         }
     return out
 

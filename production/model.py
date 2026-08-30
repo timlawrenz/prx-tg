@@ -320,6 +320,38 @@ class MaskDiTDecoder(nn.Module):
         return x_full
 
 
+class DiPHead(nn.Module):
+    """Shallow conv U-Net output head — DiP-style, Z-Image-Turbo component 2.
+
+    Replaces the single 3x3 output_conv with a 2-stage down/up stack plus an
+    internal encoder skip. The final layer is zero-initialized so the head
+    starts as an identity residual (same training-stability contract as the
+    legacy 3x3 conv). Requires input H,W divisible by 4 (all bucket sizes are).
+
+    FLOPs at 1024^2 with mid=32: ~2-3 GFLOPs — a few percent of the backbone
+    forward. Profile at launch; enlarge `mid` only if measured headroom exists.
+    """
+    def __init__(self, in_channels: int = 3, mid: int = 32):
+        super().__init__()
+        self.down1 = nn.Conv2d(in_channels, mid, kernel_size=3, stride=2, padding=1)
+        self.down2 = nn.Conv2d(mid, mid * 2, kernel_size=3, stride=2, padding=1)
+        self.up1 = nn.ConvTranspose2d(mid * 2, mid, kernel_size=3, stride=2,
+                                      padding=1, output_padding=1)
+        self.up2 = nn.ConvTranspose2d(mid, in_channels, kernel_size=3, stride=2,
+                                      padding=1, output_padding=1)
+        self.act = nn.GELU()
+
+    def forward(self, x):
+        d1 = self.act(self.down1(x))
+        d2 = self.act(self.down2(d1))
+        u1 = self.act(self.up1(d2)) + d1  # skip from encoder
+        return self.up2(u1)               # no input skip — caller adds the residual
+
+    def zero_init_final(self):
+        nn.init.zeros_(self.up2.weight)
+        nn.init.zeros_(self.up2.bias)
+
+
 class NanoDiT(nn.Module):
     """Nano DiT: 12L, 384H, 6A for validation testing."""
     
@@ -349,6 +381,7 @@ class NanoDiT(nn.Module):
         maskdit_decoder_depth=4,
         dino_patches_enabled=True,
         dino_pool_factor=None,        # Integer pooling factor for DINO patches (e.g. 2 for 2x2 pooling)
+        head_type="linear",           # "linear" = legacy 3x3 output conv | "dip" = DiP conv U-Net head
         adapter_kwargs=None,           # Dict with adapter name + params (moved from flat kwargs)
     ):
         super().__init__()
@@ -436,8 +469,14 @@ class NanoDiT(nn.Module):
         self.final_norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.final_proj = nn.Linear(hidden_size, patch_size * patch_size * in_channels, bias=True)
         
-        # Local refinement convolution to smooth patch boundaries
-        self.output_conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=True)
+        # Local refinement head (3x3 conv, or DiP-style conv U-Net stack)
+        self.head_type = head_type
+        if head_type == "dip":
+            self.output_conv = DiPHead(in_channels=in_channels, mid=32)
+        elif head_type == "linear":
+            self.output_conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=True)
+        else:
+            raise ValueError(f"unknown head_type: {head_type!r} (expected 'linear' or 'dip')")
         
         # Initialize weights
         self.initialize_weights()
@@ -477,9 +516,12 @@ class NanoDiT(nn.Module):
         # Keep final_proj normally initialized (xavier from _basic_init)
         # DO NOT zero-init - that would kill all gradients!
         
-        # Zero-init output conv for training stability (residual starts at zero)
-        nn.init.zeros_(self.output_conv.weight)
-        nn.init.zeros_(self.output_conv.bias)
+        # Zero-init output head for training stability (residual starts at zero)
+        if isinstance(self.output_conv, DiPHead):
+            self.output_conv.zero_init_final()
+        else:
+            nn.init.zeros_(self.output_conv.weight)
+            nn.init.zeros_(self.output_conv.bias)
         
         # Xavier-init REPA projection if present
         if self.repa_block_idx is not None:
