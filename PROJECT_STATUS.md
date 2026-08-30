@@ -5,20 +5,20 @@
 
 ## Current state
 
+- **Arm `dip-conv-head` RUNNING** (`experiments/dip-conv-head/runs/2026-08-30_1449`,
+  FP8, effective batch 256, 5,000 steps). Launch blockers fixed en route:
+  pose2/133 joint-count collision, mixed-enrichment collate KeyError, and
+  stream-gated loader (~28MB→~7MB per sample). Verdict via tick when done.
 - **Photorealism is the yardstick.** No checkpoint yet produces photo-realistic
-  portraits. All future arms are judged by deterministic G-gates versus a real-FFHQ
-  reference distribution plus a blind human-preference review — not eyeball collages.
-- **Arm O (`zg-token-basis-cfg-guard`) recorded PASS** (2026-08-30, close-out of the
-  2026-07-17 pivot): monotonic dim0→yaw at ≥2 checkpoints, no collapse through 5k
-  steps. Ledger updated; release checkpoint at
-  `release/prx_tg_armo_cfgguard_step5000_bf16.safetensors`.
-- **Research-loop M1–M3 shipped (2026-08-30):** avenues registry (7 candidates) +
-  validator; G0 gate calibration frozen from 1,000 real FFHQ images
-  (`research/avenues/gates_calibration.json`); deterministic tick state machine
-  with 18/18 unit tests. Selection demo: first tick activates `dip-conv-head`
-  (id-tiebreak vs `gamma2-noise-scale`, both EIG 1.1).
-- Stratum2 FFHQ enrichment continues on the 4090 (pose2/seg2 ~4% coverage); the GPU
-  is NOT free — training arms need explicit greenlight.
+  portraits. All future arms judged by deterministic G-gates vs the real-FFHQ
+  calibration + blind human review — not eyeball collages.
+- **Arm O (`zg-token-basis-cfg-guard`) PASS** — monotonic dim0→yaw at ≥2
+  checkpoints, no collapse through 5k. Release checkpoint in `release/`.
+- **Research-loop M1–M3 + M4-adjacent shipped:** avenues registry + tick +
+  calibration + gate producer (`scripts/harness/`). Calibration re-frozen
+  2026-08-30 with mask-free gate variants (g0a/g0b/g0c/g0d `_full`).
+- Stratum2 FFHQ enrichment ~4% (pose2/seg2); captions: `caption.txt`+`t5_hidden`
+  only — caption2/t52 are unreliable stratum2 artifacts (do not use).
 
 ## Immediate next action
 
