@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "champion": {
+    "slug": "faces70k-fp8",
+    "checkpoint": "release/prx_tg_armj_faces70k_step35000_bf16.safetensors",
+    "measured": {}
+  },
+  "selection_progress": 0,
+  "exploration": { "every_n": 5, "novelty_bonus": 0.25 },
+  "falsification": { "strike_limit": 3 },
+  "cost_tiers_gpu_hours": { "low": 30, "med": 60 },
+  "calibration_file": "research/avenues/gates_calibration.json",
+  "candidates": [
+    {
+      "id": "gamma2-noise-scale",
+      "state": "registered",
+      "prior": "high",
+      "measurability": "high",
+      "cost": "med",
+      "strikes": 0,
+      "evidence_parts": ["g0a_sensor_noise_floor", "g0b_spectral_slope"],
+      "declaration": {
+        "scope": "Replace gamma=1 rectified-flow noise scale with gamma=2 in flow_matching_loss (and matching velocity target + sampler path).",
+        "differs_from": "champion",
+        "output_semantics": "Color-shift reduction and natural-image spectral statistics; measured by G0a/G0b band positions vs frozen real-FFHQ calibration.",
+        "provenance": "docs/tangential-research.md 2026-08-18 Z-Image-Turbo Pixel, component 1",
+        "abstention": "Paper calibrated gamma=2 in latent->pixel post-training, not from-scratch pixel. Optimum may differ; sweep {1,2,4,8} if band-neutral.",
+        "qualification_gate": "default_champion_gate",
+        "expected_gpu_hours": 30,
+        "config": "experiments/gamma2-noise-scale/config.yaml",
+        "arm_issue": 0
+      },
+      "verdicts": []
+    },
+    {
+      "id": "dip-conv-head",
+      "state": "registered",
+      "prior": "high",
+      "measurability": "high",
+      "cost": "med",
+      "strikes": 0,
+      "evidence_parts": ["g0c_skin_texture_energy", "g0d_local_contrast", "blind_review"],
+      "declaration": {
+        "scope": "Replace Linear->3x3conv head with a shallow conv stack (2-3 stage DiP-style) to remove linear-head grid artifacts.",
+        "differs_from": "champion",
+        "output_semantics": "Removal of patch-boundary grid artifacts; measured by G0c/G0d + blind review vote.",
+        "provenance": "docs/tangential-research.md 2026-08-18 Z-Image-Turbo Pixel, component 2 (JiT vs DiP)",
+        "abstention": "At 240M scale a full DiP head may dominate FLOPs; use a shallow variant and profile before sizing up.",
+        "qualification_gate": "default_champion_gate",
+        "expected_gpu_hours": 30,
+        "config": "experiments/dip-conv-head/config.yaml",
+        "arm_issue": 0
+      },
+      "verdicts": []
+    },
+    {
+      "id": "irepa-upgrade",
+      "state": "registered",
+      "prior": "med",
+      "measurability": "med",
+      "cost": "med",
+      "strikes": 0,
+      "evidence_parts": ["g0c_skin_texture_energy"],
+      "declaration": {
+        "scope": "Replace nn.Linear REPA projection with Conv2d + spatial normalization (iREPA, Singh et al.).",
+        "differs_from": "champion",
+        "output_semantics": "Improved texture convergence; visible in G0c and blind review. FID not gateable at current budget (G3 coverage is the proxy).",
+        "provenance": "docs/EXPERIMENT_TREE.md TBD list (pre-2026-08 priorities)",
+        "abstention": "REPA decay completes at 16k steps in the Arm J schedule; a 5k-stride arm measures early iREPA only.",
+        "qualification_gate": "default_champion_gate",
+        "expected_gpu_hours": 35,
+        "config": "experiments/irepa-upgrade/config.yaml",
+        "arm_issue": 0
+      },
+      "verdicts": []
+    },
+    {
+      "id": "qk-rmsnorm",
+      "state": "registered",
+      "prior": "med",
+      "measurability": "low",
+      "cost": "med",
+      "strikes": 0,
+      "evidence_parts": [],
+      "declaration": {
+        "scope": "Add RMSNorm to Q and K separately for attention stability (Ideogram 4 / Llama 3).",
+        "differs_from": "champion",
+        "output_semantics": "Training stability under long schedules and full-rank attention; NOT directly photorealism-measurable.",
+        "provenance": "docs/EXPERIMENT_TREE.md TBD list",
+        "abstention": "No gate in the G-suite measures stability gains directly; requires a stability gate (velocity norm, NaN interval) or runs as a stability companion, not a quality arm.",
+        "qualification_gate": "stability_only",
+        "expected_gpu_hours": 30,
+        "config": "experiments/qk-rmsnorm/config.yaml",
+        "arm_issue": 0
+      },
+      "verdicts": []
+    },
+    {
+      "id": "single-stream-dit",
+      "state": "registered",
+      "prior": "high",
+      "measurability": "med",
+      "cost": "high",
+      "strikes": 0,
+      "evidence_parts": ["g2_text_compliance"],
+      "declaration": {
+        "scope": "Remove cross-attention; concatenate T5 text + DINO CLS into the self-attention sequence (Ideogram 4 single-stream).",
+        "differs_from": "champion",
+        "output_semantics": "Text-following and detail quality; measured by G2 + blind review.",
+        "provenance": "docs/EXPERIMENT_TREE.md TBD list; Ideogram 4 validation at 9.3B scale",
+        "abstention": "Largest architectural change since the patch-window series; a 5k-stride arm on 70k is the minimal honest test. Compositional risk with TREAD routing — keep TREAD off or on as a separate variable.",
+        "qualification_gate": "default_champion_gate",
+        "expected_gpu_hours": 60,
+        "config": "experiments/single-stream-dit/config.yaml",
+        "arm_issue": 0
+      },
+      "verdicts": []
+    },
+    {
+      "id": "ps32-adapt",
+      "state": "registered",
+      "prior": "med",
+      "measurability": "med",
+      "cost": "low",
+      "strikes": 0,
+      "evidence_parts": ["g0a_sensor_noise_floor", "g2_text_compliance"],
+      "declaration": {
+        "scope": "Adapt converged ps16 checkpoint to ps32 via W'=0.5[W,W,W,W] patch-conv init + 5k-step warmup (4x token reduction).",
+        "differs_from": "champion",
+        "output_semantics": "Throughput/quality tradeoff; quality gap vs ps16 must stay inside gate bands.",
+        "provenance": "docs/tangential-research.md 2026-08-18 Z-Image-Turbo Pixel, component 3",
+        "abstention": "Serves inference-speed priority; do NOT train ps32 fully from scratch (paper: slow + local artifacts). ps64 confirmed bad.",
+        "qualification_gate": "band_containment",
+        "expected_gpu_hours": 20,
+        "config": "experiments/ps32-adapt/config.yaml",
+        "arm_issue": 0
+      },
+      "verdicts": []
+    },
+    {
+      "id": "latent-first-pretrain",
+      "state": "registered",
+      "prior": "high",
+      "measurability": "med",
+      "cost": "high",
+      "strikes": 0,
+      "evidence_parts": ["g0a_sensor_noise_floor", "g0b_spectral_slope", "blind_review"],
+      "declaration": {
+        "scope": "Latent-space pretraining (FLUX-AE 8x) then pixel-space post-training with the Z-Image recipe (x-prediction, ps16 -> same 64x64 grid).",
+        "differs_from": "champion",
+        "output_semantics": "The quantified fix for slow pixel-from-scratch convergence; measured by all G0 gates + blind review.",
+        "provenance": "docs/tangential-research.md 2026-08-18 Z-Image-Turbo Pixel, component 4 (headline result)",
+        "abstention": "Pipeline change for the NEXT model generation. Phase 4 per plan: only considered when Phase 2/3 arms plateau below the photoreal band. NOT selectable before then (human hold #3).",
+        "qualification_gate": "phase4_gated",
+        "expected_gpu_hours": 200,
+        "config": "experiments/latent-first-pretrain/config.yaml",
+        "arm_issue": 0
+      },
+      "verdicts": []
+    }
+  ]
+}

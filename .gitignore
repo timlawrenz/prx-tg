@@ -110,3 +110,13 @@ research/
 # Local prompt test results (run artifacts, not source code)
 results/
 
+# Whitelisted governance + research-loop files (committed by policy — AGENTS.md lists these dirs)
+!.hermes/
+.hermes/*
+!.hermes/plans/
+!research/
+research/*
+!research/avenues/
+!research/avenues/votes/*.jsonl
+!research/avenues/gates/*.jsonl
+
