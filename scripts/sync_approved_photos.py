@@ -8,13 +8,22 @@ For each item:
 1. Checks for raw file at `data/raw/<fn[0:2]>/<fn[2:4]>/<filename>` (no extension)
 2. If missing (and exportable_url is available), downloads from `exportable_url`
 3. Detects file type from magic bytes
-4. Creates/updates symlink: data/approved/<filename>.<ext> -> ../raw/<fn[0:2]>/<fn[2:4]>/<filename>
+4. Creates a hardlink in data/approved/<filename>.<ext> pointing to the raw file
+
+The target device (CIFS NAS) cannot create symlinks (OSError ENOTSUP), and
+hardlinks are somewhat unreliable for idempotency on CIFS
+(os.path.samefile reports False even for real hardlinks there), but they
+still save disk space compared to full copies since raw and approved share
+the same underlying data blocks. Existing symlinks (legacy) are replaced
+on sight. Raw files are immutable, so the data-sharing nature of hardlinks
+is safe.
 
 Notes:
 - Raw files are sharded into two levels of subdirectory by the first four characters of the filename
 - Automatically downloads missing files from exportable_url when available
 - In dry-run mode, downloads are skipped (only reported)
-- Use --no-prune to skip removal of stale symlinks and their derived data
+- Idempotent: existing approved hardlinks matching raw size+mtime are left untouched
+- Use --no-prune to skip removal of stale links and their derived data
 - Does NOT enumerate `data/raw/`; uses per-filename path lookups
 
 Examples:
@@ -28,6 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+
 import sys
 import time
 from dataclasses import dataclass
@@ -35,7 +45,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-DEFAULT_BASE_URL = "http://192.168.86.49:3003/photos.json"
+DEFAULT_BASE_URL = "http://crawlr.pi216.ai/photos.json"
 
 
 @dataclass
@@ -45,10 +55,10 @@ class Counters:
     downloaded: int = 0
     download_failed: int = 0
     unknown_type: int = 0
-    symlink_created: int = 0
-    symlink_updated: int = 0
-    symlink_unchanged: int = 0
-    stale_symlinks: int = 0
+    link_created: int = 0
+    link_updated: int = 0
+    link_unchanged: int = 0
+    stale_copies: int = 0
     stale_records: int = 0
     stale_npy: int = 0
 
@@ -157,42 +167,61 @@ def detect_extension(path: str) -> str | None:
     return None
 
 
-def ensure_symlink(link_path: str, target_rel: str, target_abs: str, dry_run: bool) -> str:
-    link_dir = os.path.dirname(link_path)
+def ensure_approved_link(approved_path: str, raw_path: str, dry_run: bool) -> str:
+    """Ensure `approved_path` is a hardlink to `raw_path`.
 
-    if os.path.islink(link_path):
-        existing_rel = os.readlink(link_path)
-        existing_abs = os.path.abspath(os.path.join(link_dir, existing_rel))
-        if os.path.normpath(existing_abs) == os.path.normpath(target_abs):
-            return "unchanged"
+    The target device (CIFS NAS) cannot create symlinks (OSError ENOTSUP), so
+    approved/ holds hardlinks to the raw files instead. Idempotency is detected
+    by comparing size and mtime (both are identical for a true hardlink on CIFS
+    even when os.path.samefile wrongly returns False). Any existing entry that
+    is a symlink (legacy) is replaced with a hardlink.
+    """
+    # Reject directory targets.
+    if os.path.isdir(approved_path) and not os.path.islink(approved_path):
+        raise IsADirectoryError(approved_path)
 
-    existed = os.path.lexists(link_path)
-    if existed and not os.path.islink(link_path) and os.path.isdir(link_path):
-        raise IsADirectoryError(link_path)
+    raw_stat = os.stat(raw_path)
 
-    if existed:
-        if dry_run:
-            return "updated"
-        os.unlink(link_path)
+    # Already an up-to-date entry. If it's a true hardlink (nlink>1) skip;
+    # if it's a standalone copy (nlink==1) convert to hardlink.
+    if os.path.isfile(approved_path) and not os.path.islink(approved_path):
+        try:
+            cur = os.stat(approved_path)
+            if cur.st_size == raw_stat.st_size and int(cur.st_mtime) == int(raw_stat.st_mtime):
+                if cur.st_nlink > 1:
+                    return "unchanged"
+                # nlink == 1: standalone copy — replace with hardlink below.
+                status = "updated"
+            else:
+                status = "updated"
+        except OSError:
+            pass
+        status = "updated"
+    else:
+        status = "created" if not os.path.lexists(approved_path) else "updated"
 
     if dry_run:
-        return "created" if not existed else "updated"
+        return status
 
-    os.symlink(target_rel, link_path)
-    return "created" if not existed else "updated"
+    # Replace existing entry (symlink, stale regular file, or broken link).
+    if os.path.lexists(approved_path):
+        os.unlink(approved_path)
+
+    os.link(raw_path, approved_path)
+    return status
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Create extension-correct symlinks for approved photos.")
+    p = argparse.ArgumentParser(description="Create extension-correct hardlinks in approved/.")
     p.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Base URL for photos.json (default: %(default)s)")
     p.add_argument("--start-page", type=int, default=1, help="First page to fetch (default: %(default)s)")
     p.add_argument("--end-page", type=int, default=None, help="Last page to fetch (inclusive)")
     p.add_argument("--limit", type=int, default=None, help="Stop after processing N photo entries (smoke test)")
     p.add_argument(
-        "--stop-after-links",
+        "--stop-after-copies",
         type=int,
         default=None,
-        help="Stop after creating/updating N symlinks (useful for quick verification)",
+        help="Stop after creating/updating N hardlinks (useful for quick verification)",
     )
     p.add_argument("--dry-run", action="store_true", help="Do not modify filesystem; just report actions")
     p.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout seconds (default: %(default)s)")
@@ -202,11 +231,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=1000,
         help="Print a progress line every N processed items (0 to disable)",
     )
-    p.add_argument("--verbose", action="store_true", help="Print each symlink create/update action")
+    p.add_argument("--verbose", action="store_true", help="Print each hardlink create/update action")
     p.add_argument("--retries", type=int, default=5, help="Retries per page fetch (default: %(default)s)")
     p.add_argument("--raw-dir", default=os.path.join("data", "raw"), help="Raw images directory")
-    p.add_argument("--approved-dir", default=os.path.join("data", "approved"), help="Approved symlinks directory")
-    p.add_argument("--no-prune", dest="prune", action="store_false", help="Skip removal of stale symlinks/records/embeddings after scan (required with --start-page, --end-page, or --limit)")
+    p.add_argument("--approved-dir", default=os.path.join("data", "approved"), help="Approved hardlinks directory")
+    p.add_argument("--no-prune", dest="prune", action="store_false", help="Skip removal of stale entries/records/embeddings after scan (required with --start-page, --end-page, or --limit)")
     p.set_defaults(prune=True)
     p.add_argument("--derived-dir", default=os.path.join("data", "derived"), help="Derived data directory (for pruning)")
     p.add_argument("--jsonl", default=os.path.join("data", "derived", "approved_image_dataset.jsonl"), help="JSONL dataset path (for pruning)")
@@ -261,7 +290,7 @@ def main(argv: list[str]) -> int:
                 print(
                     f"progress: processed={counters.processed} downloaded={counters.downloaded} "
                     f"missing_raw={counters.missing_raw} download_failed={counters.download_failed} "
-                    f"unknown_type={counters.unknown_type} created={counters.symlink_created} updated={counters.symlink_updated}",
+                    f"unknown_type={counters.unknown_type} created={counters.link_created} updated={counters.link_updated}",
                     file=sys.stderr,
                 )
 
@@ -317,20 +346,19 @@ def main(argv: list[str]) -> int:
 
             link_name = f"{filename}.{ext}"
             link_path = os.path.join(approved_dir, link_name)
-            target_rel = os.path.relpath(raw_path, start=approved_dir)
 
-            status = ensure_symlink(link_path, target_rel=target_rel, target_abs=raw_path, dry_run=args.dry_run)
+            status = ensure_approved_link(link_path, raw_path=raw_path, dry_run=args.dry_run)
             if status == "created":
-                counters.symlink_created += 1
+                counters.link_created += 1
             elif status == "updated":
-                counters.symlink_updated += 1
+                counters.link_updated += 1
             else:
-                counters.symlink_unchanged += 1
+                counters.link_unchanged += 1
 
             if args.verbose and status in ("created", "updated"):
-                print(f"{status}: {os.path.relpath(link_path)} -> {target_rel}")
+                print(f"{status}: {os.path.relpath(link_path)} <- {os.path.relpath(raw_path)}")
 
-            if args.stop_after_links is not None and (counters.symlink_created + counters.symlink_updated) >= args.stop_after_links:
+            if args.stop_after_copies is not None and (counters.link_created + counters.link_updated) >= args.stop_after_copies:
                 return summarize_and_exit(counters)
 
         page += 1
@@ -350,7 +378,7 @@ def main(argv: list[str]) -> int:
                 dry_run=args.dry_run,
                 verbose=args.verbose,
             )
-            counters.stale_symlinks = stale_sym
+            counters.stale_copies = stale_sym
             counters.stale_records = stale_rec
             counters.stale_npy = stale_npy
 
@@ -365,26 +393,27 @@ def prune_stale(
     dry_run: bool,
     verbose: bool,
 ) -> tuple[int, int, int]:
-    """Remove symlinks, JSONL records, and .npy files for images no longer in the approved set."""
-    stale_symlinks = 0
+    """Remove stale hardlinks, JSONL records, and .npy files for images no longer in the approved set."""
+    stale_copies = 0
     stale_records = 0
     stale_npy = 0
 
     stale_stems: list[str] = []
     for entry in os.scandir(approved_dir):
-        if not entry.is_symlink():
+        # Match both legacy symlinks and regular-file hardlinks.
+        if not (entry.is_symlink() or entry.is_file()):
             continue
         stem = os.path.splitext(entry.name)[0]
         if stem not in approved_filenames:
             stale_stems.append(stem)
             if verbose:
-                print(f"stale symlink: {entry.path}", file=sys.stderr)
+                print(f"stale approved entry: {entry.path}", file=sys.stderr)
             if not dry_run:
                 os.unlink(entry.path)
-            stale_symlinks += 1
+            stale_copies += 1
 
     if not stale_stems:
-        return stale_symlinks, stale_records, stale_npy
+        return stale_copies, stale_records, stale_npy
 
     stale_set = set(stale_stems)
 
@@ -423,7 +452,7 @@ def prune_stale(
                     os.unlink(npy_path)
                 stale_npy += 1
 
-    return stale_symlinks, stale_records, stale_npy
+    return stale_copies, stale_records, stale_npy
 
 
 def summarize_and_exit(c: Counters) -> int:
@@ -434,13 +463,13 @@ def summarize_and_exit(c: Counters) -> int:
         f"  download failed:  {c.download_failed}",
         f"  missing raw:      {c.missing_raw}",
         f"  unknown type:     {c.unknown_type}",
-        f"  symlink created:  {c.symlink_created}",
-        f"  symlink updated:  {c.symlink_updated}",
-        f"  symlink unchanged:{c.symlink_unchanged}",
+        f"  links created:    {c.link_created}",
+        f"  links updated:    {c.link_updated}",
+        f"  links unchanged:  {c.link_unchanged}",
     ]
-    if c.stale_symlinks or c.stale_records or c.stale_npy:
+    if c.stale_copies or c.stale_records or c.stale_npy:
         lines += [
-            f"  stale symlinks:   {c.stale_symlinks}",
+            f"  stale copies:     {c.stale_copies}",
             f"  stale records:    {c.stale_records}",
             f"  stale npy files:  {c.stale_npy}",
         ]

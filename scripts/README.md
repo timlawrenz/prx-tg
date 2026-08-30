@@ -2,20 +2,26 @@
 
 ## sync_approved_photos.py
 
-Creates/updates an extension-correct symlinked view of the approved photo list:
+Creates/updates an extension-correct **copy** of each approved photo:
 
-- Source of truth: `http://192.168.86.162:3003/photos.json?page=N` (paginate until empty)
+- Source of truth: `http://crawlr.pi216.ai/photos.json?page=N` (paginate until empty)
 - Raw files: `data/raw/<fn[0:2]>/<fn[2:4]>/<filename>` (no extension; sharded by first four characters)
-- Output symlinks: `data/approved/<filename>.<ext>` pointing to `../raw/<fn[0:2]>/<fn[2:4]>/<filename>`
+- Output copies: `data/approved/<filename>.<ext>` copied from the raw file
 - **Automatic download**: If raw file is missing and `exportable_url` is set in the JSON, downloads from that URL
 
-Pruning is **not** performed in this change (stale entries in `data/approved/` are left as-is).
+The target device (CIFS NAS) does not support symlinks (`OSError [Errno 95]`), so
+`data/approved/` holds real **copies** instead of symlinks. Copies work on any
+filesystem and are idempotent: an existing approved file whose size+mtime match
+the raw file is left untouched.
+
+Pruning is enabled by default and removes stale approved copies/records/embeddings
+after a full scan (use `--no-prune` with partial scans).
 
 ### Features
 
 - **Downloads missing files**: Automatically fetches raw files from CDN if not present locally
 - **Dry-run support**: Use `--dry-run` to preview actions without downloading or modifying filesystem
-- **Progress tracking**: Shows download counts, missing files, symlink operations
+- **Progress tracking**: Shows download counts, missing files, copy operations
 - **Error handling**: Skips and continues on download failures (logs warnings)
 - **Resume-friendly**: Can be interrupted and rerun; only processes what's needed
 
@@ -30,10 +36,10 @@ python3 scripts/sync_approved_photos.py --dry-run --end-page 1 --limit 20
 # Process first 100 photos with verbose output
 python3 scripts/sync_approved_photos.py --limit 100 --verbose
 
-# Create just one symlink for quick verification
-python3 scripts/sync_approved_photos.py --stop-after-links 1 --verbose
+# Create just one copy for quick verification
+python3 scripts/sync_approved_photos.py --stop-after-copies 1 --verbose
 
-# Full sync (downloads missing files, creates all symlinks)
+# Full sync (downloads missing files, creates all copies)
 python3 scripts/sync_approved_photos.py
 
 # Disable progress output
@@ -46,12 +52,12 @@ python3 scripts/sync_approved_photos.py --progress-every 0
 2. **Check raw file**: Looks for `data/raw/<fn[0:2]>/<fn[2:4]>/<filename>`
 3. **Download if missing**: Fetches from `exportable_url` in JSON if available
 4. **Detect type**: Reads magic bytes to determine extension (jpg/png/webp/gif)
-5. **Create symlink**: `data/approved/<filename>.<ext>` → `../raw/<fn[0:2]>/<fn[2:4]>/<filename>`
+5. **Copy file**: `data/approved/<filename>.<ext>` ← `data/raw/<fn[0:2]>/<fn[2:4]>/<filename>` (atomic temp+rename; skips if size+mtime match)
 
 ### Output Example
 
 ```
-page 1: fetching http://192.168.86.162:3003/photos.json?page=1
+page 1: fetching http://crawlr.pi216.ai/photos.json?page=1
 page 1: 14 items
 progress: processed=1000 missing_raw=0 unknown_type=0 created=997 updated=0
 
@@ -61,9 +67,9 @@ Summary:
   download failed:  3
   missing raw:      5
   unknown type:     0
-  symlink created:  2492
-  symlink updated:  0
-  symlink unchanged:0
+  copies created:   2492
+  copies updated:   0
+  copies unchanged: 0
 ```
 
 ### Notes
@@ -71,7 +77,7 @@ Summary:
 - **Downloads are automatic**: Missing files are fetched from CDN without user confirmation
 - **Dry-run skips downloads**: Use `--dry-run` to preview without downloading
 - **Failed downloads are skipped**: Script continues on errors, logs warnings to stderr
-- **Resume-friendly**: Rerun anytime; only downloads missing files, updates changed symlinks
+- **Resume-friendly**: Rerun anytime; only downloads missing files, updates changed copies
 - **No authentication**: CDN URLs are public (exportable_url)
 
 ## generate_approved_image_dataset.py
