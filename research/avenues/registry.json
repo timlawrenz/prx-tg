@@ -57,7 +57,7 @@
       ],
       "declaration": {
         "scope": "Replace Linear->3x3conv head with a shallow conv stack (2-3 stage DiP-style) to remove linear-head grid artifacts.",
-        "differs_from": "champion",
+        "differs_from": "test-stratum-no-patches (production stack, 70k FFHQ stratum, DINO patches disabled, bfloat16)",
         "output_semantics": "Removal of patch-boundary grid artifacts; measured by G0c/G0d + blind review vote.",
         "provenance": "docs/tangential-research.md 2026-08-18 Z-Image-Turbo Pixel, component 2 (JiT vs DiP)",
         "abstention": "At 240M scale a full DiP head may dominate FLOPs; use a shallow variant and profile before sizing up.",
