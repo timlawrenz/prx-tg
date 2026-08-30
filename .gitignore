@@ -110,6 +110,13 @@ research/
 # Local prompt test results (run artifacts, not source code)
 results/
 
+# Build artifacts / release bundles (not git-tracked source)
+release/
+hf_space/
+infographic/
+prx-tg-architecture.html
+prx-tg-core-architecture.html
+
 # Whitelisted governance + research-loop files (committed by policy — AGENTS.md lists these dirs)
 !.hermes/
 .hermes/*
