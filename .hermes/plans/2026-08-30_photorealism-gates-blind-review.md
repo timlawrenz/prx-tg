@@ -285,3 +285,28 @@ Rejection rules (each a hard error):
 | M5 | event-driven strategist cron in THIS profile (poll run-completion → tick-ready marker → relay verdict JSON; prompt registers proposals via propose.py; never hand-types verdicts), modeled on the harness's observer/tick-ready pattern | after M1–M3 verified |
 
 M1–M4 are pure files/no-GPU and can start immediately.
+
+## Build status
+
+- **M1 ✅ shipped 2026-08-30** — `research/avenues/registry.json` (7 candidates,
+  full declarations) + `scripts/harness/registry_validate.py` (positive + negative
+  paths verified) + `.gitignore` whitelist for `.hermes/plans/` and
+  `research/avenues/`.
+- **M2 ✅ shipped 2026-08-30** — `scripts/harness/calibrate_gates.py`; calibration
+  frozen from n=1,000 real FFHQ images (5 unmeasurable), 2m09s. Bands:
+  g0a log10-noise-std [-1.73, -1.35]; g0b slope [-1.61, -1.09];
+  g0c ratio [0.0010, 0.0084]; g0d contrast percentiles. Deterministic (seed 42).
+  Two bugs found + fixed during build: channels-first pixel handling, block-mask
+  reshape; plus the 70k-dir stat-listing trap (readdir-only pool scan).
+- **M3 ✅ shipped 2026-08-30** — `scripts/harness/tick.py` + 18/18 unit tests
+  (`tests/test_harness_tick.py`): strike path, one-active invariant, third-strike
+  falsify, mid-tick mutation refusal (exit 3), explore slot, novelty bonus, ties by
+  id, blocked skipping, needs-human hold, champion advance (bootstrap waiver),
+  calibration hard error, determinism (identical output across runs). End-to-end
+  demo on a registry copy: activate → strike → validated → champion advance →
+  next arm auto-selected; real registry untouched.
+  **First-selection note:** `dip-conv-head` and `gamma2-noise-scale` tie at EIG 1.1;
+  the documented id-order tiebreak selects `dip-conv-head` first. Both are
+  defensible first arms; owner can re-declare prior/measurability/cost if the
+  order should differ.
+- **M4/M5 pending** — proposal gate, then the event-driven strategist cron.

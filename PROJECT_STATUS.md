@@ -12,17 +12,19 @@
   2026-07-17 pivot): monotonic dim0→yaw at ≥2 checkpoints, no collapse through 5k
   steps. Ledger updated; release checkpoint at
   `release/prx_tg_armo_cfgguard_step5000_bf16.safetensors`.
-- **Research-loop M1 shipped:** `research/avenues/registry.json` (7 seeded candidates),
-  `scripts/harness/registry_validate.py`, plan at
-  `.hermes/plans/2026-08-30_photorealism-gates-blind-review.md` (Phase 1 + 1b).
+- **Research-loop M1–M3 shipped (2026-08-30):** avenues registry (7 candidates) +
+  validator; G0 gate calibration frozen from 1,000 real FFHQ images
+  (`research/avenues/gates_calibration.json`); deterministic tick state machine
+  with 18/18 unit tests. Selection demo: first tick activates `dip-conv-head`
+  (id-tiebreak vs `gamma2-noise-scale`, both EIG 1.1).
 - Stratum2 FFHQ enrichment continues on the 4090 (pose2/seg2 ~4% coverage); the GPU
   is NOT free — training arms need explicit greenlight.
 
 ## Immediate next action
 
-M2: gate calibration pipeline — real-FFHQ reference-set stats → frozen
-`research/avenues/gates_calibration.json`. Then M3: `scripts/harness/tick.py`
-state machine + unit tests. Both pure-files, no GPU.
+M4: `propose.py` gated idea registration. Then Phase 1: `run_gates.py` producer
++ blind-review voting tool → first photorealism deficit report against the release
+checkpoints. All pure-files/no-GPU until an arm is greenlit.
 
 ## Headline result so far
 

@@ -8,8 +8,12 @@ Transplanted from the stratum-ffhq autonomous research harness — process, not 
 | File | Role |
 |---|---|
 | `registry.json` | Source of truth for arm candidates, champion, selection state. Docs lag it — registry wins. |
-| `gates_calibration.json` | Frozen G0 band thresholds from the real-FFHQ reference set. Produced by M2; **frozen before the first verdict, never recomputed mid-sweep**. Absent at M1 (warning only). |
+| `gates_calibration.json` | Frozen G0 band thresholds from the real-FFHQ reference set (n=1,000, seed 42, generated 2026-08-30 by `scripts/harness/calibrate_gates.py`). **Frozen before the first verdict; never recomputed mid-sweep.** |
 | `issues/` | Per-arm note files until GitHub issues are created (`arm_issue` = real issue number on github.com/timlawrenz/prx-tg). |
+
+Drivers: `scripts/harness/registry_validate.py` (validate), `scripts/harness/calibrate_gates.py`
+(regenerate calibration — requires explicit re-freeze decision), `scripts/harness/tick.py`
+(verdict + advance + selection; dry-run without `--write`). Tests: `tests/test_harness_tick.py`.
 
 ## Candidate lifecycle
 

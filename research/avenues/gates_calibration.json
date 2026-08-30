@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-30T13:20:20-0400",
+  "generator": "510030d0",
+  "reference": {
+    "path": "/mnt/nas-ai-models/training-data/ffhq/stratum",
+    "pool_size": 70000,
+    "n_sampled": 1000,
+    "seed": 42
+  },
+  "preprocessing": {
+    "resample": 512,
+    "mode": "class-2 (Face_Neck v1 28-class) skin mask, eroded r=1, min skin frac 0.005",
+    "luminance": "0.299/0.587/0.114 float32",
+    "note": "Bands are RELATIVE: model outputs must go through the identical downsample path."
+  },
+  "gates": {
+    "g0a_sensor_noise_floor": {
+      "n": 995,
+      "mean": -1.550068003568218,
+      "std": 0.11440770456658385,
+      "p5": -1.7292033314704895,
+      "p95": -1.3546079993247986
+    },
+    "g0b_spectral_slope": {
+      "n": 995,
+      "mean": -1.3568306801343362,
+      "std": 0.15878772627319057,
+      "p5": -1.6085103463168087,
+      "p95": -1.092600155948823
+    },
+    "g0c_skin_texture_energy": {
+      "n": 995,
+      "mean": 0.0033947432440314816,
+      "std": 0.0026598704420120276,
+      "p5": 0.0010499138152226806,
+      "p95": 0.008359124418348074
+    },
+    "g0d_local_contrast_p5": {
+      "n": 995,
+      "mean": 0.015734400208258472,
+      "std": 0.009024361024135206,
+      "p5": 0.0030456196598242966,
+      "p95": 0.031140563637018188
+    },
+    "g0d_local_contrast_p50": {
+      "n": 995,
+      "mean": 0.08095411648459021,
+      "std": 0.022327220315426465,
+      "p5": 0.04737662747502327,
+      "p95": 0.12084803953766822
+    },
+    "g0d_local_contrast_p95": {
+      "n": 995,
+      "mean": 0.22323474884744562,
+      "std": 0.04737493725874317,
+      "p5": 0.1518251763284206,
+      "p95": 0.31154168635606755
+    },
+    "__meta__": {
+      "unmeasurable_images": 5,
+      "per_gate_n": {
+        "g0a_sensor": 995,
+        "g0b_spectral": 995,
+        "g0c_skin": 995,
+        "g0d_local": 995
+      }
+    }
+  }
+}
