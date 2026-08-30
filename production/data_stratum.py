@@ -105,13 +105,13 @@ def _collate(batch: list[dict]) -> dict:
         'captions':            [s['caption']   for s in batch],
         'image_ids':           [s['image_id']  for s in batch],
     }
-    if 'geometry_3d' in batch[0]:
+    if all('geometry_3d' in s for s in batch):
         result['geometry_3d'] = torch.stack([s['geometry_3d'] for s in batch])
-    if 'matting' in batch[0]:
+    if all('matting' in s for s in batch):
         result['matting'] = torch.stack([s['matting'] for s in batch])
-    if 'identity_emb' in batch[0]:
+    if all('identity_emb' in s for s in batch):
         result['identity_emb'] = torch.stack([s['identity_emb'] for s in batch])
-    if 'geometry_emb' in batch[0]:
+    if all('geometry_emb' in s for s in batch):
         result['geometry_emb'] = torch.stack([s['geometry_emb'] for s in batch])
     return result
 
