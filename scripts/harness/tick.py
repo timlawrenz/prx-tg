@@ -28,6 +28,8 @@ STRIKE_W = 0.45
 ACTIONABLE = {"registered", "active"}
 TERMINAL = {"terminal_validated", "terminal_falsified"}
 
+from gate_register import KNOWN_GATES  # noqa: E402  (single source of truth)
+
 
 def wilson_lb(wins: float, n: int, z: float = 1.96) -> float:
     if n <= 0:

@@ -25,10 +25,11 @@ DECLARATION_FIELDS = [
     "scope", "differs_from", "output_semantics", "provenance", "abstention",
     "qualification_gate", "expected_gpu_hours", "config", "arm_issue",
 ]
-KNOWN_GATES = {
-    "default_champion_gate", "stability_only", "band_containment",
-    "phase4_gated",  # placeholder until gates_calibration.json registers the G-suite
-}
+
+import os  # noqa: E402
+import sys as _sys  # noqa: E402
+_sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gate_register import KNOWN_GATES  # noqa: E402
 
 
 def main() -> int:
