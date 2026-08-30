@@ -5,10 +5,18 @@
     "checkpoint": "release/prx_tg_armj_faces70k_step35000_bf16.safetensors",
     "measured": {}
   },
-  "selection_progress": 0,
-  "exploration": { "every_n": 5, "novelty_bonus": 0.25 },
-  "falsification": { "strike_limit": 3 },
-  "cost_tiers_gpu_hours": { "low": 30, "med": 60 },
+  "selection_progress": 1,
+  "exploration": {
+    "every_n": 5,
+    "novelty_bonus": 0.25
+  },
+  "falsification": {
+    "strike_limit": 3
+  },
+  "cost_tiers_gpu_hours": {
+    "low": 30,
+    "med": 60
+  },
   "calibration_file": "research/avenues/gates_calibration.json",
   "candidates": [
     {
@@ -18,7 +26,10 @@
       "measurability": "high",
       "cost": "med",
       "strikes": 0,
-      "evidence_parts": ["g0a_sensor_noise_floor", "g0b_spectral_slope"],
+      "evidence_parts": [
+        "g0a_sensor_noise_floor",
+        "g0b_spectral_slope"
+      ],
       "declaration": {
         "scope": "Replace gamma=1 rectified-flow noise scale with gamma=2 in flow_matching_loss (and matching velocity target + sampler path).",
         "differs_from": "champion",
@@ -34,12 +45,16 @@
     },
     {
       "id": "dip-conv-head",
-      "state": "registered",
+      "state": "active",
       "prior": "high",
       "measurability": "high",
       "cost": "med",
       "strikes": 0,
-      "evidence_parts": ["g0c_skin_texture_energy", "g0d_local_contrast", "blind_review"],
+      "evidence_parts": [
+        "g0c_skin_texture_energy",
+        "g0d_local_contrast",
+        "blind_review"
+      ],
       "declaration": {
         "scope": "Replace Linear->3x3conv head with a shallow conv stack (2-3 stage DiP-style) to remove linear-head grid artifacts.",
         "differs_from": "champion",
@@ -60,7 +75,9 @@
       "measurability": "med",
       "cost": "med",
       "strikes": 0,
-      "evidence_parts": ["g0c_skin_texture_energy"],
+      "evidence_parts": [
+        "g0c_skin_texture_energy"
+      ],
       "declaration": {
         "scope": "Replace nn.Linear REPA projection with Conv2d + spatial normalization (iREPA, Singh et al.).",
         "differs_from": "champion",
@@ -102,13 +119,15 @@
       "measurability": "med",
       "cost": "high",
       "strikes": 0,
-      "evidence_parts": ["g2_text_compliance"],
+      "evidence_parts": [
+        "g2_text_compliance"
+      ],
       "declaration": {
         "scope": "Remove cross-attention; concatenate T5 text + DINO CLS into the self-attention sequence (Ideogram 4 single-stream).",
         "differs_from": "champion",
         "output_semantics": "Text-following and detail quality; measured by G2 + blind review.",
         "provenance": "docs/EXPERIMENT_TREE.md TBD list; Ideogram 4 validation at 9.3B scale",
-        "abstention": "Largest architectural change since the patch-window series; a 5k-stride arm on 70k is the minimal honest test. Compositional risk with TREAD routing — keep TREAD off or on as a separate variable.",
+        "abstention": "Largest architectural change since the patch-window series; a 5k-stride arm on 70k is the minimal honest test. Compositional risk with TREAD routing \u2014 keep TREAD off or on as a separate variable.",
         "qualification_gate": "default_champion_gate",
         "expected_gpu_hours": 60,
         "config": "experiments/single-stream-dit/config.yaml",
@@ -123,7 +142,10 @@
       "measurability": "med",
       "cost": "low",
       "strikes": 0,
-      "evidence_parts": ["g0a_sensor_noise_floor", "g2_text_compliance"],
+      "evidence_parts": [
+        "g0a_sensor_noise_floor",
+        "g2_text_compliance"
+      ],
       "declaration": {
         "scope": "Adapt converged ps16 checkpoint to ps32 via W'=0.5[W,W,W,W] patch-conv init + 5k-step warmup (4x token reduction).",
         "differs_from": "champion",
@@ -144,7 +166,11 @@
       "measurability": "med",
       "cost": "high",
       "strikes": 0,
-      "evidence_parts": ["g0a_sensor_noise_floor", "g0b_spectral_slope", "blind_review"],
+      "evidence_parts": [
+        "g0a_sensor_noise_floor",
+        "g0b_spectral_slope",
+        "blind_review"
+      ],
       "declaration": {
         "scope": "Latent-space pretraining (FLUX-AE 8x) then pixel-space post-training with the Z-Image recipe (x-prediction, ps16 -> same 64x64 grid).",
         "differs_from": "champion",
