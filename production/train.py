@@ -1222,7 +1222,15 @@ class Trainer:
                     # Check if visual_debug_interval is configured (ProductionTrainer only)
                     interval = getattr(self, 'visual_debug_interval', 0)
                     if interval > 0 and self.step % interval == 0:
-                        visual_debug_fn(self.model, self.step)
+                        try:
+                            visual_debug_fn(self.model, self.step)
+                        except Exception as e:
+                            print(f"  [WARN] Visual debug failed at step {self.step}: {e}")
+                            print("         (non-fatal: training continues; model back in train mode)")
+                            try:
+                                self.model.train()
+                            except Exception:
+                                pass
                 
                 # Checkpointing
                 if self.step % self.checkpoint_every == 0:
@@ -1230,21 +1238,37 @@ class Trainer:
                     
                     # Run validation if provided
                     if validate_fn is not None:
-                        # Free training memory before validation
-                        torch.cuda.empty_cache()
-                        validate_fn(self.model, self.ema, self.step, self.device)
-                        # Clean up after validation
-                        torch.cuda.empty_cache()
-                        # Put model back in train mode
-                        self.model.train()
+                        try:
+                            # Free training memory before validation
+                            torch.cuda.empty_cache()
+                            validate_fn(self.model, self.ema, self.step, self.device)
+                            # Clean up after validation
+                            torch.cuda.empty_cache()
+                            # Put model back in train mode
+                            self.model.train()
+                        except Exception as e:
+                            print(f"  [WARN] Validation failed at step {self.step}: {e}")
+                            print("         (non-fatal: training continues; model back in train mode)")
+                            try:
+                                self.model.train()
+                            except Exception:
+                                pass
                     
                     # Run quality metrics (CLIP + aesthetic + DWPose) if enabled
                     if self._quality_metrics_models is not None:
-                        torch.cuda.empty_cache()
-                        ckpt_path = self.checkpoint_dir / f'checkpoint_step{self.step:07d}.pt'
-                        self._run_quality_metrics(ckpt_path, self.step)
-                        torch.cuda.empty_cache()
-                        self.model.train()
+                        try:
+                            torch.cuda.empty_cache()
+                            ckpt_path = self.checkpoint_dir / f'checkpoint_step{self.step:07d}.pt'
+                            self._run_quality_metrics(ckpt_path, self.step)
+                            torch.cuda.empty_cache()
+                            self.model.train()
+                        except Exception as e:
+                            print(f"  [WARN] Quality metrics failed at step {self.step}: {e}")
+                            print("         (non-fatal: training continues; model back in train mode)")
+                            try:
+                                self.model.train()
+                            except Exception:
+                                pass
                 
                 pbar.update(1)
                 

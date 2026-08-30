@@ -309,4 +309,11 @@ M1–M4 are pure files/no-GPU and can start immediately.
   the documented id-order tiebreak selects `dip-conv-head` first. Both are
   defensible first arms; owner can re-declare prior/measurability/cost if the
   order should differ.
-- **M4/M5 pending** — proposal gate, then the event-driven strategist cron.
+- **M4 ✅ shipped 2026-08-30** — `propose.py` gated registration (8 rejection rules,
+  atomic write, mutation guard; 8/8 tests) + blind-review tooling
+  (`review_pool.py` unlabeled pairs + calibration ladder, `review_vote.py`
+  blind stdin rater, `review_aggregate.py` win rates + Wilson CI + ≥95%
+  real-win session validity check + inter-rater agreement; 4/4 tests).
+  Shared `gate_register.py` = single source of truth for gates/declaration
+  fields. Harness suite: 45/45.
+- **M5 pending** — event-driven strategist cron (needs M1–M4 verified: they are).

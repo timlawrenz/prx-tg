@@ -243,6 +243,12 @@ def _load_debug_samples(
                 sample['dino_patches'] = sample['dinov3_patches']
             if 'captions' in sample:
                 sample['caption'] = sample['captions']
+            if 't5_hidden' in sample:
+                sample['text_emb'] = sample['t5_hidden']
+            if 't5_mask' in sample:
+                sample['text_mask'] = sample['t5_mask']
+            if 'pose_keypoints' in sample:
+                sample['pose_kpts'] = sample['pose_keypoints']
             debug_samples.append(sample)
         break
     return debug_samples
