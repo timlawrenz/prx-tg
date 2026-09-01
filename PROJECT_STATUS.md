@@ -1,40 +1,41 @@
 # Project Status — prx-tg
 
-**Last updated:** 2026-08-30
-**Phase / status:** ACTIVE — Phase 1b Research Loop (photorealism gates + blind review + avenue registry). No training arms active.
+**Last updated:** 2026-09-01
+**Phase / status:** ACTIVE — Phase 1b Research Loop. Arm `dip-conv-head` in 10k continuation (~74%, ETA ~10h). Blind-review + QC workflow automated via GitHub issues + cron agent.
 
 ## Current state
 
-- **Arm `dip-conv-head` RUNNING** (`experiments/dip-conv-head/runs/2026-08-30_1449`,
-  FP8, effective batch 256, 5,000 steps). Launch blockers fixed en route:
-  pose2/133 joint-count collision, mixed-enrichment collate KeyError, and
-  stream-gated loader (~28MB→~7MB per sample). Verdict via tick when done.
-- **Photorealism is the yardstick.** No checkpoint yet produces photo-realistic
-  portraits. All future arms judged by deterministic G-gates vs the real-FFHQ
-  calibration + blind human review — not eyeball collages.
-- **Arm O (`zg-token-basis-cfg-guard`) PASS** — monotonic dim0→yaw at ≥2
-  checkpoints, no collapse through 5k. Release checkpoint in `release/`.
-- **Research-loop M1–M3 + M4-adjacent shipped:** avenues registry + tick +
-  calibration + gate producer (`scripts/harness/`). Calibration re-frozen
-  2026-08-30 with mask-free gate variants (g0a/g0b/g0c/g0d `_full`).
-- Stratum2 FFHQ enrichment ~4% (pose2/seg2); captions: `caption.txt`+`t5_hidden`
-  only — caption2/t52 are unreliable stratum2 artifacts (do not use).
+- **Arm `dip-conv-head` 10k continuation RUNNING** (tmux `dip-10k`, resumed from
+  `checkpoint_step0005000.pt`, budget extended 5000→10000). Loss 0.0113 (vs 0.0135
+  at 5k — still improving), GPU 87%, ETA ~10h. 5k run completed clean: loss 0.0135,
+  LPIPS 0.746, zero NaN, all instrumentation fired.
+- **QC fixes shipped + verified** (commit 22b9b67): eval loaders now pass `head_type`
+  (dip) so quality-metrics works; adapter mask-length regression fixed + 2 unit tests;
+  resume provenance records git commit. Quality metrics re-run on step-5000 OK
+  (aesthetic 4.64, clip 0.107, faceconf 0.488).
+- **Blind review started.** Batch 1: dip-5k beat old May baseline 8–0 (low bar —
+  baseline near-blob, pool retired as uninformative). Key finding: `text_only` eval
+  is frontal-only by construction (no pose input); `dino_swap` mode DOES show pose
+  variation. 10k review will use temporal 5k-vs-10k comparison.
+- **10k gate PRE-REGISTERED** (provenance.yaml, 2026-09-01, before results):
+  PASS if blind win-rate CI LB > 0.5 (10k vs 5k) AND LPIPS 10k <= 0.746 AND no G0
+  regression AND loss 10k <= 0.0135.
+- **Autonomous workflow wired:** GitHub issues #2 (QC) → #3 (blind review, human
+  gate) → #4 (ledger verdict). Cron agent `prx-tg-dip-10k-research-agent` created
+  (every 30m) — NOTE: gateway down, will fire once `hermes gateway start`.
+  tmux watcher `dip-watch` builds the 10k review pool automatically on completion.
 
-## Immediate next action
+## Immediate blockers / next action
 
-M4: `propose.py` gated idea registration. Then Phase 1: `run_gates.py` producer
-+ blind-review voting tool → first photorealism deficit report against the release
-checkpoints. All pure-files/no-GPU until an arm is greenlit.
+1. Wait for 10k training to finish (~10h). Watcher auto-builds review pool.
+2. When done: run QC (issue #2), then tim votes on 10k-vs-5k pairs (issue #3,
+   human gate), then ledger verdict (issue #4).
+3. Gateway must be started for the cron agent to drive the chain:
+   `hermes gateway start` (or rely on tmux watcher + manual).
 
 ## Headline result so far
 
-- Best-scoring architecture for generation quality: no-DINO-patches (Arm M, 7k validation).
-- Arm O: yaw control proven stable (first and only controlled-pose PASS).
-- Photorealism: **0 passes** — the deficit report (post-M2) will be the first measured baseline.
-
-## Key open questions
-
-1. Do the G0 photorealism bands separate real FFHQ from current model output? (M2 deficit report)
-2. What is the γ=2 noise-scale arm's band movement? (first tick candidate, Phase 2)
-3. Blind-review rater pool + eval suite size — still open (plan §Open decisions).
-4. Enrichment priority: caption-quality pass (VLM spatial-facts) vs pose2 completion — recommendation stands: caption-first for photorealism.
+- dip-conv-head 5k: clean convergent run, faces structurally correct but painterly —
+  **not photorealistic** (faceconf 0.488, aesthetic 4.64). 10k gate pre-registered.
+- No checkpoint yet produces photo-realistic portraits — photorealism remains the
+  primary success criterion.
