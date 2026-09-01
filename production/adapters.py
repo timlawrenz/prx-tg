@@ -137,6 +137,16 @@ class StratumAdapter(ConditioningAdapter):
         # Build combined context: [text, CLS, (patches)]
         if dino_patches is not None and self.dino_patches_enabled:
             patches_cond = self.dino_patch_proj(dino_patches)  # (B, P_len, hidden_size)
+            # Ensure the patches segment has a mask: if the caller did not
+            # provide dino_patches_mask (e.g. text-only quality-metrics eval
+            # passing zero patches), seed ones so cross-attention mask length
+            # always matches the context length. Without this, context becomes
+            # [text+CLS+patches] while mask stays [text+CLS] -> SDPA size crash.
+            if dino_patches_mask is None and text_mask is not None:
+                dino_patches_mask = torch.ones(
+                    B, dino_patches.shape[1],
+                    device=text_mask.device, dtype=text_mask.dtype,
+                )
         else:
             patches_cond = None
 

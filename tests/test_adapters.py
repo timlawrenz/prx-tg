@@ -2,7 +2,7 @@
 
 import torch
 import pytest
-from production.adapters import ConditioningOutput, ConditioningAdapter
+from production.adapters import ConditioningOutput, ConditioningAdapter, StratumAdapter
 
 
 # ── Task 1: ConditioningAdapter base class ──────────────────────────────────
@@ -431,3 +431,42 @@ class TestEidolonAdapterCFG:
         # Second item: neither dropped → matches clean
         assert torch.allclose(out_drop.global_cond[1], out_clean.global_cond[1])
         assert torch.allclose(out_drop.sequence_cond[1], out_clean.sequence_cond[1])
+
+
+# ── Regression: patches provided without dino_patches_mask ──────────────────
+
+class TestStratumMaskLengthRegression:
+    """Quality-metrics eval passed dino_patches but no dino_patches_mask,
+    producing context [text+CLS+patches] with mask [text+CLS] → SDPA crash."""
+
+    def _make_adapter(self):
+        return StratumAdapter(
+            hidden_size=64, dino_dim=1024, dino_patch_dim=1024,
+            text_dim=1024, dino_patches_enabled=True, num_pose_joints=133,
+        )
+
+    def test_patches_without_mask_mask_length_matches_context(self):
+        B, T, P = 1, 512, 256
+        adapter = self._make_adapter()
+        out = adapter(
+            dino_emb=torch.zeros(B, 1024),
+            text_emb=torch.zeros(B, T, 1024),
+            text_mask=torch.ones(B, T),
+            dino_patches=torch.zeros(B, P, 1024),
+            # dino_patches_mask deliberately omitted
+        )
+        ctx_len = out.sequence_cond.shape[1]   # T + 1 CLS + P
+        mask_len = out.sequence_mask.shape[1]
+        assert ctx_len == mask_len, f"context {ctx_len} != mask {mask_len}"
+        assert mask_len == T + 1 + P
+
+    def test_no_patches_mask_is_text_plus_cls(self):
+        B, T = 1, 512
+        adapter = self._make_adapter()
+        out = adapter(
+            dino_emb=torch.zeros(B, 1024),
+            text_emb=torch.zeros(B, T, 1024),
+            text_mask=torch.ones(B, T),
+        )
+        assert out.sequence_cond.shape[1] == T + 1
+        assert out.sequence_mask.shape[1] == T + 1

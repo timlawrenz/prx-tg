@@ -140,11 +140,27 @@ def create_experiment_dir(config_path, resume_path=None):
                 if 'resumes' not in metadata:
                     metadata['resumes'] = []
                 
-                metadata['resumes'].append({
+                resume_entry = {
                     'timestamp': datetime.now().isoformat(),
                     'checkpoint': str(resume_path),
-                    'command': ' '.join(sys.argv)
-                })
+                    'command': ' '.join(sys.argv),
+                }
+                # Record the exact code being resumed (run-start git_commit can
+                # predate the fix commit actually executed by the resume).
+                try:
+                    resume_entry['git_commit'] = subprocess.check_output(
+                        ['git', 'rev-parse', 'HEAD'],
+                        stderr=subprocess.DEVNULL
+                    ).decode().strip()
+                    git_status = subprocess.check_output(
+                        ['git', 'status', '--porcelain'],
+                        stderr=subprocess.DEVNULL
+                    ).decode().strip()
+                    resume_entry['git_dirty'] = bool(git_status)
+                except Exception:
+                    resume_entry['git_commit'] = 'unknown'
+                    resume_entry['git_dirty'] = False
+                metadata['resumes'].append(resume_entry)
                 
                 with open(metadata_path, 'w') as f:
                     json.dump(metadata, f, indent=2)

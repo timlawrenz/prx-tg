@@ -58,6 +58,13 @@ def main():
         'num_heads': config.model.num_heads,
         'mlp_ratio': config.model.mlp_ratio,
         'use_gradient_checkpointing': False,
+        # Head/pose/bottleneck parity with train_production.build_model —
+        # omitting head_type makes DiP-head checkpoints fail to load
+        # (missing output_conv.weight/bias vs unexpected output_conv.down*/up*).
+        'head_type': getattr(config.model, 'head_type', 'linear'),
+        'bottleneck_size': getattr(config.model, 'bottleneck_size', 0),
+        'num_pose_joints': getattr(config.model, 'num_pose_joints', 133),
+        'pose_confidence_threshold': getattr(config.model, 'pose_confidence_threshold', 0.05),
     }
     
     # Handle optional REPA and TREAD settings
@@ -77,10 +84,12 @@ def main():
         warmup_steps=config.training.ema_warmup_steps
     )
     
-    # Load weights
-    print("Loading weights...")
-    model.load_state_dict(ckpt['model'])
-    ema.load_state_dict(ckpt['ema'])
+    # Load weights (torch.compile checkpoints carry a _orig_mod. prefix — strip it)
+    def _strip_orig_mod(sd):
+        return {k[len("_orig_mod."):] if k.startswith("_orig_mod.") else k: v
+                for k, v in sd.items()}
+    model.load_state_dict(_strip_orig_mod(ckpt['model']), strict=True)
+    ema.load_state_dict(_strip_orig_mod(ckpt['ema']))
     
     model = model.to(device)
     for param in ema.ema_params.values():

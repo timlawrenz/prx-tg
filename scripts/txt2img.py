@@ -77,6 +77,11 @@ def build_model(config: dict, device: torch.device) -> NanoDiT:
     kwargs["num_pose_joints"] = mc.get("num_pose_joints", 133)
     kwargs["pose_confidence_threshold"] = mc.get("pose_confidence_threshold", 0.05)
 
+    # Output head type: "linear" (legacy 3x3) or "dip" (DiP conv U-Net head).
+    # MUST mirror the training config or state_dict load fails with missing/unexpected
+    # output_conv.* keys (observed: quality-metrics hook died silently at step 4000/5000).
+    kwargs["head_type"] = mc.get("head_type", "linear")
+
     model = NanoDiT(**kwargs)
     model = model.to(device)
     model.eval()
