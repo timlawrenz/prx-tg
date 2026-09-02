@@ -127,3 +127,6 @@ research/*
 !research/avenues/votes/*.jsonl
 !research/avenues/gates/*.jsonl
 
+
+# Blind-review pair images (regenerable)
+research/avenues/review/*/pairs/
