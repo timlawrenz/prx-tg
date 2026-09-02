@@ -5,7 +5,7 @@
     "checkpoint": "release/prx_tg_armj_faces70k_step35000_bf16.safetensors",
     "measured": {}
   },
-  "selection_progress": 1,
+  "selection_progress": 2,
   "exploration": {
     "every_n": 5,
     "novelty_bonus": 0.25
@@ -21,7 +21,7 @@
   "candidates": [
     {
       "id": "gamma2-noise-scale",
-      "state": "registered",
+      "state": "active",
       "prior": "high",
       "measurability": "high",
       "cost": "med",
@@ -49,7 +49,7 @@
       "prior": "high",
       "measurability": "high",
       "cost": "med",
-      "strikes": 0,
+      "strikes": 1,
       "evidence_parts": [
         "g0c_skin_texture_energy",
         "g0d_local_contrast",
@@ -66,7 +66,24 @@
         "config": "experiments/dip-conv-head/config.yaml",
         "arm_issue": 0
       },
-      "verdicts": []
+      "verdicts": [
+        {
+          "kind": "not_better",
+          "out_of_band": [
+            "g0a_sensor_noise_floor_full",
+            "g0d_local_contrast_full_p50",
+            "g0d_local_contrast_full_p95"
+          ],
+          "gates": {
+            "g0a_sensor_noise_floor_full": -1.6928622830997815,
+            "g0b_spectral_slope": -1.3240485157154391,
+            "g0c_skin_texture_energy_full": 0.014181504788046534,
+            "g0d_local_contrast_full_p5": 0.009796262009661983,
+            "g0d_local_contrast_full_p50": 0.03179580371149562,
+            "g0d_local_contrast_full_p95": 0.1198938622732054
+          }
+        }
+      ]
     },
     {
       "id": "irepa-upgrade",
