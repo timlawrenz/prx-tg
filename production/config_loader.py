@@ -227,6 +227,22 @@ class AsymFlowConfig:
 
 
 @dataclass
+class NoiseScheduleConfig:
+    """Gamma-modulated rectified-flow noise schedule (Z-Image-Turbo comp 1).
+
+    gamma=1 (default) recovers plain linear rectified flow:
+        z_t = (1-t)*x0 + t*z1
+    gamma=2 reshapes the schedule so noise dominates later in t (more
+    signal at low t), targeting the g0a sensor-noise floor gate (measured
+    out-of-band for dip-conv-head 10k: image noise > real photos).
+    Implements: z_t = (1-t^g)*x0 + t^g*z1, v = z1 - x0 (unchanged target),
+    t_sched = t**g applied consistently in both interpolant and velocity.
+    """
+    enabled: bool = False
+    gamma: float = 2.0
+
+
+@dataclass
 class MattingEdgeConfig:
     """Alpha-matte boundary edge-aware loss weighting.
 
@@ -265,6 +281,7 @@ class TrainingConfig:
     galore: GaLoreConfig = field(default_factory=GaLoreConfig)
     seg_weight: SegWeightConfig = field(default_factory=SegWeightConfig)
     asymflow: AsymFlowConfig = field(default_factory=AsymFlowConfig)
+    noise_schedule: NoiseScheduleConfig = field(default_factory=NoiseScheduleConfig)
     matting_edge: MattingEdgeConfig = field(default_factory=MattingEdgeConfig)
     dino_patches: DinoPatchesConfig = field(default_factory=DinoPatchesConfig)
     dino_pool_factor: int | None = None

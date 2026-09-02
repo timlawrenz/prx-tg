@@ -203,7 +203,7 @@ def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="c
     return per_token_loss.mean()
 
 
-def flow_matching_loss(model, x0, conditioning, cfg_probs, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05, maskdit_config=None, global_step=0, seg_map=None, seg_weight_config=None, asymflow_config=None, matting=None, matting_edge_config=None):
+def flow_matching_loss(model, x0, conditioning, cfg_probs, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05, maskdit_config=None, global_step=0, seg_map=None, seg_weight_config=None, asymflow_config=None, matting=None, matting_edge_config=None, noise_schedule_config=None):
     """Compute flow matching loss with adapter-aware CFG dropout.
     
     Args:
@@ -222,8 +222,21 @@ def flow_matching_loss(model, x0, conditioning, cfg_probs, return_v_pred=False, 
     # Sample noise z1 ~ N(0, I)
     z1 = torch.randn_like(x0)
     
-    # Linear interpolation: z_t = (1-t) * x0 + t * z1
-    t_expanded = t.view(B, 1, 1, 1)
+    # Gamma-modulated noise schedule (Z-Image-Turbo comp 1 / gamma2-noise-scale arm):
+    #   z_t = (1-t^g) * x0 + t^g * z1   (g=1 -> plain linear rectified flow)
+    # The velocity target v = z1 - x0 is independent of g; only the interpolant
+    # changes. This shifts noise dominance later in t, addressing the g0a
+    # sensor-noise-floor gate (measured out-of-band: generated noise > real).
+    gamma_enabled = noise_schedule_config is not None and getattr(
+        noise_schedule_config, "enabled", False)
+    if gamma_enabled:
+        g = float(getattr(noise_schedule_config, "gamma", 2.0))
+        t_warp = t ** g
+    else:
+        t_warp = t
+
+    # Linear interpolation: z_t = (1-t) * x0 + t * z1 (or gamma-warped)
+    t_expanded = t_warp.view(B, 1, 1, 1)
     zt = (1 - t_expanded) * x0 + t_expanded * z1
     
     # Rectified flow target: velocity field v_t = d(z_t)/dt = z1 - x0
@@ -567,6 +580,7 @@ def evaluate_val_loss(model, dataloader, config, device, num_batches=50):
                 return_v_pred=False,
                 tread_config=tread_cfg,
                 maskdit_config=maskdit_cfg,
+                noise_schedule_config=getattr(config.training, 'noise_schedule', None),
             )
         
         total_loss += loss.item() * x0.shape[0]
@@ -889,6 +903,7 @@ class Trainer:
                 asymflow_config=getattr(self, 'asymflow_config', None),
                 matting=batch.get('matting'),
                 matting_edge_config=getattr(self, 'matting_edge_config', None),
+                noise_schedule_config=getattr(self, 'noise_schedule_config', None),
             )
         
         # Scale loss by accumulation steps
@@ -1386,6 +1401,14 @@ class ProductionTrainer(Trainer):
         self.asymflow_config = getattr(training, 'asymflow', None)
         if self.asymflow_config and not getattr(self.asymflow_config, 'enabled', False):
             self.asymflow_config = None
+
+        # Gamma noise-schedule config (Z-Image-Turbo comp 1)
+        self.noise_schedule_config = getattr(training, 'noise_schedule', None)
+        if self.noise_schedule_config and not getattr(self.noise_schedule_config, 'enabled', False):
+            self.noise_schedule_config = None
+            print("  Noise schedule: linear (gamma disabled)")
+        else:
+            print(f"  Noise schedule: gamma={getattr(self.noise_schedule_config, 'gamma', 2.0) if self.noise_schedule_config else 1.0}")
         if training.mixed_precision and training.precision == "float16":
             self._amp_dtype = torch.float16
             self._grad_scaler = torch.cuda.amp.GradScaler()
