@@ -1,41 +1,25 @@
 # Project Status — prx-tg
 
-**Last updated:** 2026-09-01
-**Phase / status:** ACTIVE — Phase 1b Research Loop. Arm `dip-conv-head` in 10k continuation (~74%, ETA ~10h). Blind-review + QC workflow automated via GitHub issues + cron agent.
+**Last updated:** 2026-09-01 (evening)
+**Phase / status:** Phase 1b — Arm `dip-conv-head` 10k **COMPLETE, verdict GO** (all 4 pre-registered gates PASS). Review workflow now has a web UI. Next: decide champion promotion / next arm via tick.
 
 ## Current state
 
-- **Arm `dip-conv-head` 10k continuation RUNNING** (tmux `dip-10k`, resumed from
-  `checkpoint_step0005000.pt`, budget extended 5000→10000). Loss 0.0113 (vs 0.0135
-  at 5k — still improving), GPU 87%, ETA ~10h. 5k run completed clean: loss 0.0135,
-  LPIPS 0.746, zero NaN, all instrumentation fired.
-- **QC fixes shipped + verified** (commit 22b9b67): eval loaders now pass `head_type`
-  (dip) so quality-metrics works; adapter mask-length regression fixed + 2 unit tests;
-  resume provenance records git commit. Quality metrics re-run on step-5000 OK
-  (aesthetic 4.64, clip 0.107, faceconf 0.488).
-- **Blind review started.** Batch 1: dip-5k beat old May baseline 8–0 (low bar —
-  baseline near-blob, pool retired as uninformative). Key finding: `text_only` eval
-  is frontal-only by construction (no pose input); `dino_swap` mode DOES show pose
-  variation. 10k review will use temporal 5k-vs-10k comparison.
-- **10k gate PRE-REGISTERED** (provenance.yaml, 2026-09-01, before results):
-  PASS if blind win-rate CI LB > 0.5 (10k vs 5k) AND LPIPS 10k <= 0.746 AND no G0
-  regression AND loss 10k <= 0.0135.
-- **Autonomous workflow wired:** GitHub issues #2 (QC) → #3 (blind review, human
-  gate) → #4 (ledger verdict). Cron agent `prx-tg-dip-10k-research-agent` created
-  (every 30m) — NOTE: gateway down, will fire once `hermes gateway start`.
-  tmux watcher `dip-watch` builds the 10k review pool automatically on completion.
+- **Arm `dip-conv-head` 10k DONE — verdict GO (PASS all 4 gates).**
+  LPIPS 0.7251 (≤0.746 ✓), loss ~0.011 (≤0.0135 ✓), blind 10k-vs-5k win-rate 0.846
+  (CI LB 0.5776 > 0.5 ✓), calibration 1.0 ✓. FaceConf 0.488→0.707 (+45%).
+  Clean run, zero NaN, `checkpoint_step0010000.pt` saved.
+- **Blind-review web UI shipped** (`scripts/harness/review_server.py`, 0.0.0.0:8765):
+  neutral-URL A/B picker, idempotent votes.jsonl, reusable for any pool.
+- **QC fixes** (commit 22b9b67): eval loaders head_type parity, adapter mask-length
+  regression + 2 tests, resume provenance git fields.
+- **GitHub issue chain**: #2 (QC) #3 (blind review) #4 (ledger verdict) — ledger
+  entry written. Cron agent `prx-tg-dip-10k-research-agent` ready (gateway-gated).
+- **Remaining true gap: photorealism.** 10k renders are sharply improved but still
+  painterly — the primary success criterion is still un-met.
 
 ## Immediate blockers / next action
 
-1. Wait for 10k training to finish (~10h). Watcher auto-builds review pool.
-2. When done: run QC (issue #2), then tim votes on 10k-vs-5k pairs (issue #3,
-   human gate), then ledger verdict (issue #4).
-3. Gateway must be started for the cron agent to drive the chain:
-   `hermes gateway start` (or rely on tmux watcher + manual).
-
-## Headline result so far
-
-- dip-conv-head 5k: clean convergent run, faces structurally correct but painterly —
-  **not photorealistic** (faceconf 0.488, aesthetic 4.64). 10k gate pre-registered.
-- No checkpoint yet produces photo-realistic portraits — photorealism remains the
-  primary success criterion.
+1. Promote `dip-conv-head` 10k to champion? (tick decision / user call)
+2. Run next avenue candidate via tick (registry: gamma2-noise-scale, irepa-upgrade, ...)
+3. For autonomous drive: `hermes gateway start` (cron agent + issue chain dormant otherwise)

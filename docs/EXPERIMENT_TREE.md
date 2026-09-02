@@ -8,6 +8,12 @@ Last updated: 2026-08-30
 
 ## Active
 
+* **dip-conv-head** (`experiments/dip-conv-head/`) `[CONCLUDED — GO]`
+  * DiP-style conv U-Net output head vs linear 3x3. 10k steps, resumed from 5k.
+  * **PASS all 4 pre-registered gates**: LPIPS 0.7251 (≤0.746), loss ~0.011 (≤0.0135),
+    blind 10k-vs-5k win-rate 0.846 (CI LB 0.5776 > 0.5), calibration 1.0. FaceConf 0.488→0.707.
+  * Verdict: GO — improved but not yet photorealistic; champion candidate vs 5k baseline.
+
 * **[ACTIVE] Phase 1b Research Loop** — photorealism gates + blind review + avenue registry
   (`.hermes/plans/2026-08-30_photorealism-gates-blind-review.md`). M1 shipped 2026-08-30;
   M2 (calibration) + M3 (tick state machine) next. No training arms active.

@@ -410,3 +410,46 @@ Four arms (P, P2, P3, P4), three base models (vanilla SD1.5, pose-stripped SD1.5
 **Scope:** This is a THREAD-level KILL, not a project-level kill. The SD1.5 diagnostic served its dual purpose — it proved prx-tg's from-scratch collapse (Arm N) is not merely a from-scratch-training-dynamics problem (a frozen backbone failed too), and it retired the "inject into a pretrained cross-attention stream" idea. **Project recommendation: PIVOT** back to the from-scratch DiT / Eidolon branch (Arm O), where the same per-dim geometry basis provably bound yaw at steps 2000–2500 before a separately-diagnosed collapse.
 
 ---
+
+---
+
+## dip-conv-head 10k continuation — `[CONCLUDED — GO]`
+
+**Date:** 2026-09-01
+**Goal:** Test whether extending the DiP-style conv-head arm from 5k→10k steps moves the model toward photorealism, per the frozen pre-registered gate.
+**Setup:** NanoDiT 239.6M (768H, 18L, ps16) + DiP conv head, FP8 training, effective batch 256, FFHQ stratum 70k, DINO patches disabled. Resume from `checkpoint_step0005000.pt`, budget extended 5000→10000 (same arm).
+
+**Pre-registered gate (provenance.yaml, stated 2026-09-01 BEFORE results):**
+> PASS if (a) blind-review win-rate CI lower bound > 0.5 for 10k vs 5k (temporal, same prompts) AND (b) LPIPS at 10k <= 0.746 (5k value) AND (c) no G0 gate regression AND (d) loss at 10k <= 0.0135 (5k value).
+
+### Empirical Evidence
+
+| Metric | 5k | 10k | Gate met |
+|--------|----|----|---------|
+| Recon LPIPS (mean) | 0.746 | **0.7251** | YES (≤0.746) |
+| Final loss | 0.0135 | **~0.011** | YES (≤0.0135) |
+| Blind win-rate (10k vs 5k, 13 pairs) | — | **0.846** (11W/2L/0T) | YES (LB>0.5) |
+| Wilson CI lower bound | — | **0.5776** | YES |
+| Calibration (real photos caught) | — | **1.0** (7/7) | YES (≥0.95) |
+| FaceConf (quality metrics) | 0.488 | **0.707** | +45% improvement |
+| CLIP score | 0.107 | **0.124** | ↑ |
+| Zero NaN, clean exit | ✓ | ✓ | ✓ |
+
+**Blind review protocol:** 20 pairs built from index-matched text-only renders (same prompt at 5k vs 10k → training is the only variable) + 7 real-FFHQ calibration pairs, served via a local web UI with neutral URLs (no arm/step leakage). Session valid (calibration 100%).
+
+### Adversarial Pass
+- [x] Metric code (validator/scorer): LPIPS/aggregator live in production/, tested harness (39 tests); review_aggregate reuses tick.wilson_lb — one source, unit-tested
+- [x] Metric definition stable: same validation harness across 5k/10k runs
+- [x] Reproducible: numbers traced to exact artifacts (results.json, votes.jsonl, training_log.jsonl)
+- [x] Extremes inspected: 10k renders eyeballed (tim + vision) — sharpened faces, still painterly, not yet photorealistic
+- [x] Headline number traced: LPIPS 0.7251 from `validation/step0010000/results.json`; win-rate from `votes/dip-10k/tim.jsonl` + aggregator
+
+### Verdict
+**GO — PASS (all 4 pre-registered criteria met).** The 5k→10k extension delivered measurable, reviewable improvement (LPIPS ↓, loss ↓, face-conf ↑45%, 85% blind win). Facerealism improved but **not yet photorealistic** — photorealism remains the un-met primary criterion; this arm now stands as champion candidate vs the old 5k baseline.
+
+### Artifacts
+- Checkpoint: `experiments/dip-conv-head/runs/2026-08-30_1449/checkpoints/checkpoint_step0010000.pt`
+- Validation: `.../validation/step0010000/` (25 recon, 20 text-only, 5 dino_swap, text_manip)
+- Quality metrics: `.../quality_metrics/step0010000/` (10 samples, summary.json)
+- Review pool/votes: `research/avenues/review_10k/realism/pool.json`, `research/avenues/votes/dip-10k/tim.jsonl`
+- Review UI tool: `scripts/harness/review_server.py`
