@@ -8,11 +8,13 @@ Last updated: 2026-08-30
 
 ## Active
 
-* **dip-conv-head** (`experiments/dip-conv-head/`) `[CONCLUDED — GO]`
+* **dip-conv-head** (`experiments/dip-conv-head/`) `[CONCLUDED — GO-with-caveat]`
   * DiP-style conv U-Net output head vs linear 3x3. 10k steps, resumed from 5k.
-  * **PASS all 4 pre-registered gates**: LPIPS 0.7251 (≤0.746), loss ~0.011 (≤0.0135),
+  * **Criteria a/b/d PASS**: LPIPS 0.7251 (≤0.746), loss ~0.011 (≤0.0135),
     blind 10k-vs-5k win-rate 0.846 (CI LB 0.5776 > 0.5), calibration 1.0. FaceConf 0.488→0.707.
-  * Verdict: GO — improved but not yet photorealistic; champion candidate vs 5k baseline.
+  * **Criterion (c) G0 NOT_VALIDATED → strike 1/3** (g0a/g0d p50/p95 out-of-band
+    vs frozen real-FFHQ band; no 5k G0 baseline). Improved but not yet photorealistic;
+    champion candidate vs 5k baseline, arm still `active` in registry.
 
 * **[ACTIVE] Phase 1b Research Loop** — photorealism gates + blind review + avenue registry
   (`.hermes/plans/2026-08-30_photorealism-gates-blind-review.md`). M1 shipped 2026-08-30;

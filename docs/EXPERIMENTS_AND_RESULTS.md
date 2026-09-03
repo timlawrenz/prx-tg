@@ -433,6 +433,7 @@ Four arms (P, P2, P3, P4), three base models (vanilla SD1.5, pose-stripped SD1.5
 | Calibration (real photos caught) | — | **1.0** (7/7) | YES (≥0.95) |
 | FaceConf (quality metrics) | 0.488 | **0.707** | +45% improvement |
 | CLIP score | 0.107 | **0.124** | ↑ |
+| G0 gates vs frozen real-FFHQ band | not measured at 5k | **3/6 out-of-band** (g0a noise floor, g0d p50/p95, all *below* band) | NOT_VALIDATED → strike 1/3 |
 | Zero NaN, clean exit | ✓ | ✓ | ✓ |
 
 **Blind review protocol:** 20 pairs built from index-matched text-only renders (same prompt at 5k vs 10k → training is the only variable) + 7 real-FFHQ calibration pairs, served via a local web UI with neutral URLs (no arm/step leakage). Session valid (calibration 100%).
@@ -443,9 +444,10 @@ Four arms (P, P2, P3, P4), three base models (vanilla SD1.5, pose-stripped SD1.5
 - [x] Reproducible: numbers traced to exact artifacts (results.json, votes.jsonl, training_log.jsonl)
 - [x] Extremes inspected: 10k renders eyeballed (tim + vision) — sharpened faces, still painterly, not yet photorealistic
 - [x] Headline number traced: LPIPS 0.7251 from `validation/step0010000/results.json`; win-rate from `votes/dip-10k/tim.jsonl` + aggregator
+- [x] **Post-verdict reconciliation (2026-09-02):** tick measured G0 at 10k → 3/6 out-of-band (g0a, g0d p50/p95), recorded `NOT_VALIDATED`, strike 1/3 in registry (f6c079b). This entry amended to reflect criterion (c) as NOT_VALIDATED, NOT a clean PASS. Found → fixed, not merely acknowledged.
 
 ### Verdict
-**GO — PASS (all 4 pre-registered criteria met).** The 5k→10k extension delivered measurable, reviewable improvement (LPIPS ↓, loss ↓, face-conf ↑45%, 85% blind win). Facerealism improved but **not yet photorealistic** — photorealism remains the un-met primary criterion; this arm now stands as champion candidate vs the old 5k baseline.
+**GO-with-caveat — criteria (a),(b),(d) PASS; criterion (c) G0 NOT_VALIDATED → strike 1/3 (registry, tick f6c079b).** The 5k→10k extension delivered measurable, reviewable improvement (LPIPS ↓, loss ↓, face-conf ↑45%, 85% blind win). Facerealism improved but **not yet photorealistic** — 3/6 G0 gates (g0a noise floor, g0d p50/p95 local contrast) sit *below* the frozen real-FFHQ calibration band, and no 5k G0 baseline exists to prove or disprove "no regression"; the tick therefore recorded NOT_VALIDATED (strike 1/3) in `research/avenues/registry.json`. Photorealism remains the un-met primary criterion; arm remains `active` as champion candidate vs the old 5k baseline (strike 1/3, not yet KILLed).
 
 ### Artifacts
 - Checkpoint: `experiments/dip-conv-head/runs/2026-08-30_1449/checkpoints/checkpoint_step0010000.pt`
