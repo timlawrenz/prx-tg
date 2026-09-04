@@ -24,6 +24,7 @@ def create_visual_debug_fn(
     source="webdataset",
     stratum_dir="/workspace/stratum",
     adapter_name="stratum",
+    gamma=1.0,
 ):
     """Create visual debugging function for training loop.
     
@@ -39,6 +40,7 @@ def create_visual_debug_fn(
         self_guidance: Use self-guidance CFG
         guidance_scale: Self-guidance scale
         prediction_type: "v_prediction" or "x_prediction"
+        gamma: noise-scale exponent (must match training schedule)
     
     Returns:
         debug_fn: Function that takes (model, step) and generates images
@@ -47,7 +49,7 @@ def create_visual_debug_fn(
     
     # Load VAE decoder (not needed for pixel-space)
     vae = None if pixel_space else load_vae_decoder(device=device)
-    sampler = EulerSampler(num_steps=num_steps)
+    sampler = EulerSampler(num_steps=num_steps, gamma=gamma)
     
     # Create output directory
     output_path = Path(output_dir)

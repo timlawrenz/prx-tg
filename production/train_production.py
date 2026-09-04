@@ -24,6 +24,18 @@ from .data import get_production_dataloader
 from .train import ProductionTrainer
 
 
+def _sampling_gamma(config):
+    """Resolve the noise-schedule gamma for sampling/validation/visual_debug.
+
+    Returns 1.0 (plain linear rectified flow) when the gamma noise schedule is
+    disabled, so every generation path matches the schedule used in training.
+    """
+    ns = getattr(getattr(config, 'training', None), 'noise_schedule', None)
+    if ns is not None and getattr(ns, 'enabled', False):
+        return float(getattr(ns, 'gamma', 2.0))
+    return 1.0
+
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Production DiT Training')
@@ -430,6 +442,7 @@ def main():
             self_guidance=config.sampling.self_guidance,
             guidance_scale=config.sampling.guidance_scale,
             prediction_type=config.model.prediction_type,
+            gamma=_sampling_gamma(config),
             source=getattr(config.data, 'source', 'webdataset'),
             stratum_dir=getattr(config.data, 'stratum_dir', '/workspace/stratum'),
             adapter_name=config.adapter.name,
@@ -453,6 +466,7 @@ def main():
             self_guidance=config.sampling.self_guidance,
             guidance_scale=config.sampling.guidance_scale,
             prediction_type=config.model.prediction_type,
+            gamma=_sampling_gamma(config),
             source=getattr(config.data, 'source', 'webdataset'),
             stratum_dir=getattr(config.data, 'stratum_dir', '/workspace/stratum'),
             adapter_name=config.adapter.name,

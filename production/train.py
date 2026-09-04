@@ -223,30 +223,36 @@ def flow_matching_loss(model, x0, conditioning, cfg_probs, return_v_pred=False, 
     z1 = torch.randn_like(x0)
     
     # Gamma-modulated noise schedule (Z-Image-Turbo comp 1 / gamma2-noise-scale arm):
-    #   z_t = (1-t^g) * x0 + t^g * z1   (g=1 -> plain linear rectified flow)
-    # The velocity target v = z1 - x0 is independent of g; only the interpolant
-    # changes. This shifts noise dominance later in t, addressing the g0a
-    # sensor-noise-floor gate (measured out-of-band: generated noise > real).
+    #   z_t = (1-t) * x0 + t^g * z1   (g=1 -> plain linear rectified flow)
+    # Data term stays LINEAR in t; only the noise coefficient is warped — this is
+    # the paper's z_t = t·x0 + (1-t)^γ·ε translated to prx-tg's (z0=x0, z1=noise)
+    # convention. The ODE velocity is d(z_t)/dt = -x0 + g·t^(g-1)·z1 (NOT z1-x0).
+    # Conditioning stays on raw t (the map t -> t^g is injective for g>0, so raw t
+    # fully determines the noise level).
     gamma_enabled = noise_schedule_config is not None and getattr(
         noise_schedule_config, "enabled", False)
     if gamma_enabled:
         g = float(getattr(noise_schedule_config, "gamma", 2.0))
         t_warp = t ** g
     else:
+        g = 1.0
         t_warp = t
 
-    # Linear interpolation: z_t = (1-t) * x0 + t * z1 (or gamma-warped)
-    t_expanded = t_warp.view(B, 1, 1, 1)
-    zt = (1 - t_expanded) * x0 + t_expanded * z1
+    # Gamma-modulated interpolant: noise coeff t^g, data coeff (1-t).
+    t_warp_expanded = t_warp.view(B, 1, 1, 1)
+    t_expanded = t.view(B, 1, 1, 1)
+    zt = (1 - t_expanded) * x0 + t_warp_expanded * z1
     
-    # Rectified flow target: velocity field v_t = d(z_t)/dt = z1 - x0
+    # Rectified flow velocity target. For gamma>1 the true velocity is
+    # d(z_t)/dt = -x0 + g·t^(g-1)·z1, which reduces to z1-x0 at g=1.
+    g_coeff = (g * (t ** (g - 1.0))).view(B, 1, 1, 1)
     if hasattr(asymflow_config, 'enabled') and getattr(asymflow_config, 'enabled', False):
         z1_projected = apply_asymflow_projection(
             z1, model.patch_size, getattr(asymflow_config, 'rank', 8)
         )
-        v_target = z1_projected - x0
+        v_target = g_coeff * z1_projected - x0
     else:
-        v_target = z1 - x0
+        v_target = g_coeff * z1 - x0
     
     # ── Adapter-aware CFG dropout ─────────────────────────────────────
     from production.adapters import EidolonAdapter

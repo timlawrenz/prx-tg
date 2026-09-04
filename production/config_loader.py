@@ -230,14 +230,15 @@ class AsymFlowConfig:
 class NoiseScheduleConfig:
     """Gamma-modulated rectified-flow noise schedule (Z-Image-Turbo comp 1).
 
-    gamma=1 (default) recovers plain linear rectified flow:
-        z_t = (1-t)*x0 + t*z1
-    gamma=2 reshapes the schedule so noise dominates later in t (more
-    signal at low t), targeting the g0a sensor-noise floor gate (measured
-    out-of-band for dip-conv-head 10k: image noise > real photos).
-    Implements: z_t = (1-t^g)*x0 + t^g*z1, v = z1 - x0 (unchanged target),
-    t_sched = t**g applied consistently in both interpolant and velocity.
-    """
+        gamma=1 (default) recovers plain linear rectified flow:
+            z_t = (1-t)*x0 + t*z1
+        gamma=2 reshapes the schedule so noise dominates later in t (more
+        signal at low t), targeting the g0a sensor-noise-floor gate (measured
+        out-of-band for dip-conv-head 10k: image noise > real photos).
+        Implements: z_t = (1-t)*x0 + t^g*z1, v = g*t^(g-1)*z1 - x0, with the
+        x0->velocity conversion in the sampler matched to the same g (this is
+        required — an unmatched sampler is what produced the dark-green noise).
+        """
     enabled: bool = False
     gamma: float = 2.0
 

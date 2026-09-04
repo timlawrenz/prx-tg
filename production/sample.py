@@ -7,15 +7,59 @@ import numpy as np
 from pathlib import Path
 
 
+def x_pred_velocity(zt, x0_pred, t_curr, gamma=1.0, t_val=None):
+    """Convert an x0 prediction to the ODE velocity for Euler integration.
+
+    For the gamma-modulated interpolant z(t) = (1-t)*x0 + t^g*z1, the velocity
+    is d(z_t)/dt = -x0 + g*(z_t - (1-t)*x0)/t, which reduces to (z_t - x0)/t at
+    g=1 (plain linear rectified flow). The sleep/denoise direction is handled by
+    the negative dt in the integration loop.
+
+    Args:
+        zt: (B, C, H, W) current noisy sample.
+        x0_pred: (B, C, H, W) model's predicted clean sample.
+        t_curr: (B,) or scalar current timestep in [0, 1].
+        gamma: noise-scale exponent (1.0 = plain rectified flow).
+        t_val: optional pre-clamped t (defaults to t_curr.clamp(min=0.05)).
+
+    Returns:
+        v: (B, C, H, W) velocity field for Euler integration.
+    """
+    if t_val is None:
+        # Reshape t to a spatial-broadcastable (...,1,1,1) so arithmetic with
+        # zt/x0_pred (B,C,H,W) stays well-defined regardless of whether t is a
+        # scalar, (B,), or (B,1,1) at the call site.
+        t_cur = t_curr
+        if t_cur.dim() == 0:
+            t_cur = t_cur.reshape(1, 1, 1, 1)
+        elif t_cur.dim() == 1:
+            t_cur = t_cur.view(-1, 1, 1, 1)
+        else:  # dim >= 2 (e.g. (B,1,1), (B,1,1,1)) — flatten to (B,1,1,1)
+            t_cur = t_cur.reshape(t_cur.shape[0], 1, 1, 1)
+        t_val = t_cur.clamp(min=0.05)
+        t_b = t_cur
+    else:
+        t_b = t_curr
+    if float(gamma) == 1.0:
+        return (zt - x0_pred) / t_val
+    return -x0_pred + (float(gamma) * (zt - (1.0 - t_b) * x0_pred)) / t_val
+
+
 class EulerSampler:
     """Euler sampler for rectified flow models."""
     
-    def __init__(self, num_steps=50):
+    def __init__(self, num_steps=50, gamma=1.0):
         """
         Args:
             num_steps: number of denoising steps
+            gamma: noise-scale exponent for the gamma-modulated interpolant
+                   z(t) = (1-t)*x0 + t^gamma*z1. gamma=1 -> plain linear
+                   rectified flow. Must match the schedule used in training
+                   (train.flow_matching_loss), otherwise the x0->velocity
+                   conversion is wrong and sampling diverges.
         """
         self.num_steps = num_steps
+        self.gamma = float(gamma)
         # Uniform timesteps from 1.0 to 0.0
         self.timesteps = torch.linspace(1.0, 0.0, num_steps + 1)
     
@@ -147,9 +191,11 @@ class EulerSampler:
             
             # Derive velocity for Euler integration
             if prediction_type == "x_prediction":
-                # Model outputs x0_pred; derive velocity: v = (zt - x0) / t
+                # Model outputs x0_pred. For interpolant z(t)=(1-t)*x0 + t^g*z1,
+                # the ODE velocity is dz/dt = -x0 + g*(z_t - (1-t)*x0)/t.
+                # (reduces to (z_t - x0)/t at g=1, plain rectified flow).
                 t_val = t_curr.clamp(min=0.05)
-                v_pred_euler = (zt - v_pred) / t_val
+                v_pred_euler = x_pred_velocity(zt, v_pred, t_curr, self.gamma, t_val)
             else:
                 v_pred_euler = v_pred
             
@@ -282,6 +328,7 @@ class ValidationSampler:
         self_guidance=False,
         guidance_scale=3.0,
         prediction_type="v_prediction",
+        gamma=1.0,
     ):
         """
         Args:
@@ -294,11 +341,12 @@ class ValidationSampler:
             self_guidance: use self-guidance instead of dual CFG
             guidance_scale: self-guidance scale
             prediction_type: "v_prediction" or "x_prediction"
+            gamma: noise-scale exponent (must match training schedule)
         """
         self.model = model
         self.vae = vae
         self.device = device
-        self.sampler = EulerSampler(num_steps=num_steps)
+        self.sampler = EulerSampler(num_steps=num_steps, gamma=gamma)
         self.text_scale = text_scale
         self.dino_scale = dino_scale
         self.self_guidance = self_guidance

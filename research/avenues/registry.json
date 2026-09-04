@@ -41,6 +41,15 @@
         "config": "experiments/gamma2-noise-scale/config.yaml",
         "arm_issue": 0
       },
+      "rework": {
+        "date": "2026-09-03",
+        "type": "code-mis-specification-thrown",
+        "stopped_at_step": 5479,
+        "root_cause": "Interpolant used (1-t^g)*x0 instead of (1-t)*x0; ODE velocity target not scaled (v=z1-x0, not g*t^(g-1)*z1-x0); sample() lacked the matching x0->velocity conversion (used (z_t-x0)/t, only valid at g=1). Train/sample manifolds mismatched -> dark green noise collapse. In x_prediction the loss reduces to (x0_pred-x0)^2/t^2, so the primary defect was the sampler conversion + interpolant coefficient.",
+        "fix_branch": "fix/gamma2-train-sample-consistency",
+        "fix": "Unify on s=t^g coordinate: interpolant (1-t)*x0 + t^g*z1, velocity g*t^(g-1)*z1 - x0, sampler x_pred_velocity() = -x0 + g*(z_t-(1-t)*x0)/t. gamma threaded through EulerSampler/ValidationSampler/visual_debug/validate. Tests: tests/test_gamma_noise_schedule.py.",
+        "note": "Result does NOT falsify the gamma hypothesis (it never tested it). Re-reun after red-team + code review + sanity."
+      },
       "verdicts": []
     },
     {

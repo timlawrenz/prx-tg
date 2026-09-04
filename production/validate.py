@@ -106,6 +106,7 @@ class ValidationRunner:
         self_guidance=False,
         guidance_scale=3.0,
         prediction_type="v_prediction",
+        gamma=1.0,
     ):
         """
         Args:
@@ -117,6 +118,7 @@ class ValidationRunner:
             lpips_net: LPIPS network ('alex' or 'vgg')
             tensorboard_writer: Optional TensorBoard SummaryWriter
             prediction_type: "v_prediction" or "x_prediction"
+            gamma: noise-scale exponent (must match training schedule)
         """
         self.model = model
         self.ema = ema
@@ -125,6 +127,7 @@ class ValidationRunner:
         self.output_dir = Path(output_dir)
         self.tb_writer = tensorboard_writer
         self.prediction_type = prediction_type
+        self.gamma = gamma
 
         # Sampling CFG scales for validation
         self.text_scale = text_scale
@@ -1105,6 +1108,7 @@ class ValidationRunner:
             self_guidance=self.self_guidance,
             guidance_scale=self.guidance_scale,
             prediction_type=self.prediction_type,
+            gamma=self.gamma,
         )
         
         try:
@@ -1216,6 +1220,7 @@ def create_validation_fn(
     source="webdataset",
     stratum_dir="/workspace/stratum",
     adapter_name="stratum",
+    gamma=1.0,
 ):
     """Create validation function for training loop.
     
@@ -1271,6 +1276,7 @@ def create_validation_fn(
                 self_guidance=self_guidance,
                 guidance_scale=guidance_scale,
                 prediction_type=prediction_type,
+                gamma=gamma,
             )
         
         runner.run_validation(step)
