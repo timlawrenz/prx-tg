@@ -66,17 +66,25 @@ def test_train_interpolant_and_target_formulas():
     t = torch.linspace(0.1, 0.9, 4).view(4, 1, 1, 1)
 
     g = 2.0
-    # Interpolant: data coeff (1-t), noise coeff t^g  (NOT (1-t^g))
-    zt_g2 = (1 - t) * x0 + (t ** g) * z1
-    # ODE velocity along the interpolant: d z_t/dt = -x0 + g*t^(g-1)*z1
-    v_g2 = -x0 + g * (t ** (g - 1.0)) * z1
+    # Reference: data coeff (1-t), noise coeff t^g  (NOT (1-t^g))
+    zt_ref = (1 - t) * x0 + (t ** g) * z1
+    # Reference ODE velocity: d z_t/dt = -x0 + g*t^(g-1)*z1
+    v_ref = -x0 + g * (t ** (g - 1.0)) * z1
 
-    # Consistency: the sampler conversion applied to (z_t, x0) must recover v_g2.
+    # EXERCISE THE LIVE TRAIN HELPERS (mutation of train.py must fail here).
+    from production.train import gamma_interpolant, gamma_velocity_target
+    zt_impl = gamma_interpolant(x0, z1, t, g)
+    assert zt_impl.shape == x0.shape, f"interpolant shape {zt_impl.shape} != {x0.shape}"
+    assert torch.allclose(zt_impl, zt_ref, atol=1e-6), "train interpolant drifted from (1-t)*x0 + t^g*z1"
+    v_impl = gamma_velocity_target(t, z1, x0, g)
+    assert torch.allclose(v_impl.view_as(v_ref), v_ref, atol=1e-5), "train velocity drifted from -x0 + g*t^(g-1)*z1"
+
+    # Consistency: the sampler conversion applied to (z_t, x0) must recover v_ref.
     # v = -x0 + g*(z_t - (1-t)*x0)/t ; with z_t as above, z_t-(1-t)*x0 = t^g*z1,
     # so v = -x0 + g*(t^g*z1)/t = -x0 + g*t^(g-1)*z1. Pin both forms equal.
     from production.sample import x_pred_velocity
-    v_sampler = x_pred_velocity(zt_g2, x0, t.squeeze(-1), gamma=g)
-    assert torch.allclose(v_sampler, v_g2, atol=1e-5), (
+    v_sampler = x_pred_velocity(zt_impl, x0, t.squeeze(-1), gamma=g)
+    assert torch.allclose(v_sampler, v_ref, atol=1e-5), (
         "sampler velocity must equal d(z_t)/dt at the interpolant"
     )
 

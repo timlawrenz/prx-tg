@@ -203,6 +203,27 @@ def compute_repa_loss(repa_hidden, dino_patches, dino_patches_mask, loss_type="c
     return per_token_loss.mean()
 
 
+def gamma_interpolant(x0, z1, t, g):
+    """Gamma-modulated interpolant: z_t = (1-t)*x0 + t^g*z1.
+
+    Data coefficient stays LINEAR in t; only the noise coefficient is warped.
+    At g=1 this recovers plain linear rectified flow z_t = (1-t)*x0 + t*z1.
+    """
+    t_warp = t ** g
+    t_warp_expanded = t_warp.view(-1, 1, 1, 1)
+    t_expanded = t.view(-1, 1, 1, 1)
+    return (1 - t_expanded) * x0 + t_warp_expanded * z1
+
+
+def gamma_velocity_target(t, z1, x0, g):
+    """ODE velocity along the gamma interpolant: d(z_t)/dt = -x0 + g*t^(g-1)*z1.
+
+    Reduces to z1 - x0 at g=1 (plain linear rectified flow).
+    """
+    g_coeff = (g * (t ** (g - 1.0))).view(-1, 1, 1, 1)
+    return g_coeff * z1 - x0
+
+
 def flow_matching_loss(model, x0, conditioning, cfg_probs, return_v_pred=False, repa_config=None, tread_config=None, perceptual_module=None, perceptual_config=None, micro_step=0, prediction_type="v_prediction", t_clamp_min=0.05, maskdit_config=None, global_step=0, seg_map=None, seg_weight_config=None, asymflow_config=None, matting=None, matting_edge_config=None, noise_schedule_config=None):
     """Compute flow matching loss with adapter-aware CFG dropout.
     
@@ -233,26 +254,24 @@ def flow_matching_loss(model, x0, conditioning, cfg_probs, return_v_pred=False, 
         noise_schedule_config, "enabled", False)
     if gamma_enabled:
         g = float(getattr(noise_schedule_config, "gamma", 2.0))
-        t_warp = t ** g
     else:
         g = 1.0
-        t_warp = t
 
     # Gamma-modulated interpolant: noise coeff t^g, data coeff (1-t).
-    t_warp_expanded = t_warp.view(B, 1, 1, 1)
+    zt = gamma_interpolant(x0, z1, t, g)
+    # Raw-t broadcast used by v_prediction x0_hat reconstruction (lpips/maskdit).
     t_expanded = t.view(B, 1, 1, 1)
-    zt = (1 - t_expanded) * x0 + t_warp_expanded * z1
     
     # Rectified flow velocity target. For gamma>1 the true velocity is
     # d(z_t)/dt = -x0 + g·t^(g-1)·z1, which reduces to z1-x0 at g=1.
-    g_coeff = (g * (t ** (g - 1.0))).view(B, 1, 1, 1)
     if hasattr(asymflow_config, 'enabled') and getattr(asymflow_config, 'enabled', False):
         z1_projected = apply_asymflow_projection(
             z1, model.patch_size, getattr(asymflow_config, 'rank', 8)
         )
+        g_coeff = (g * (t ** (g - 1.0))).view(B, 1, 1, 1)
         v_target = g_coeff * z1_projected - x0
     else:
-        v_target = g_coeff * z1 - x0
+        v_target = gamma_velocity_target(t, z1, x0, g)
     
     # ── Adapter-aware CFG dropout ─────────────────────────────────────
     from production.adapters import EidolonAdapter

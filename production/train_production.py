@@ -18,7 +18,7 @@ import subprocess
 import torch
 torch.set_float32_matmul_precision('high')
 
-from .config_loader import load_config
+from .config_loader import load_config, resolve_sampling_gamma
 from .model import NanoDiT
 from .data import get_production_dataloader
 from .train import ProductionTrainer
@@ -29,11 +29,9 @@ def _sampling_gamma(config):
 
     Returns 1.0 (plain linear rectified flow) when the gamma noise schedule is
     disabled, so every generation path matches the schedule used in training.
+    Delegates to the shared resolver in config_loader.
     """
-    ns = getattr(getattr(config, 'training', None), 'noise_schedule', None)
-    if ns is not None and getattr(ns, 'enabled', False):
-        return float(getattr(ns, 'gamma', 2.0))
-    return 1.0
+    return resolve_sampling_gamma(config)
 
 
 def parse_args():

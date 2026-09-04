@@ -9,7 +9,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from production.config_loader import load_config
+from production.config_loader import load_config, resolve_sampling_gamma
 from production.model import NanoDiT
 from production.train import EMAModel
 from production.validate import create_validation_fn
@@ -116,6 +116,7 @@ def main():
         guidance_scale=getattr(config.sampling, 'guidance_scale', 3.0),
         source=getattr(config.data, 'source', 'webdataset'),
         stratum_dir=getattr(config.data, 'stratum_dir', '/mnt/nas-ai-models/training-data/ffhq/stratum'),
+        gamma=resolve_sampling_gamma(config),
     )
 
     # Run validation

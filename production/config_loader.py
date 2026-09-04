@@ -243,6 +243,31 @@ class NoiseScheduleConfig:
     gamma: float = 2.0
 
 
+def resolve_sampling_gamma(config):
+    """Resolve the noise-schedule gamma for sampling/validation/visual_debug.
+
+    Returns 1.0 (plain linear rectified flow) when the gamma noise schedule is
+    disabled, so every generation path matches the schedule used in training.
+
+    Accepts either a loaded config dataclass (TrainingConfig.noise_schedule) or
+    a raw YAML dict (config['training']['noise_schedule']), so both entry points
+    (train_production dataclass path and scripts that yaml.safe_load) stay
+    consistent. A missing/disabled schedule always yields 1.0.
+    """
+    # Dataclass config.
+    tr = getattr(config, 'training', None)
+    ns = getattr(tr, 'noise_schedule', None) if tr is not None else None
+    if ns is not None and getattr(ns, 'enabled', False):
+        return float(getattr(ns, 'gamma', 2.0))
+    # Raw dict config.
+    tr_dict = config.get('training') if isinstance(config, dict) else None
+    if isinstance(tr_dict, dict):
+        ns_dict = tr_dict.get('noise_schedule')
+        if isinstance(ns_dict, dict) and ns_dict.get('enabled', False):
+            return float(ns_dict.get('gamma', 2.0))
+    return 1.0
+
+
 @dataclass
 class MattingEdgeConfig:
     """Alpha-matte boundary edge-aware loss weighting.
