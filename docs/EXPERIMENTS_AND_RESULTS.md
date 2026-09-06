@@ -413,7 +413,7 @@ Four arms (P, P2, P3, P4), three base models (vanilla SD1.5, pose-stripped SD1.5
 
 ---
 
-## dip-conv-head 10k continuation — `[CONCLUDED — GO]`
+## dip-conv-head 10k continuation — `[CONCLUDED — GO-with-caveat]`
 
 **Date:** 2026-09-01
 **Goal:** Test whether extending the DiP-style conv-head arm from 5k→10k steps moves the model toward photorealism, per the frozen pre-registered gate.
