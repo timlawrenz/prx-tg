@@ -436,7 +436,7 @@ Four arms (P, P2, P3, P4), three base models (vanilla SD1.5, pose-stripped SD1.5
 | G0 gates vs frozen real-FFHQ band | not measured at 5k | **3/6 out-of-band** (g0a noise floor, g0d p50/p95, all *below* band) | NOT_VALIDATED → strike 1/3 |
 | Zero NaN, clean exit | ✓ | ✓ | ✓ |
 
-**Blind review protocol:** 20 pairs built from index-matched text-only renders (same prompt at 5k vs 10k → training is the only variable) + 7 real-FFHQ calibration pairs, served via a local web UI with neutral URLs (no arm/step leakage). Session valid (calibration 100%).
+**Blind review protocol:** 20 pairs total (pool.json, seed 42) — 13 index-matched text-only ab pairs (same prompt at 5k vs 10k → training is the only variable) + 7 real-FFHQ calibration pairs, served via a local web UI with neutral URLs (no arm/step leakage). Session valid (calibration 100%, 7/7).
 
 ### Adversarial Pass
 - [x] Metric code (validator/scorer): LPIPS/aggregator live in production/, tested harness (39 tests); review_aggregate reuses tick.wilson_lb — one source, unit-tested
