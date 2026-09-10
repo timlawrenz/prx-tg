@@ -25,7 +25,7 @@
       "prior": "high",
       "measurability": "high",
       "cost": "med",
-      "strikes": 0,
+      "strikes": 1,
       "evidence_parts": [
         "g0a_sensor_noise_floor",
         "g0b_spectral_slope"
@@ -50,11 +50,29 @@
         "fix": "Unify on s=t^g coordinate: interpolant (1-t)*x0 + t^g*z1, velocity g*t^(g-1)*z1 - x0, sampler x_pred_velocity() = -x0 + g*(z_t-(1-t)*x0)/t. gamma threaded through EulerSampler/ValidationSampler/visual_debug/validate. Tests: tests/test_gamma_noise_schedule.py.",
         "note": "Result does NOT falsify the gamma hypothesis (it never tested it). Re-reun after red-team + code review + sanity."
       },
-      "verdicts": []
+      "verdicts": [
+        {
+          "kind": "not_better",
+          "out_of_band": [
+            "g0a_sensor_noise_floor_full",
+            "g0b_spectral_slope",
+            "g0d_local_contrast_full_p50",
+            "g0d_local_contrast_full_p95"
+          ],
+          "gates": {
+            "g0a_sensor_noise_floor_full": -1.770747271451083,
+            "g0b_spectral_slope": -1.8071133745210637,
+            "g0c_skin_texture_energy_full": 0.007061425003815781,
+            "g0d_local_contrast_full_p5": 0.007986282813362777,
+            "g0d_local_contrast_full_p50": 0.031624762934039936,
+            "g0d_local_contrast_full_p95": 0.10207203631712632
+          }
+        }
+      ]
     },
     {
       "id": "dip-conv-head",
-      "state": "active",
+      "state": "blocked",
       "prior": "high",
       "measurability": "high",
       "cost": "med",
