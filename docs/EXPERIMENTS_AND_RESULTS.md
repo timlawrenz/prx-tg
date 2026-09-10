@@ -455,3 +455,35 @@ Four arms (P, P2, P3, P4), three base models (vanilla SD1.5, pose-stripped SD1.5
 - Quality metrics: `.../quality_metrics/step0010000/` (10 samples, summary.json)
 - Review pool/votes: `research/avenues/review_10k/realism/pool.json`, `research/avenues/votes/dip-10k/tim.jsonl`
 - Review UI tool: `scripts/harness/review_server.py`
+
+---
+
+## gamma2-noise-scale corrected 10k — `[VERDICT — strike 1/3, research_pending]`
+
+**Date:** 2026-09-10
+**Goal:** Test whether a corrected γ=2 noise schedule (Z-Image-Turbo Pixel component 1) beats the γ=1 baseline on G0 photorealism bands, after the 2026-09-03 mis-specification was reworked (fix `3cc87a0`/branch `fix/gamma2-train-sample-consistency`: interpolant `(1-t)·x0 + t^g·z1`, velocity `g·t^(g-1)·z1 - x0`, sampler conversion `-x0 + g·(z_t-(1-t)·x0)/t`).
+**Setup:** NanoDiT 239.6M (768H, 18L, ps16) + REAM, FP8 training, effective batch 256, FFHQ stratum 70k, run `2026-09-04_1440`, resumed 3× (`git_dirty: false` at launch + all resumes, commit `3cc87a0`), final `checkpoint_final.pt` at step 10000.
+
+### Empirical Evidence
+
+| Metric (step 10000, n=11) | Value | Real-FFHQ band | Gate |
+|--------|----|----|---------|
+| G0a noise floor (full) | −1.771 | [−1.536, −1.223] | ❌ OUT (too smooth) |
+| G0b spectral slope | −1.807 | [−1.609, −1.093] | ❌ OUT (too steep) |
+| G0c skin texture (full) | 0.0071 | [0.0029, 0.0165] | ✅ IN |
+| G0d contrast p5 | 0.0080 | [0.0024, 0.028] | ✅ IN |
+| G0d contrast p50 | 0.032 | [0.046, 0.114] | ❌ OUT (too dark) |
+| G0d contrast p95 | 0.102 | [0.156, 0.310] | ❌ OUT (too dark) |
+
+**Trajectory (full-res pixel stats, deterministic detector):** luminance peak 0.51 @ step 1500 → **0.293 @ 10000** (monotone decline from ~4k on); contrast 0.19 → 0.10 (collapse). Loss stayed healthy (~0.0055) with zero WARN/NaN — healthy-loss-with-collapse signature persists through the corrected run.
+
+**Ground truth (full-res, step 10000):** recognizable face (real structure vs the green-noise at 8.25k) but dark, underexposed, low-contrast, heavily pixelated mosaic. DWPose face-conf 0.55 mean (68 kp on most prompts) reads the degraded structure — not quality.
+
+### Verdict
+`not_better` → **gamma2-noise-scale strike 1/3, `next_action: research_pending`** (registry tick `184dbf2`, 2026-09-10). Both declared evidence gates (G0a, G0b) plus G0d p50/p95 out of band. The run does **NOT falsify the gamma hypothesis** — the raw-t-conditioning suspect (conditioning on `t` while input noise level is `t^g`, under-determined at high t) remains untested; the result is a failed isolated variable, per the rework note. The arm stays `active` (strike 1/3).
+
+### Artifacts
+- Checkpoint: `experiments/gamma2-noise-scale/runs/2026-09-04_1440/checkpoints/checkpoint_final.pt`
+- Gates: `research/avenues/gates/gamma2-noise-scale/10000/gates.jsonl`
+- Validation: `.../validation/step0010000/` · visual_debug `.../visual_debug/step0010000/` · quality_metrics `.../quality_metrics/step0010000/`
+- Registry: `research/avenues/registry.json` (dip-conv-head parked `blocked` same commit)
