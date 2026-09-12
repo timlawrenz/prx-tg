@@ -130,3 +130,4 @@ research/*
 
 # Blind-review pair images (regenerable)
 research/avenues/review/*/pairs/
+research/avenues/registry.json.bak-*
