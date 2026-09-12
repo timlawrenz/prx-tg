@@ -21,6 +21,7 @@ class ModelConfig:
     in_channels: int = 3
     input_size: int = 1024
     prediction_type: Literal["v_prediction", "x_prediction"] = "x_prediction"
+    latent_space: bool = False      # True = FLUX-AE latent space (in_channels 16, 128x128); False = pixel space
     t_clamp_min: float = 0.05       # Minimum t for x→v conversion (avoids div-by-zero)
     bottleneck_size: int = 0        # PatchEmbed bottleneck (0 = disabled)
     head_type: str = "linear"       # "linear" (legacy 3x3 output conv) | "dip" (DiP-style conv U-Net head)
@@ -266,6 +267,25 @@ def resolve_sampling_gamma(config):
         if isinstance(ns_dict, dict) and ns_dict.get('enabled', False):
             return float(ns_dict.get('gamma', 2.0))
     return 1.0
+
+
+def resolve_latent_space(config):
+    """Resolve whether this arm runs in FLUX-AE latent space (latent-first).
+
+    Returns True when model.latent_space is set. Accepts either a loaded
+    config dataclass (ModelConfig.latent_space) or a raw YAML dict
+    (config['model']['latent_space']), so both entry points (train_production
+    dataclass path and scripts that yaml.safe_load) stay consistent.
+    Default False = pixel-space (champion behavior unchanged).
+    """
+    mc = getattr(config, 'model', None)
+    if mc is not None and getattr(mc, 'latent_space', False):
+        return True
+    if isinstance(config, dict):
+        md = config.get('model')
+        if isinstance(md, dict) and md.get('latent_space', False):
+            return True
+    return False
 
 
 @dataclass

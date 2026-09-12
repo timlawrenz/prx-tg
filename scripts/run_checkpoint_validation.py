@@ -9,7 +9,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from production.config_loader import load_config, resolve_sampling_gamma
+from production.config_loader import load_config, resolve_sampling_gamma, resolve_latent_space
 from production.model import NanoDiT
 from production.train import EMAModel
 from production.validate import create_validation_fn
@@ -112,6 +112,7 @@ def main():
         dino_scale=config.sampling.dino_scale,
         num_steps=config.sampling.num_steps,
         prediction_type=getattr(config.model, 'prediction_type', 'v_prediction'),
+        latent_space=resolve_latent_space(config),
         self_guidance=getattr(config.sampling, 'self_guidance', False),
         guidance_scale=getattr(config.sampling, 'guidance_scale', 3.0),
         source=getattr(config.data, 'source', 'webdataset'),

@@ -106,6 +106,7 @@ class ValidationRunner:
         self_guidance=False,
         guidance_scale=3.0,
         prediction_type="v_prediction",
+        latent_space=False,
         gamma=1.0,
     ):
         """
@@ -118,6 +119,7 @@ class ValidationRunner:
             lpips_net: LPIPS network ('alex' or 'vgg')
             tensorboard_writer: Optional TensorBoard SummaryWriter
             prediction_type: "v_prediction" or "x_prediction"
+            latent_space: True = FLUX-AE latent space (decode via VAE before LPIPS)
             gamma: noise-scale exponent (must match training schedule)
         """
         self.model = model
@@ -127,6 +129,7 @@ class ValidationRunner:
         self.output_dir = Path(output_dir)
         self.tb_writer = tensorboard_writer
         self.prediction_type = prediction_type
+        self.latent_space = latent_space
         self.gamma = gamma
 
         # Sampling CFG scales for validation
@@ -136,13 +139,13 @@ class ValidationRunner:
         self.self_guidance = self_guidance
         self.guidance_scale = guidance_scale
         
-        # Load VAE decoder (not needed for pixel-space)
-        if prediction_type == "x_prediction":
+        # Load VAE decoder (needed for latent-space; not for pixel-space)
+        if latent_space:
+            print("Latent-space mode: loading VAE decoder")
+            self.vae = load_vae_decoder(device=device)
+        else:
             print("Pixel-space mode: skipping VAE decoder load")
             self.vae = None
-        else:
-            print("Loading VAE decoder...")
-            self.vae = load_vae_decoder(device=device)
         
         # Load LPIPS metric
         print(f"Loading LPIPS metric ({lpips_net})...")
@@ -281,9 +284,14 @@ class ValidationRunner:
         
         Returns the latent spatial size that matches the current training
         resolution, so validation generates at the same resolution the model
-        was trained at.
+        was trained at. In latent-space mode generated images are DECODED to
+        8x (128->1024), so the GT comparison size must be the decoded pixel
+        size — otherwise GT shrinks to 128 and LPIPS compares 1024px
+        generations against 128px thumbnails.
         """
         base_size = getattr(self.model, 'input_size', 128)
+        if self.latent_space:
+            return base_size * 8
         latent_size = base_size
         return latent_size
     
@@ -1217,6 +1225,7 @@ def create_validation_fn(
     self_guidance=False,
     guidance_scale=3.0,
     prediction_type="v_prediction",
+    latent_space=False,
     source="webdataset",
     stratum_dir="/workspace/stratum",
     adapter_name="stratum",
@@ -1237,13 +1246,14 @@ def create_validation_fn(
         self_guidance: Use self-guidance instead of dual CFG
         guidance_scale: Self-guidance scale
         prediction_type: "v_prediction" or "x_prediction"
+        latent_space: True = FLUX-AE latent space (decode via VAE)
     
     Returns:
         validation_fn(model, ema, step, device)
     """
     from .data import get_deterministic_validation_dataloader
     
-    pixel_space = prediction_type == "x_prediction"
+    pixel_space = (not latent_space) and prediction_type == "x_prediction"
     runner = None
     val_dataloader = None
 
@@ -1276,6 +1286,7 @@ def create_validation_fn(
                 self_guidance=self_guidance,
                 guidance_scale=guidance_scale,
                 prediction_type=prediction_type,
+                latent_space=latent_space,
                 gamma=gamma,
             )
         

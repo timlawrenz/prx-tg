@@ -18,7 +18,7 @@ import subprocess
 import torch
 torch.set_float32_matmul_precision('high')
 
-from .config_loader import load_config, resolve_sampling_gamma
+from .config_loader import load_config, resolve_sampling_gamma, resolve_latent_space
 from .model import NanoDiT
 from .data import get_production_dataloader
 from .train import ProductionTrainer
@@ -440,6 +440,7 @@ def main():
             self_guidance=config.sampling.self_guidance,
             guidance_scale=config.sampling.guidance_scale,
             prediction_type=config.model.prediction_type,
+            latent_space=resolve_latent_space(config),
             gamma=_sampling_gamma(config),
             source=getattr(config.data, 'source', 'webdataset'),
             stratum_dir=getattr(config.data, 'stratum_dir', '/workspace/stratum'),
@@ -464,6 +465,7 @@ def main():
             self_guidance=config.sampling.self_guidance,
             guidance_scale=config.sampling.guidance_scale,
             prediction_type=config.model.prediction_type,
+            latent_space=resolve_latent_space(config),
             gamma=_sampling_gamma(config),
             source=getattr(config.data, 'source', 'webdataset'),
             stratum_dir=getattr(config.data, 'stratum_dir', '/workspace/stratum'),

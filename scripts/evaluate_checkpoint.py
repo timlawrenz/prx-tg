@@ -36,7 +36,7 @@ except ImportError:
 from huggingface_hub import hf_hub_download
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from production.config_loader import load_config, resolve_sampling_gamma
+from production.config_loader import load_config, resolve_sampling_gamma, resolve_latent_space
 from production.sample import ValidationSampler
 from production.validate import create_image_collage
 from scripts.dwpose_onnx import DWPoseDetector
@@ -143,6 +143,7 @@ def run_evaluation(checkpoint_path, config_path, output_dir, device='cuda', clip
         self_guidance=False, # MUST BE FALSE for dino_scale=0 to work properly via Dual CFG
         guidance_scale=sc.get("guidance_scale", 3.0),
         prediction_type=mc.get("prediction_type", "x_prediction"),
+        latent_space=resolve_latent_space(config),
         gamma=resolve_sampling_gamma(config),
     )
 

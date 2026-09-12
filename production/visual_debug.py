@@ -21,6 +21,7 @@ def create_visual_debug_fn(
     self_guidance=False,
     guidance_scale=3.0,
     prediction_type="v_prediction",
+    latent_space=False,
     source="webdataset",
     stratum_dir="/workspace/stratum",
     adapter_name="stratum",
@@ -40,12 +41,13 @@ def create_visual_debug_fn(
         self_guidance: Use self-guidance CFG
         guidance_scale: Self-guidance scale
         prediction_type: "v_prediction" or "x_prediction"
+        latent_space: True = FLUX-AE latent space (decode via VAE)
         gamma: noise-scale exponent (must match training schedule)
     
     Returns:
         debug_fn: Function that takes (model, step) and generates images
     """
-    pixel_space = prediction_type == "x_prediction"
+    pixel_space = (not latent_space) and prediction_type == "x_prediction"
     
     # Load VAE decoder (not needed for pixel-space)
     vae = None if pixel_space else load_vae_decoder(device=device)

@@ -206,55 +206,31 @@ class EulerSampler:
         return zt
 
 
-def load_vae_decoder(device='cuda'):
-    """Load Flux VAE decoder for latent decoding.
-    
-    Returns:
-        decoder: VAE decoder model
+def load_vae_decoder(device='cuda', vae_path=None):
+    """Load the FLUX AE decoder for latent decoding.
+
+    Uses the on-disk AE (production/flux_ae.py) — the raw-latent
+    AutoencodingEngine our flux_latent.npy files came from. The old
+    diffusers-from-HF path (black-forest-labs/FLUX.1-dev subfolder vae)
+    silently produced garbage on raw latents (wrong post_quant scale):
+    see production/flux_ae.py docstring. Verified decode MSE 0.0001.
     """
-    try:
-        from diffusers import AutoencoderKL
-        
-        # Load Flux VAE (same as used in embedding generation)
-        vae = AutoencoderKL.from_pretrained(
-            "black-forest-labs/FLUX.1-dev",
-            subfolder="vae",
-            torch_dtype=torch.float16,
-        ).to(device)
-        vae.eval()
-        
-        # Enable slicing and tiling to save memory
-        vae.enable_slicing()
-        vae.enable_tiling()
-        
-        return vae
-    except Exception as e:
-        print(f"Error loading VAE decoder: {e}")
-        print("Make sure you have diffusers installed and HuggingFace access")
-        raise
+    from .flux_ae import load_flux_ae_decoder
+    return load_flux_ae_decoder(device=device, vae_path=vae_path or "/mnt/models/vae/ae.safetensors")
 
 
 @torch.no_grad()
 def decode_latents(vae, latents):
     """Decode VAE latents to RGB images.
-    
+
     Args:
         vae: VAE decoder model
-        latents: (B, 16, H, W) latent tensors (normalized)
-    
+        latents: (B, 16, H, W) latent tensors (raw FLUX AE latents)
+
     Returns:
         images: (B, 3, H*8, W*8) RGB images in [-1, 1]
     """
-    # Flux VAE uses 8x spatial compression
-    # latents: (B, 16, 64, 64) -> images: (B, 3, 512, 512)
-
-    # Convert to half precision for faster decoding
-    latents = latents.half()
-    
-    # Decode
-    images = vae.decode(latents).sample
-    
-    return images
+    return vae.decode(latents).sample
 
 
 def tensor_to_pil(tensor):
@@ -328,6 +304,7 @@ class ValidationSampler:
         self_guidance=False,
         guidance_scale=3.0,
         prediction_type="v_prediction",
+        latent_space=False,
         gamma=1.0,
     ):
         """
@@ -341,6 +318,8 @@ class ValidationSampler:
             self_guidance: use self-guidance instead of dual CFG
             guidance_scale: self-guidance scale
             prediction_type: "v_prediction" or "x_prediction"
+            latent_space: True if model operates on FLUX latents (decode via VAE);
+                          False = pixel space. x_prediction + latent_space = latent-first.
             gamma: noise-scale exponent (must match training schedule)
         """
         self.model = model
@@ -352,6 +331,7 @@ class ValidationSampler:
         self.self_guidance = self_guidance
         self.guidance_scale = guidance_scale
         self.prediction_type = prediction_type
+        self.latent_space = latent_space
     
     @torch.no_grad()
     def generate(
@@ -407,8 +387,9 @@ class ValidationSampler:
 
         use_self_guidance = self_guidance if self_guidance is not None else self.self_guidance
         
-        # Determine shape based on prediction type
-        pixel_space = self.prediction_type == "x_prediction"
+        # Determine shape based on prediction type + latent_space.
+        # pixel_space = NOT latent AND x_prediction (champion behavior preserved).
+        pixel_space = (not self.latent_space) and self.prediction_type == "x_prediction"
         in_channels = 3 if pixel_space else 16
         if pixel_space:
             # For pixel-space, latent_size is the pixel dimension (e.g., 1024)

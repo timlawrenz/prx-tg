@@ -136,6 +136,7 @@ class StratumDataset(IterableDataset):
         adapter_name: str = "stratum",
         require_pose2: bool = False,
         prefer_pose2: bool = False,
+        latent_mode: bool = False,
         load_dino_patches: bool = True,
         load_seg: bool = True,
         load_geometry_3d: bool = True,
@@ -146,7 +147,8 @@ class StratumDataset(IterableDataset):
             stratum_dir: Root directory containing per-image subdirs (00000, 00001, …)
             batch_size: Samples per batch
             shuffle: Randomise sample order each epoch
-            target_latent_size: Resize pixel.npy to this spatial size (int or (H,W))
+            target_latent_size: Resize pixel.npy to this spatial size (int or (H,W)).
+                          IGNORED in latent_mode — FLUX latents are (16,128,128) already.
             num_workers: Reserved for future DataLoader integration; ignored for now
             max_samples: If set, only iterate up to this many samples instead of 70000
             adapter_name: "stratum" (default) or "eidolon" — controls which extra
@@ -156,6 +158,9 @@ class StratumDataset(IterableDataset):
             prefer_pose2: If True, load pose2.npy (308kp) and filter to dirs that have it.
                           If False (default), ALWAYS load pose.npy (133kp) — the adapter
                           is built for exactly one joint count; never mix within a run.
+            latent_mode: If True, read flux_latent.npy (16,128,128) instead of
+                          pixel.npy (3,1024,1024) as image_data — latent-space training
+                          (FLUX-AE 8x). Image augmentation on latents is NOT applied.
             load_dino_patches: Load dinov3_patches.npy (8.4MB/sample). False when
                           training.dino_patches.enabled=false — the model never sees
                           them; stub (1,1024) keeps the collate contract.
@@ -172,15 +177,19 @@ class StratumDataset(IterableDataset):
         self.adapter_name = adapter_name
         self.require_pose2 = require_pose2
         self.prefer_pose2 = prefer_pose2
+        self.latent_mode = latent_mode
         self.load_dino_patches = load_dino_patches
         self.load_seg = load_seg
         self.load_geometry_3d = load_geometry_3d
         self.load_matting = load_matting
 
-        # Scan directory for available samples (stable across rebuilds)
+        # Scan directory for available samples (stable across rebuilds).
+        # latent_mode gates on flux_latent.npy — images lacking the latent are skipped
+        # entirely (never mixed with pixel fallback).
+        img_file = "flux_latent.npy" if latent_mode else "pixel.npy"
         existing = sorted([
             d for d in self.stratum_dir.iterdir()
-            if d.is_dir() and (d / "pixel.npy").exists()
+            if d.is_dir() and (d / img_file).exists()
             and (not require_pose2 or (d / "pose2.npy").exists())
             and (not prefer_pose2 or (d / "pose2.npy").exists())
         ])
@@ -188,6 +197,7 @@ class StratumDataset(IterableDataset):
             existing = existing[:max_samples]
         self._dirs = existing
         print(f"[StratumDataset] {len(self._dirs)} samples in {self.stratum_dir}"
+              + (f" (latent_mode=True)" if latent_mode else "")
               + (f" (require_pose2=True)" if require_pose2 else ""))
 
     # ------------------------------------------------------------------
@@ -212,7 +222,12 @@ class StratumDataset(IterableDataset):
         caption    = (d / 'caption.txt').read_text().strip()
         meta       = json.loads((d / 'metadata.json').read_text())
 
-        image_data = _resize_image(pixel, self.target_latent_size)
+        if self.latent_mode:
+            # Latent-space training: image_data = FLUX-AE latent (16,128,128) f16.
+            # Latents are already at target resolution — no resize, no augmentation.
+            image_data = torch.from_numpy(np.load(d / 'flux_latent.npy').astype(np.float32))
+        else:
+            image_data = _resize_image(pixel, self.target_latent_size)
 
         # ── Pose: serve EXACTLY ONE joint count per run — the adapter is built
         # for a single num_pose_joints. prefer_pose2 (True only when the model
@@ -386,6 +401,7 @@ def get_stratum_dataloader(
     adapter_name: str = "stratum",
     require_pose2: bool = False,
     prefer_pose2: bool = False,
+    latent_mode: bool = False,
     load_dino_patches: bool = True,
     load_seg: bool = True,
     load_geometry_3d: bool = True,
@@ -416,6 +432,7 @@ def get_stratum_dataloader(
         adapter_name=adapter_name,
         require_pose2=require_pose2,
         prefer_pose2=prefer_pose2,
+        latent_mode=latent_mode,
         load_dino_patches=load_dino_patches,
         load_seg=load_seg,
         load_geometry_3d=load_geometry_3d,
