@@ -1270,7 +1270,7 @@ def create_validation_fn(
             val_dataloader = get_deterministic_validation_dataloader(
                 shard_dir=shard_dir,
                 batch_size=1,  # Process one at a time for validation
-                target_latent_size=getattr(model, 'input_size', 128),
+                target_latent_size=(getattr(model, 'input_size', 128) * 8) if latent_space else getattr(model, 'input_size', 128),
                 source=source,
                 stratum_dir=stratum_dir,
                 adapter_name=adapter_name,
