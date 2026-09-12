@@ -1116,6 +1116,7 @@ class ValidationRunner:
             self_guidance=self.self_guidance,
             guidance_scale=self.guidance_scale,
             prediction_type=self.prediction_type,
+            latent_space=self.latent_space,
             gamma=self.gamma,
         )
         
