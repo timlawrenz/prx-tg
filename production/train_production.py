@@ -441,6 +441,7 @@ def main():
             guidance_scale=config.sampling.guidance_scale,
             prediction_type=config.model.prediction_type,
             latent_space=resolve_latent_space(config),
+            num_samples=getattr(config.validation, 'num_samples', 10),
             gamma=_sampling_gamma(config),
             source=getattr(config.data, 'source', 'webdataset'),
             stratum_dir=getattr(config.data, 'stratum_dir', '/workspace/stratum'),

@@ -113,6 +113,7 @@ def main():
         num_steps=config.sampling.num_steps,
         prediction_type=getattr(config.model, 'prediction_type', 'v_prediction'),
         latent_space=resolve_latent_space(config),
+        num_samples=getattr(config.validation, 'num_samples', 10),
         self_guidance=getattr(config.sampling, 'self_guidance', False),
         guidance_scale=getattr(config.sampling, 'guidance_scale', 3.0),
         source=getattr(config.data, 'source', 'webdataset'),

@@ -107,6 +107,7 @@ class ValidationRunner:
         guidance_scale=3.0,
         prediction_type="v_prediction",
         latent_space=False,
+        num_samples=10,
         gamma=1.0,
     ):
         """
@@ -120,6 +121,7 @@ class ValidationRunner:
             tensorboard_writer: Optional TensorBoard SummaryWriter
             prediction_type: "v_prediction" or "x_prediction"
             latent_space: True = FLUX-AE latent space (decode via VAE before LPIPS)
+            num_samples: how many reconstruction samples to generate
             gamma: noise-scale exponent (must match training schedule)
         """
         self.model = model
@@ -130,6 +132,7 @@ class ValidationRunner:
         self.tb_writer = tensorboard_writer
         self.prediction_type = prediction_type
         self.latent_space = latent_space
+        self.num_samples = num_samples
         self.gamma = gamma
 
         # Sampling CFG scales for validation
@@ -281,18 +284,27 @@ class ValidationRunner:
     
     def _get_latent_size(self):
         """Compute latent size from current resolution scale.
-        
+
         Returns the latent spatial size that matches the current training
         resolution, so validation generates at the same resolution the model
-        was trained at. In latent-space mode generated images are DECODED to
-        8x (128->1024), so the GT comparison size must be the decoded pixel
-        size — otherwise GT shrinks to 128 and LPIPS compares 1024px
-        generations against 128px thumbnails.
+        was trained at. NOTE: this is the LATENT size (the sampler builds a
+        (B, 16, latent_size, latent_size) tensor). The GT resize in the tests
+        uses _get_comparison_size() instead — in latent-space mode generated
+        images are DECODED to 8x, so GT must be compared at the decoded size.
         """
         base_size = getattr(self.model, 'input_size', 128)
+        return base_size
+
+    def _get_comparison_size(self, latent_size):
+        """Size at which GT images are compared against generated images.
+
+        Pixel space: generated == latent grid size.
+        Latent space: generated images come out of the VAE decoder at 8x the
+        latent size (128 -> 1024), so GT must be compared at that size —
+        otherwise LPIPS compares 1024px generations against 128px thumbnails.
+        """
         if self.latent_space:
-            return base_size * 8
-        latent_size = base_size
+            return latent_size * 8
         return latent_size
     
     def run_reconstruction_test(self, step, sampler, latent_size=None):
@@ -320,11 +332,15 @@ class ValidationRunner:
         
         lpips_scores = []
         
+        # Cap the hardcoded 25-index list at num_samples (config gate — eager
+        # 1024² validation on a 4090 is minutes per sample; don't run 25 in-train).
+        indices = RECONSTRUCTION_TEST_INDICES[:self.num_samples]
+
         # Generate in batches for efficiency (reduced batch_size for 1024x1024 to avoid OOM)
         batch_size = 1
         
-        for i in tqdm(range(0, len(RECONSTRUCTION_TEST_INDICES), batch_size), desc='Reconstruction'):
-            batch_indices = RECONSTRUCTION_TEST_INDICES[i:i+batch_size]
+        for i in tqdm(range(0, len(indices), batch_size), desc='Reconstruction'):
+            batch_indices = indices[i:i+batch_size]
             
             # Gather batch
             batch_samples = [samples[idx] for idx in batch_indices]
@@ -342,12 +358,13 @@ class ValidationRunner:
                 **cond_kwargs,
             )
             
-            # Resize GT to match generation resolution
-            if latent_size is not None:
+            # Resize GT to match generation resolution (comparison size, not latent size)
+            comparison_size = self._get_comparison_size(latent_size)
+            if comparison_size is not None:
                 gt_h, gt_w = gt_images_raw.shape[2], gt_images_raw.shape[3]
-                if gt_h != latent_size or gt_w != latent_size:
+                if gt_h != comparison_size or gt_w != comparison_size:
                     gt_images_raw = F.interpolate(
-                        gt_images_raw, size=(latent_size, latent_size),
+                        gt_images_raw, size=(comparison_size, comparison_size),
                         mode='bilinear', align_corners=False
                     )
             
@@ -645,12 +662,13 @@ class ValidationRunner:
                 **cond_kwargs,
             )
             
-            # Resize GT to match generation resolution
-            if latent_size is not None:
+            # Resize GT to match generation resolution (comparison size, not latent size)
+            comparison_size = self._get_comparison_size(latent_size)
+            if comparison_size is not None:
                 gt_h, gt_w = gt_images_raw.shape[2], gt_images_raw.shape[3]
-                if gt_h != latent_size or gt_w != latent_size:
+                if gt_h != comparison_size or gt_w != comparison_size:
                     gt_images_raw = F.interpolate(
-                        gt_images_raw, size=(latent_size, latent_size),
+                        gt_images_raw, size=(comparison_size, comparison_size),
                         mode='bilinear', align_corners=False
                     )
             
@@ -1227,6 +1245,7 @@ def create_validation_fn(
     guidance_scale=3.0,
     prediction_type="v_prediction",
     latent_space=False,
+    num_samples=10,
     source="webdataset",
     stratum_dir="/workspace/stratum",
     adapter_name="stratum",
@@ -1288,6 +1307,7 @@ def create_validation_fn(
                 guidance_scale=guidance_scale,
                 prediction_type=prediction_type,
                 latent_space=latent_space,
+                num_samples=num_samples,
                 gamma=gamma,
             )
         
