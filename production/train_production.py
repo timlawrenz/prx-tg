@@ -385,6 +385,10 @@ def main():
                     "adaLN_modulation",   # Block-level global scale/shift
                     "final_proj",         # Output head projection
                     "output_conv",        # Output head conv (K<16 alignment; DiP head stays BF16)
+                    "x_embedder",         # Patch-embed conv — K<16 kernels (patch_size 2/4 latents)
+                                          # tile catastrophically in FP8 (measured 40s/it vs 17s/it
+                                          # at k16; 2026-09-13). BF16 here costs ~nothing (tiny
+                                          # fraction of FLOPs); transformer body stays FP8.
                 ]
                 return not any(kw in mod_name for kw in exclude_keywords)
 
