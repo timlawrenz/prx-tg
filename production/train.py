@@ -1263,7 +1263,14 @@ class Trainer:
                     interval = getattr(self, 'visual_debug_interval', 0)
                     if interval > 0 and self.step % interval == 0:
                         try:
-                            visual_debug_fn(self.model, self.step)
+                            # Run eval hooks on the UNCOMPILED module: the compiled
+                            # FP8 model's Inductor tiling crashes on eval shapes
+                            # (CantSplit on unbacked SymInt, observed every hook
+                            # 2026-09-13: 25/25 failures). _orig_mod is the plain
+                            # module torch.compile wrapped — same params, eager
+                            # inference, mirrors the standalone validator path.
+                            eval_model = getattr(self.model, '_orig_mod', self.model)
+                            visual_debug_fn(eval_model, self.step)
                         except Exception as e:
                             print(f"  [WARN] Visual debug failed at step {self.step}: {e}")
                             print("         (non-fatal: training continues; model back in train mode)")
@@ -1281,7 +1288,10 @@ class Trainer:
                         try:
                             # Free training memory before validation
                             torch.cuda.empty_cache()
-                            validate_fn(self.model, self.ema, self.step, self.device)
+                            # Same _orig_mod rationale as visual debug: plain eager
+                            # module for eval, compiled model stays for training.
+                            eval_model = getattr(self.model, '_orig_mod', self.model)
+                            validate_fn(eval_model, self.ema, self.step, self.device)
                             # Clean up after validation
                             torch.cuda.empty_cache()
                             # Put model back in train mode

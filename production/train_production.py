@@ -8,6 +8,7 @@ Usage:
 
 import argparse
 import sys
+import os
 import signal
 from pathlib import Path
 from datetime import datetime
@@ -245,7 +246,23 @@ def create_experiment_dir(config_path, resume_path=None):
 def main():
     """Main training function."""
     args = parse_args()
-    
+
+    # --- Graceful-stop plumbing (must be installed BEFORE heavy init) ---
+    # SIGTERM -> KeyboardInterrupt -> checkpoint_interrupt.pt. But we must ONLY
+    # signal the MAIN process: pkill patterns also match the 24 forked DataLoader
+    # worker processes (identical cmdline), their abrupt death makes the main's
+    # blocked queue.get() raise ConnectionResetError, which kills the run before
+    # this handler ever gets a bytecode slot (observed 2026-09-13..16: four stops,
+    # zero checkpoints). Stop via /tmp/latent_first_trainer.pid + `kill -TERM <pid>`.
+    def _sigterm_handler(signum, frame):
+        raise KeyboardInterrupt()
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+    try:
+        with open('/tmp/latent_first_trainer.pid', 'w') as f:
+            f.write(str(os.getpid()))
+    except OSError as e:
+        print(f"  [warn] could not write trainer pid file: {e}")
+
     # When resuming, auto-load config from the experiment directory
     # unless --config was explicitly specified on the command line
     if args.resume and args.config == 'production/config.yaml':
@@ -503,11 +520,8 @@ def main():
     # Train
     print("\nStarting training...\n")
     
-    # Convert SIGTERM (pkill) to KeyboardInterrupt so checkpoint_interrupt.pt is saved
-    def _sigterm_handler(signum, frame):
-        raise KeyboardInterrupt()
-    signal.signal(signal.SIGTERM, _sigterm_handler)
-    
+    # SIGTERM handler was already installed at top of main() (before heavy init);
+    # the `except KeyboardInterrupt` below saves checkpoint_interrupt.pt.
     try:
         trainer.train(
             validate_fn=validate_fn,
