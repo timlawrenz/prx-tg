@@ -82,3 +82,58 @@ validation_evals/
 
 # Run logs
 sync_vast_arm_e.log
+
+# Local scratch logs and environments (FP8 run artifacts)
+autotune_fp8*.log
+fp8_train*.log
+training_output.log
+*.log
+.venv-3.11/
+
+# Local diagnostic and scratch scripts
+test_fp8_*.py
+test_torchao.py
+test_train.py
+debug_shapes*.py
+check_tread_fp8.py
+check_auto_tune_model.py
+check_filter_fn.py
+parse_lpips.py
+sync_vast_arm_*.sh
+start_training_after_ipadapter.sh
+stop_training.sh
+scripts/upload_to_ratiocinator.py
+
+# Research outputs / Ratiocinator local files
+research/
+
+# Local prompt test results (run artifacts, not source code)
+results/
+
+# Build artifacts / release bundles (not git-tracked source)
+release/
+hf_space/
+infographic/
+prx-tg-architecture.html
+prx-tg-core-architecture.html
+
+# Whitelisted governance + research-loop files (committed by policy — AGENTS.md lists these dirs)
+!.hermes/
+.hermes/*
+!.hermes/plans/
+!research/
+research/*
+!research/avenues/
+!research/avenues/votes/*.jsonl
+!research/avenues/gates/*.jsonl
+
+# Soft research results — writeups + metric summaries (AGENTS.md §0.1: soft data
+# belongs in git). NOTE: negation must come after the global `*.jsonl` / `*.csv`
+# rules above, and the directory itself must be re-included so git descends into it.
+!research/results/
+!research/results/**
+
+
+# Blind-review pair images (regenerable)
+research/avenues/review/*/pairs/
+research/avenues/registry.json.bak-*
