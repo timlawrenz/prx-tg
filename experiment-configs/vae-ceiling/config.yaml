@@ -1,0 +1,74 @@
+# vae-ceiling — frozen test configuration
+#
+# WHAT IT TESTS
+#   Feasibility gate, not an ablation: does the FLUX AE reconstruct real FFHQ faces
+#   faithfully enough that a latent-first model could reach photorealism without a
+#   pixel-space post-training phase? Also establishes the true resolution of the
+#   precomputed AbstractPhil/ffhq_flux_latents_repaired latent set.
+#
+# DIFFERS FROM BASELINE
+#   No training. 16 real FFHQ images are pushed through autoencoders (encode->decode)
+#   and scored with LPIPS + pixel stats. The script's constants are the configuration
+#   — this file freezes them so the 2026-09-10 run is reproducible and the queued
+#   re-run (provenance.yaml: queued_rerun) can be verified against it.
+#
+# EXPECTED OUTCOME (as pre-registered in hindsight, 2026-09-19)
+#   Falsified if encode->decode of a real photo is visibly washed/low-contrast/mushy,
+#   meaning the AE — not the latent model — is the binding constraint. Observed:
+#   falsified (luminance 0.437 -> 0.855, contrast 0.239 -> 0.154).
+
+arm: vae-ceiling
+kind: inference_only          # no training; there is no optimizer/loss/batch schedule
+script: scripts/vae_ceiling_test.py
+output_dir: research/results/vae_ceiling
+
+data:
+  source: /mnt/nas-ai-models/training-data/ffhq/raw
+  selection: deterministic     # indices 0..15, i.e. 00000.png .. 00015.png
+  n: 16
+  offset: 0
+  resolution_px: 1024
+  resize_filter: LANCZOS
+
+autoencoders:
+  flux:
+    weights: /mnt/models/vae/ae.safetensors
+    loader: comfyui            # comfy.sd.VAE via /mnt/fscache/essdee/ComfyUI
+    paths:
+      - precomputed_latents: AbstractPhil/ffhq_flux_latents_repaired (split train_00)
+      - full_encode_decode_at_1024   # the true 1024^2 ceiling
+  sdxl:
+    weights: /mnt/models/vae/SDXL/sdxl_vae.safetensors
+    loader: comfyui
+    mode: encode_decode_at_1024
+
+# The AE's latent scale convention is ambiguous; all three are tested and the
+# lowest-LPIPS variant per row is the comparable figure (0.3611 is the nominal
+# scaling factor, so 2.76932 = 1/0.3611).
+latent_scales: [0.3611, 1.0, 2.76932]
+
+metrics:
+  lpips:
+    net: alex
+    input_size_px: 256
+    resize_filter: LANCZOS
+  pixel_stats: [lum, contrast]   # lum = 0.299R + 0.587G + 0.114B; contrast = std(lum)
+
+gpu:
+  device: cuda
+  batch_size: 1
+  alloc_conf: expandable_segments:True
+  empty_cache_every_iteration: true
+  measured_free_vram_mb_min: 23600
+  runtime_minutes_approx: 6
+
+benchmarks_2026-09-10:           # LPIPS mean/min/max, n=16, all at scale 2.76932
+  flux_ae_1024:  {mean: 0.2420, min: 0.1769, max: 0.2967}
+  flux_ae_512_precomputed: {mean: 0.5203, min: 0.4627, max: 0.5864}
+  sdxl_vae_1024: {mean: 0.3464, min: 0.2776, max: 0.4159}
+
+known_gaps:                      # to be closed by queued_rerun, not hidden
+  - "no real_lum / real_contrast is stored per row; the washed-out comparison was
+     recovered by measuring samples/*_real.png directly (2026-09-19)"
+  - "the summary loop in the script keys off 'flux_s2.7689' while the real key is
+     'flux_s2.76932', so the best-scale rows never printed"

@@ -127,6 +127,12 @@ research/*
 !research/avenues/votes/*.jsonl
 !research/avenues/gates/*.jsonl
 
+# Soft research results — writeups + metric summaries (AGENTS.md §0.1: soft data
+# belongs in git). NOTE: negation must come after the global `*.jsonl` / `*.csv`
+# rules above, and the directory itself must be re-included so git descends into it.
+!research/results/
+!research/results/**
+
 
 # Blind-review pair images (regenerable)
 research/avenues/review/*/pairs/

@@ -1,0 +1,118 @@
+# provenance.yaml — vae-ceiling
+# RETROSPECTIVE record (recorded 2026-09-19 for a run on 2026-09-10).
+# AGENTS.md §0 contract did not exist when this arm ran; missing links are recorded
+# as absent facts rather than retroactively invented (AGENTS.md §0.7.3).
+
+arm: vae-ceiling
+arm_letter: null
+aliases: [vae-ceiling-test, vae_ceiling]
+
+# No mode was declared before the run, so it cannot be claimed as confirmatory.
+# A result seen before the mode is set is exploratory, permanently (AGENTS.md §0.7.3).
+mode: undeclared
+
+hypothesis: >
+  The FLUX AE (the AE that produced the precomputed AbstractPhil/ffhq_flux_latents_repaired
+  set) reconstructs real FFHQ faces faithfully enough that a latent-first model could reach
+  photorealism without a pixel-space post-training phase.
+
+falsified_if: >
+  Encode->decode of a real photo through the AE fails the photoreal band - visibly washed
+  out, low-contrast or mushy - meaning the autoencoder itself is the binding constraint on
+  the achievable ceiling.
+
+# Never written before the run. Recorded as the fact it is.
+pre_registered_gate: >
+  NOT PRE-REGISTERED. This is a retrospective record; no gate, falsification threshold or
+  success criterion was committed before the run.
+
+differs_from: latent-first-pretrain
+diff_summary: |
+  - not an ablation: a feasibility gate run BEFORE committing GPU time to latent-first
+  - tests the autoencoder alone (encode->decode of real photos), no model training
+  - produced the 1024²-encode decision and the first-class Part 2 (pixel) phase
+
+# --- link fields ---
+branch: null            # no experiment branch was ever created for this arm
+branch_note: >
+  Recorded as absent rather than renamed into existence (AGENTS.md §0.4: never rename
+  history to fit a convention). This is also why docs/blog/brief-05-vae-ceiling.md has
+  no branch to live on.
+tags: []                # no arm/vae-ceiling/... tag was ever created
+conclusions:
+  - >
+    The precomputed AbstractPhil/ffhq_flux_latents_repaired set is 512², not 1024²
+    (latent shape (16,64,64), verified externally against the HF datasets-server on
+    2026-09-19). It cannot support a 1024² latent-first model -- do not use it.
+  - >
+    FLUX AE at its best scale reconstructs a recognizable but non-photoreal face:
+    luminance 0.437 -> 0.855 and contrast 0.239 -> 0.154 (measured on the 4 saved
+    sample indices). LPIPS 0.242 is the best of any configuration tested; SDXL VAE
+    reaches 0.346 and is also non-photoreal.
+  - >
+    The VAE ceiling is real and material: the pixel-space post-training phase (Part 2)
+    is not optional, and every G0-style gate must compare against decoded-real-latents
+    rather than raw photos.
+ledger_anchor: null     # no entry in docs/EXPERIMENTS_AND_RESULTS.md exists for this arm
+blog_brief: docs/blog/brief-05-vae-ceiling.md
+blog_post: null
+
+# --- run provenance ---
+git_commit: null        # no commit was recorded with the run
+git_dirty: unknown
+training_host: game
+training_gpu: RTX 4090
+training_steps: 0       # inference-only: 16 FFHQ images through 2 AEs, no training
+data_snapshot: "FFHQ raw 1024^2, deterministic indices 0-15"
+agent_model: null
+agent_model_source: "prior agent session (pre-AGENTS.md-governance)"
+run_dirs:
+  - research/results/vae_ceiling     # actual artifact home (not a runs/<ts>/ layout)
+metrics_jsonl: research/results/vae_ceiling/ceiling_metrics.jsonl
+samples_dir: research/results/vae_ceiling/samples
+script: scripts/vae_ceiling_test.py
+
+# --- corrections applied 2026-09-19 (see RESULTS.md for the full note) ---
+corrections:
+  - date: 2026-09-19
+    what: >
+      Summary table 512² row read 0.706/0.599/0.763, which is the scale x1.0 variant,
+      while other rows quoted the best scale (x2.76932). Like-for-like the 512² row is
+      0.520/0.463/0.586. The metrics jsonl was unaffected; only the summary was wrong.
+    cause: >
+      vae_ceiling_test.py summary loop iterates 'flux_s2.7689' / 'flux_full1024_s2.7689'
+      while the stored keys are '..._s2.76932', so the best-scale rows printed nothing and
+      the summary had to be hand-picked from the jsonl.
+    verified_by: recomputed from the unchanged ceiling_metrics.jsonl (16 rows)
+  - date: 2026-09-19
+    what: >
+      "washed out (mean-lum 0.85 vs real 0.47)" cited a real-photo luminance that was
+      never stored (no real_lum key exists in the jsonl). Measured directly from the saved
+      PNGs: real 0.437 vs decode 0.855 (4 indices); jsonl flux_full1024 s=2.76932 lum = 0.871
+      over all 16.
+    cause: real-photo pixel stats were never recorded by the script
+    verified_by: direct measurement of research/results/vae_ceiling/samples/*_real.png
+
+# --- queued work (next GPU window) ---
+queued_rerun:
+  why: >
+    Make this result reproducible from the record, and give the arm the links it never had.
+  steps:
+    - "fix scripts/vae_ceiling_test.py summary loop: 'flux_s2.7689' -> 'flux_s2.76932' and
+       'flux_full1024_s2.7689' -> 'flux_full1024_s2.76932'"
+    - "store real-photo lum/contrast per row in the jsonl (real_lum, real_contrast)"
+    - "re-run: python scripts/vae_ceiling_test.py --n 16   (~6 min, 16 images, batch 1)"
+    - "confirm the corrected table reproduces from the regenerated jsonl"
+    - "write the ledger entry (docs/EXPERIMENTS_AND_RESULTS.md), create the arm tag, and
+       decide this arm's branch home (none exists; brief-05 depends on it)"
+  gpu: "4090 - single 6-minute run, batch 1, ~23.6GB free verified previously"
+  blocked_by: "4090 held by turbo-carnival ComfyUI job; latent-first-pretrain resume also queued"
+
+verdict: pending
+verdict_date: null
+verdict_note: >
+  Findings are conclusive enough to have changed the plan (they did: 1024² self-encoding +
+  first-class Part 2), but the arm is not formally concluded because the record is
+  incomplete and the re-run is outstanding.
+superseded_by: null
+supersedes: null
