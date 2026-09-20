@@ -33,12 +33,14 @@ diff_summary: |
   - produced the 1024²-encode decision and the first-class Part 2 (pixel) phase
 
 # --- link fields ---
-branch: null            # no experiment branch was ever created for this arm
+branch: exp/vae-ceiling
 branch_note: >
-  Recorded as absent rather than renamed into existence (AGENTS.md §0.4: never rename
-  history to fit a convention). This is also why docs/blog/brief-05-vae-ceiling.md has
-  no branch to live on.
-tags: []                # no arm/vae-ceiling/... tag was ever created
+  Created retroactively on 2026-09-19 as the brief's home. The arm itself ran on
+  2026-09-10 with no branch of its own, and AGENTS.md §0.7.9 requires the brief to live
+  on its experiment's branch — brief-05 had nowhere to go. Seeded from main, so it
+  carries this record and the governance. This is a NEW branch, not a rename of history
+  (§0.4).
+tags: [arm/vae-ceiling/registered]   # created 2026-09-19 on exp/vae-ceiling
 conclusions:
   - >
     The precomputed AbstractPhil/ffhq_flux_latents_repaired set is 512², not 1024²
