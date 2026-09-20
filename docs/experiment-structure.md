@@ -53,7 +53,17 @@ experiments/
       validation/step{NNNNNN}/     # in-training validation
       config.yaml                  # the immutable copy the trainer wrote — fine here, it is hard
       nohup.log
-    validation/step{NNNNNN}/       # post-hoc standardized re-validation
+    validation/                   # post-hoc standardized re-validation
+      {YYYY-MM-DD_HHMM}/          # scoped to run timestamp
+        step{NNNNNN}/
+          results.json
+          reconstruction/
+          text_only/
+          evaluation_results.json  # CLIP + aesthetic + DWPose metrics (per checkpoint)
+          collage.png              # generated sample grid for this checkpoint
+    metric_trajectory.csv          # aggregated quality-metric trajectory across checkpoints
+    metric_graphs.png              # trajectory plots (aesthetic, CLIP, face confidence)
+    progression_timeline.png       # checkpoint collage timeline
     visual_debug/  figures/  notes/  quality_metrics/
 ```
 
