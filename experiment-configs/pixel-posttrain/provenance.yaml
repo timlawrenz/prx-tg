@@ -60,6 +60,17 @@ warm_start:
   from_step: 10000
   transferred: 182
   reinitialised: 6
+  # VERIFIED END-TO-END, not just unit-tested: a 60-step smoke run on 2026-09-20
+  # drove --init-from through the real trainer (fp8 + torch.compile on the pixel
+  # model, the warm load, the EMA re-seed) and logged exactly these counts, with
+  # warm_start.json written into its run dir. All hooks fired in-window and no NaN.
+  # The smoke arm dir was deleted once green (project practice: smoke data is not
+  # evidence) — THIS ARM is the durable record of that validation.
+  smoke_validated:
+    date: 2026-09-20
+    steps: 60
+    git_commit: d90f23cc1f
+    result: "182 transferred / 6 re-init / 0 missing; EMA 188 buffers re-seeded; all hooks in-window; no NaN; checkpoint_final.pt written"
   reinitialised_tensors:
     - x_embedder.proj.weight
     - x_embedder.proj.bias
