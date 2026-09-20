@@ -1,0 +1,74 @@
+arm: latent-first-pretrain
+arm_letter: LFP
+aliases: [latent-first, latent-pretrain]
+mode: exploratory            # Set 2026-09-20, RETROACTIVELY. The arm launched 2026-09-13,
+                             # before AGENTS.md §0.2 existed, so NO gate was frozen before
+                             # the first run; per §0.7 rule 3 a non-pre-registered result is
+                             # exploratory permanently. Confirm or overrule with Tim — do not
+                             # quietly upgrade this to confirmatory.
+hypothesis: >-
+  Scheme B Phase 1: learning semantics in FLUX-AE latent space (16ch, 8x; 1024px ->
+  128x128 latent, patch_size 2 keeping the 64x64 token grid of the pixel ps16
+  champion) reaches comparable structural/semantic fidelity FASTER than
+  pixel-from-scratch, so the remaining photorealism work can move to a cheaper
+  Phase-2 pixel post-train.
+falsified_if: >-
+  Latent-space pretraining fails to reach comparable or better structural fidelity
+  than the pixel-space champion at an equal step budget, or decoded latents show no
+  semantic gain over pixel-from-scratch (no reduction in the fidelity work left for
+  Phase 2).
+pre_registered_gate: >-
+  RETRO-DECLARED, NOT A REAL PRE-REGISTRATION — no numeric gate was frozen before the
+  first run (the arm predates AGENTS.md §0.2). The only contemporaneous a-priori
+  statement is the config header written 2026-09-13 21:59, before the 22:25 run start:
+  "semantic/structural fidelity faster than pixel-from-scratch; measured by G0 gates +
+  blind review on decoded latents." Any verdict from this arm is exploratory.
+differs_from: faces70k-fp8
+diff_summary: |
+  - in_channels 3 -> 16 (FLUX-AE latent, 8x downsample)
+  - patch_size 16 -> 2 (keeps the same 64x64 token grid at 1024px)
+  - prediction_type: x_prediction on the clean LATENT x0 (target = clean latent)
+  - data source: flux_latent.npy (16,128,128) instead of pixel.npy
+  - latent_space: true (samplers decode through the FLUX AE)
+  - sampling.num_steps 50 -> 24 (smaller latent space)
+  - unchanged: 768x18 body, Muon lr 3e-4 -> min_lr 1e-6, REPA 0.5 (decay 4000->8000),
+    TREAD self-guidance 3.0, fp8, effective batch 256 (4 x 64), same 70k FFHQ stratum
+
+# --- the four link fields (prx-tg addition) ---
+branch: feat/latent-first-pretrain
+tags: [arm/latent-first-pretrain/registered]
+conclusions: []              # filled at the verdict; see ledger_anchor
+ledger_anchor: null          # no ledger entry yet — arm is still `active`
+blog_brief: null
+blog_post: null
+
+# --- run provenance ---
+git_commit: 0209a2634473319b34e4f1c9749e8c175b0d41a1   # run start 2026-09-13
+git_dirty: false             # at run start; the FINAL resume segment recorded
+                             # 086d9c066888aed1b22d5cbefba0b8f645bff09a with dirty=True,
+                             # so the tail of the run is not bit-reproducible from git.
+training_host: game
+training_gpu: RTX 4090
+training_steps: 10000
+data_snapshot: "FFHQ stratum 70k, flux_latent.npy (16x128x128 fp16)"
+agent_model: null
+agent_model_snapshot: null
+run_dirs:
+  - experiments/latent-first-pretrain/runs/2026-09-13_2225
+superseded_by: null
+supersedes: null
+verdict: active
+
+# --- open gaps (why this arm is NOT concluded) ---
+open_gaps:
+  - "validation/step0010000/results.json MISSING: the 1k-segment stop at the final
+     boundary SIGTERM'd the trainer mid end-of-run validation, and checkpoint_final.pt
+     was never written (see validation/NOTE.md)."
+  - "A standalone re-run CANNOT recover it: recon/text-only sample from the global RNG
+     state (manual_seed exists only in run_divergence_test, which this arm skips via
+     self_guidance). A driver re-run produced recon LPIPS 0.8018 @10000 and 0.8060 @9500
+     (in-train 0.5235) - it fails its own control. Quarantined at
+     validation/_INVALID_step0010000_driver-mismatch/. Do NOT read 0.8018 as a regression."
+  - "Per-step recon/text-only LPIPS is not seed-controlled, so the post-8000 upward drift
+     is partly RNG drift, not purely model change."
+  - "No ledger entry and no arm/{slug}/concluded-* tag yet."
