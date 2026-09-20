@@ -46,6 +46,31 @@ def strip_orig_mod(state_dict: dict) -> dict:
     }
 
 
+def remap_legacy_adapter_keys(state_dict: dict, model_keys) -> tuple[dict, list]:
+    """Re-namespace pre-`adapter`-wrapper checkpoints so they can load.
+
+    Checkpoints written before the adapter was wrapped in its own submodule
+    (e.g. Arm J, 2026-06) store adapter tensors BARE — `dino_proj.weight` — while
+    the current model expects `adapter.dino_proj.weight`. A strict load therefore
+    raises on those checkpoints, and a lenient load would silently drop 15
+    tensors (including the learned null_* embeddings), producing a meaningless
+    evaluation. This renames ONLY where the prefixed form is what the model
+    expects and the bare form is not — so it can never alias two real tensors.
+
+    Returns (new_state_dict, remapped_names).
+    """
+    out, remapped = {}, []
+    for k, v in state_dict.items():
+        if k in model_keys:
+            out[k] = v
+        elif f"adapter.{k}" in model_keys:
+            out[f"adapter.{k}"] = v
+            remapped.append(k)
+        else:
+            out[k] = v  # left for the caller to report
+    return out, remapped
+
+
 def build_model(config: dict, device: torch.device) -> NanoDiT:
     """Build NanoDiT from config dict, matching run_checkpoint_validation.py."""
     mc = config.get("model", {})
@@ -94,7 +119,28 @@ def load_model(checkpoint_path: str, config: dict, device: torch.device) -> Nano
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
     model = build_model(config, device)
-    model.load_state_dict(strip_orig_mod(ckpt["model"]))
+    model_keys = set(model.state_dict().keys())
+
+    sd = strip_orig_mod(ckpt["model"])
+    sd, remapped = remap_legacy_adapter_keys(sd, model_keys)
+    if remapped:
+        print(f"  Re-namespaced {len(remapped)} legacy adapter tensor(s) "
+              f"(pre-`adapter` checkpoint), e.g. {remapped[0]} -> adapter.{remapped[0]}")
+
+    # strict=False so we can report precisely, then fail LOUDLY if anything is
+    # missing: a partially-loaded model still runs and still produces numbers,
+    # and those numbers would be meaningless.
+    missing, unexpected = model.load_state_dict(sd, strict=False)
+    if missing:
+        raise RuntimeError(
+            f"{len(missing)} tensor(s) missing from {checkpoint_path}: "
+            f"{sorted(missing)[:8]}"
+            + (" ..." if len(missing) > 8 else "")
+            + " — refusing to evaluate a partially-loaded model."
+        )
+    if unexpected:
+        print(f"  Note: {len(unexpected)} checkpoint tensor(s) unused by the model "
+              f"(e.g. {sorted(unexpected)[:4]})")
 
     # Apply EMA weights manually (avoids importing EMAModel)
     ema_sd = strip_orig_mod(ckpt["ema"])
