@@ -36,19 +36,20 @@ phase (Part 2) is first-class rather than optional**.
 ## Record status — read this before trusting the fields
 
 This arm predates the AGENTS.md §0 contract (it was run 2026-09-10), so several required
-links were never created. They are recorded here as **absent facts**, not filled in
-retroactively:
+links were never created. Where a link is still missing it is recorded as an **absent
+fact**, not filled in retroactively; the two added on 2026-09-19 are marked as such:
 
 | Field | State |
 |---|---|
-| `branch` | **none ever existed** — no experiment branch was created for this arm |
-| `tags` | **none** — no `arm/vae-ceiling/...` tag was ever made |
+| `branch` | `exp/vae-ceiling` — created 2026-09-19 (seeded from main) as the home for brief 05; the arm itself ran with none |
+| `tags` | `arm/vae-ceiling/registered` — created 2026-09-19 on `exp/vae-ceiling` |
 | `ledger_anchor` | **none** — this arm has no entry in `docs/EXPERIMENTS_AND_RESULTS.md` |
 | `pre_registered_gate` | **never pre-registered** — the numbers came first |
 | `mode` | **undeclared** — no confirmatory/exploratory mode was set before the run |
 | `git_commit` | **unknown** — no commit was recorded with the run |
 | metrics | real, computed by `scripts/vae_ceiling_test.py`; two summary figures were mislabeled and corrected 2026-09-19 |
 
-`python scripts/check_arm_records.py` reports this arm as incomplete, and it is correct to
-do so: the chain does not close. Fixing it is queued (see `queued_rerun` in
-`provenance.yaml`).
+`python scripts/check_arm_records.py` now passes for this arm: the branch resolves and the
+tag exists. What remains open is the `queued_rerun` work in `provenance.yaml` — the script
+fix, the real-photo `lum`/`contrast` capture, the re-run, and the ledger entry that would
+move the verdict off `pending`.
