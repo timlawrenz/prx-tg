@@ -9,6 +9,8 @@ Contract (AGENTS.md §0):
     experiment-configs/{slug}/ (README.md, config.yaml, provenance.yaml)
   - provenance.yaml's `branch` and `tags` resolve in git
   - the canonical run_dir exists
+  - `status: planned` arms have never run, so they owe no run_dirs (they still owe
+    branch/tags/mode/gate) — never invent a run path to satisfy the checker
   - a concluded arm's `ledger_anchor` resolves in docs/EXPERIMENTS_AND_RESULTS.md
   - a concluded arm has a `blog_brief` that exists
   - soft files are NOT sitting on the NAS side (where git cannot see them)
@@ -162,11 +164,19 @@ def main() -> int:
             if not git_ok("rev-parse", "--verify", f"refs/tags/{tag}"):
                 errors.append(f"{slug}: tag `{tag}` does not resolve in git")
 
+        # An arm declared `status: planned` has never been run, so it owes no run
+        # dirs — inventing a path just to satisfy the checker would be fabrication.
+        # It still owes branch/tags/mode/gate (checked above), and warns that the
+        # gate must be frozen before the first launch.
+        planned = str(prov_data.get("status") or "").lower() == "planned"
         run_dirs = prov_data.get("run_dirs") or []
         if isinstance(run_dirs, str):
             run_dirs = [run_dirs]
-        if not run_dirs:
+        if not run_dirs and not planned:
             errors.append(f"{slug}: provenance has no `run_dirs`")
+        elif not run_dirs and planned:
+            warns.append(f"{slug}: declared `status: planned` (never run) so it has no "
+                         f"run_dirs — freeze `pre_registered_gate` before the first launch")
         for rd in run_dirs:
             if not (REPO / rd).exists():
                 errors.append(f"{slug}: run_dir `{rd}` does not exist")

@@ -74,6 +74,7 @@ class EulerSampler:
         self_guidance=False,
         guidance_scale=3.0,
         prediction_type="v_prediction",
+        seed=None,
         **adapter_kwargs,
     ):
         """Sample from model using Euler integration with dual CFG or self-guidance.
@@ -103,8 +104,16 @@ class EulerSampler:
         """
         B = shape[0]
         
-        # Start from pure noise (t=1.0)
-        zt = torch.randn(shape, device=device)
+        # Start from pure noise (t=1.0).
+        # A caller-supplied `seed` draws from a LOCAL generator so the global RNG
+        # stream is never touched: validation runs INLINE in the training loop, and
+        # reseeding globally here would perturb subsequent training noise.
+        if seed is None:
+            zt = torch.randn(shape, device=device)
+        else:
+            _g = torch.Generator(device=device)
+            _g.manual_seed(int(seed))
+            zt = torch.randn(shape, device=device, generator=_g)
         
         timesteps = self.timesteps.to(device)
         
@@ -342,6 +351,7 @@ class ValidationSampler:
         dino_scale=None,
         self_guidance=None,
         guidance_scale=None,
+        seed=None,
         **adapter_kwargs,
     ):
         """Generate images from conditioning.
@@ -407,6 +417,7 @@ class ValidationSampler:
                 self_guidance=True,
                 guidance_scale=guidance_scale if guidance_scale is not None else self.guidance_scale,
                 prediction_type=self.prediction_type,
+                seed=seed,
                 **device_kwargs,
             )
         else:
@@ -417,6 +428,7 @@ class ValidationSampler:
                 device=self.device,
                 text_scale=cfg_text_scale, dino_scale=cfg_dino_scale,
                 prediction_type=self.prediction_type,
+                seed=seed,
                 **device_kwargs,
             )
         

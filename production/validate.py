@@ -14,6 +14,13 @@ from .sample import ValidationSampler, load_vae_decoder, save_images
 
 # Fixed test sample indices for consistency across validation runs
 # These will be selected from the validation dataset
+# Deterministic validation noise. Step-INDEPENDENT on purpose: a given sample index
+# draws the SAME starting noise at every checkpoint, so LPIPS is comparable across
+# steps instead of mixing model change with RNG drift. Without this, every test below
+# samples from the global RNG stream (see EulerSampler.sample) and the per-step
+# numbers are not like-for-like.
+VALIDATION_NOISE_SEED_BASE = 1_000_003
+
 RECONSTRUCTION_TEST_INDICES = list(range(0, 100, 4))  # 25 samples evenly spaced
 
 DINO_SWAP_TEST_PAIRS = [
@@ -353,6 +360,7 @@ class ValidationRunner:
             # Generate images at current training resolution
             gen_images = sampler.generate(
                 latent_size=latent_size,
+                seed=VALIDATION_NOISE_SEED_BASE + i,
                 text_scale=self.text_scale/2.0,
                 dino_scale=self.dino_scale/2.0,
                 **cond_kwargs,
@@ -446,6 +454,7 @@ class ValidationRunner:
             # 1. Reference: A's conditioning
             gen_a_ref = sampler.generate(
                 latent_size=latent_size,
+                seed=VALIDATION_NOISE_SEED_BASE + 1000 + pair_idx,
                 text_scale=self.text_scale/2.0,
                 dino_scale=self.dino_scale/2.0,
                 **kwargs_a,
@@ -457,6 +466,7 @@ class ValidationRunner:
             kwargs_swap['dino_patches'] = kwargs_b['dino_patches']
             gen_a_swap = sampler.generate(
                 latent_size=latent_size,
+                seed=VALIDATION_NOISE_SEED_BASE + 1000 + pair_idx,
                 text_scale=self.text_scale/2.0,
                 dino_scale=self.dino_scale/2.0,
                 **kwargs_swap,
@@ -465,6 +475,7 @@ class ValidationRunner:
             # 3. Reference: B's conditioning
             gen_b_ref = sampler.generate(
                 latent_size=latent_size,
+                seed=VALIDATION_NOISE_SEED_BASE + 1000 + pair_idx,
                 text_scale=self.text_scale/2.0,
                 dino_scale=self.dino_scale/2.0,
                 **kwargs_b,
@@ -656,6 +667,7 @@ class ValidationRunner:
             # Force dual-CFG path even in self-guidance mode
             gen_images = sampler.generate(
                 latent_size=latent_size,
+                seed=VALIDATION_NOISE_SEED_BASE + 2000 + i,
                 self_guidance=False,
                 dino_scale=0.0,  # Zero DINO influence
                 text_scale=3.0,  # Normal text guidance
@@ -828,6 +840,7 @@ class ValidationRunner:
             # Generate with original caption
             gen_orig = sampler.generate(
                 latent_size=latent_size,
+                seed=VALIDATION_NOISE_SEED_BASE + 3000 + idx,
                 text_scale=self.text_scale/2.0,
                 dino_scale=self.dino_scale/2.0,
                 **kwargs_orig,
@@ -844,6 +857,7 @@ class ValidationRunner:
             # Generate with modified caption
             gen_mod = sampler.generate(
                 latent_size=latent_size,
+                seed=VALIDATION_NOISE_SEED_BASE + 3000 + idx,
                 text_scale=self.text_scale/2.0,
                 dino_scale=self.dino_scale/2.0,
                 **kwargs_mod,

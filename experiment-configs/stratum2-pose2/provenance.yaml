@@ -1,7 +1,26 @@
-arm: pose2
+arm: pose2                       # slug directory: experiment-configs/stratum2-pose2/
+arm_letter: P2
+aliases: [stratum2-pose2, pose2-ablation]
+mode: confirmatory               # Set 2026-09-20. This is a genuine PRE-registration,
+                                 # not a retro-fit: the arm has NEVER BEEN RUN (see
+                                 # `status` below), so no result has been peeked and the
+                                 # mode can still honestly be declared before run 1.
 hypothesis: >
   308-keypoint Sapiens 2 pose (pose2.npy, 274 face landmarks vs 68 in DWPose)
   improves face generation quality over the 133-keypoint DWPose baseline on FFHQ.
+falsified_if: >
+  The 308kp pose arm does NOT beat the 133kp DWPose baseline on the stated evaluation
+  (Aesthetic score + CLIP Score + DWPose confidence trajectories) at an equal step
+  budget — i.e. face-generation quality is equal or worse, so the extra 274 face
+  landmarks buy nothing.
+pre_registered_gate: >
+  NOT YET FROZEN — deliberately. No numeric gate was frozen when this config was
+  committed (2026-08-01) and the arm has never been run (no NAS arm dir, no run dir,
+  no ledger entry), so nothing has been peeked and a real gate can still be
+  pre-registered before the first launch. A numeric gate MUST be written here
+  (metric + threshold, plus "no regression on the baseline's own metrics") and
+  committed BEFORE the first training step, per AGENTS.md §0.7 rule 2. Until then
+  this arm is a PLAN, not a concluded experiment.
 differs_from: production baseline (config.yaml)
 diff_summary: |
   Single variable changed:
@@ -13,16 +32,43 @@ diff_summary: |
   - geometry_3d: disabled
   - matting_edge: disabled
   - All hyperparameters unchanged
+
+# --- prx-tg link fields (AGENTS.md §0.3) ---
+status: planned                  # NEVER RUN. Declared so the record is not mistaken for
+                                 # a completed arm; check_arm_records.py skips the
+                                 # `run_dirs` requirement for this status.
+branch: exp/stratum2-integration # the arm's real branch — carries 10dd28c (stratum2
+                                 # integration), 468e82c ("exp: pose2-only ablation")
+tags: [arm/stratum2-pose2/registered]
+conclusions: []                  # nothing to conclude: no run has produced data
+ledger_anchor: null              # no ledger entry exists for this arm
+blog_brief: null
+blog_post: null
+
+# --- run provenance ---
 git_commit: 10dd28c
 git_dirty: false
-training_host: TBD
+training_host: TBD               # TBD because the arm was never launched
 training_gpu: NVIDIA RTX 4090 (24GB VRAM)
-training_steps: 5000
+training_steps: 5000             # PLANNED budget — not a completed run
 data_source: FFHQ 70k Stratum (mixed v1/v2 — pose2 enrichment in progress)
 evaluation: Aesthetic score + CLIP Score + DWPose confidence trajectories
+run_dirs: []                     # EMPTY ON PURPOSE: this arm has produced no runs.
+                                 # Do not invent a path just to satisfy the checker.
+superseded_by: null
+supersedes: null
+verdict: active
 notes: >
   FFHQ pose2 enrichment is actively running on 4090 + Strix Halo. The data
   loader uses v1 fallback (133kp) for images without pose2.npy, so training
   starts immediately. Images with pose2 get 308kp (274 face landmarks);
   images without get 133kp (68 face landmarks). The model's pose_joint_embed
   table has 308 entries — v1 images use the first 133.
+
+  RECORD RECOVERY 2026-09-20: this provenance predated the AGENTS.md §0.3 schema and
+  was missing `mode`, `falsified_if`, `pre_registered_gate`, `branch` and `run_dirs`,
+  which made scripts/check_arm_records.py exit non-zero for the whole repo. The four
+  content fields are now filled honestly (see `mode` — no peek has occurred, so this
+  remains a valid pre-registration). `run_dirs` is intentionally empty because the arm
+  has never run; `status: planned` states that explicitly instead of fabricating a run
+  directory.
