@@ -215,7 +215,20 @@ def create_experiment_dir(config_path, resume_path=None):
     except ValueError:
         # config_path is not under experiments/ — use plain timestamp
         exp_dir = experiments_root / timestamp
-    
+
+    # Explicit run root wins over the config's location. The launcher sets
+    # LF_ARM_DIR, so an arm whose config lives in git (experiment-configs/, per
+    # AGENTS.md 0.7 rule 1) still nests its runs under
+    # experiments/{slug}/runs/{timestamp}/. Without this the config's location
+    # decides and a git config yields a FLAT run dir (experiments/{timestamp}/),
+    # which the 1k-segment machinery cannot see — it globs {ARM_DIR}/runs. The
+    # launcher would then find no checkpoint and, because --init-from applies
+    # whenever there is no resume, re-warm-start the arm from scratch every
+    # block, so it would never advance past the first boundary.
+    _arm_dir = os.environ.get('LF_ARM_DIR')
+    if _arm_dir:
+        exp_dir = Path(_arm_dir).resolve() / 'runs' / timestamp
+
     exp_dir.mkdir(parents=True, exist_ok=True)
     
     # Copy config file
