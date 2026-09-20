@@ -269,15 +269,19 @@ def main():
     # worker processes (identical cmdline), their abrupt death makes the main's
     # blocked queue.get() raise ConnectionResetError, which kills the run before
     # this handler ever gets a bytecode slot (observed 2026-09-13..16: four stops,
-    # zero checkpoints). Stop via /tmp/latent_first_trainer.pid + `kill -TERM <pid>`.
+    # zero checkpoints). Stop via the trainer pid file + `kill -TERM <pid>`.
+    # The path is PER-ARM (LF_TRAINER_PID): with two arms on the same box, a
+    # shared /tmp path would let one arm's heartbeat SIGTERM the other arm's
+    # trainer.
     def _sigterm_handler(signum, frame):
         raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM, _sigterm_handler)
+    _pid_file = os.environ.get('LF_TRAINER_PID', '/tmp/latent_first_trainer.pid')
     try:
-        with open('/tmp/latent_first_trainer.pid', 'w') as f:
+        with open(_pid_file, 'w') as f:
             f.write(str(os.getpid()))
     except OSError as e:
-        print(f"  [warn] could not write trainer pid file: {e}")
+        print(f"  [warn] could not write trainer pid file {_pid_file}: {e}")
 
     # When resuming, auto-load config from the experiment directory
     # unless --config was explicitly specified on the command line
