@@ -1,0 +1,150 @@
+# Sanity config for latent-first-pretrain — 60-step lifecycle check (AGENTS.md)
+# All instrumentation fires within the window per user requirement:
+#   visual_debug at 20/40/60, validation at 30/60, quality metrics, checkpoint at 60.
+# Filename is config.yaml (NOT sanity_config.yaml) so train_production.py
+# nests run dirs under experiments/{slug}/runs/{ts}/ (Pitfall #25).
+# Tests: FLUX-AE latent mode end-to-end — latent dataloader, in_channels=16
+# model, latent decode via production/flux_ae.py, sampler/validation in latent
+# space. Target: latent-first-pretrain arm (commit 1edd4e0).
+#
+# 2026-09-20 role change: this config now ALSO serves as the CONTROL harness for the
+# deterministic validation seeding added that day. Validation fires at 30 AND 60 with
+# a checkpoint at each, giving two in-train/standalone reproduction pairs. See
+# experiment-configs/latent-first-pretrain-sanity/provenance.yaml for the frozen gate.
+model:
+  hidden_size: 768
+  depth: 18
+  num_heads: 12
+  patch_size: 2                 # 128/2 = 64x64 token grid (matches pixel ps16)
+  mlp_ratio: 4.0
+  in_channels: 16               # FLUX-AE latent channels
+  prediction_type: x_prediction
+  input_size: 128               # Latent spatial size (1024px / 8x AE)
+  latent_space: true            # NEW latent discriminator
+  num_pose_joints: 133
+  pose_confidence_threshold: 0.05
+  head_type: linear
+
+training:
+  total_steps: 60
+  warmup_steps: 10
+  batch_size: 4
+  grad_accumulation_steps: 16   # effective 64 — smaller than prod 256 for sanity speed
+  # NOTE: validation.num_samples caps reconstruction; run_text_manip/dino_swap still
+  # run in this sanity config (finite: ~10 min total at the fixed latent grid).
+
+  optimizer:
+    type: "Muon"
+    lr: 3.0e-4
+    min_lr: 1.0e-6
+    betas: [0.9, 0.95]
+    weight_decay: 0.03
+    eps: 1.0e-8
+    muon:
+      momentum: 0.95
+      nesterov: true
+      ns_steps: 5
+      adjust_lr_fn: "match_rms_adamw"
+
+  grad_clip: 1.0
+  ema_decay: 0.9999
+  ema_warmup_steps: 10
+
+  cfg_dropout:
+    p_uncond: 0.1
+    p_text_only: 0.25
+    p_dino_cls_only: 0.05
+    p_dino_patches_only: 0.05
+    p_drop_pose: 0.10
+    p_pose_only: 0.05
+
+  repa:
+    enabled: true
+    weight: 0.5
+    block_index: -1
+    loss_type: "cosine"
+    decay_start_step: 20
+    decay_end_step: 40
+
+  tread:
+    enabled: true
+    routing_probability: 0.5
+    route_start: 1
+    route_end: -1
+    self_guidance: true
+    guidance_scale: 3.0
+
+  timestep_sampling: "logit_normal"
+  logit_normal_loc: 0.0
+  logit_normal_scale: 1.0
+
+  gradient_checkpointing: false
+  mixed_precision: true
+  precision: "fp8"             # FP8 revalidation — bf16 sanity passed; must verify FP8 on 16ch latents
+
+  perceptual:
+    enabled: false
+    lpips_weight: 0.1
+    every_n_microsteps: 4
+    crop_size: 256
+
+  asymflow:
+    enabled: false
+
+  seg_weight:
+    enabled: false
+
+data:
+  source: "stratum"
+  stratum_dir: "$STRATUM_DIR"
+  stratum_max_samples: 70000
+  latent_mode: true
+  buckets:
+    - "bucket_1024x1024"
+    - "bucket_1216x832"
+    - "bucket_1280x768"
+    - "bucket_1344x704"
+    - "bucket_704x1344"
+    - "bucket_768x1280"
+    - "bucket_832x1216"
+  bucket_sampling: "proportional"
+  num_workers: 24
+  prefetch_factor: 8
+  pin_memory: true
+
+sampling:
+  num_steps: 24
+  text_scale: 3.0
+  dino_scale: 2.5
+  self_guidance: true
+  guidance_scale: 3.0
+
+validation:
+  enabled: true
+  interval_steps: 30            # fires at 30 and 60 (in-window)
+  num_samples: 4
+  output_dir: "validation_outputs"
+  run_reconstruction: true
+  run_dino_swap: false          # reduced for sanity speed
+  run_text_manip: false
+  visual_debug_interval: 20     # fires at 20, 40, 60 (in-window)
+  visual_debug_num_samples: 4
+  visual_debug_dir: "visual_debug"
+
+checkpoint:
+  save_every: 30                # fires at 30 and 60 (in-window)
+  keep_last_n: 10
+  output_dir: "checkpoints"
+  save_optimizer: true
+
+logging:
+  log_every: 2
+  log_file: "training.log"
+  monitor_velocity_norm: true
+  monitor_grad_norm: true
+  velocity_norm_warning: 30.0   # latent-space |v| is larger (raw units) — relaxed
+  grad_norm_warning: 10.0
+
+paths:
+  t5_path: "models/t5xxl_fp16.safetensors"
+  vae_path: "/mnt/models/vae/ae.safetensors"
