@@ -52,6 +52,22 @@ def parse_args():
         help='Path to checkpoint to resume from'
     )
     parser.add_argument(
+        '--init-from',
+        type=str,
+        default=None,
+        help='Warm-start from a checkpoint whose I/O projections differ (e.g. a '
+             'latent-space checkpoint into a pixel-space model). Transfers every '
+             'shape-matching tensor, re-initialises the rest, and writes '
+             'warm_start.json. NOT a resume: optimizer state is fresh.'
+    )
+    parser.add_argument(
+        '--init-from-raw',
+        action='store_true',
+        help='With --init-from, warm from ck["model"] (raw final weights) instead '
+             'of the default ck["ema"]["ema_params"] (the weights this project '
+             'samples/releases from).'
+    )
+    parser.add_argument(
         '--device',
         type=str,
         default='cuda',
@@ -512,6 +528,27 @@ def main():
     
     print_gpu_memory(device)
     
+    # Warm start (e.g. latent P1 -> pixel P2). NOT a resume: only shape-matching
+    # tensors transfer, the optimizer starts fresh, and the EMA is re-seeded from
+    # the warm weights (EMAModel clones weights at construction, so without the
+    # re-seed every early validation would sample the random init).
+    if args.init_from:
+        if args.resume:
+            print("\nWARNING: both --init-from and --resume given. The warm start "
+                  "runs first, then --resume OVERWRITES it. Pass only one.")
+        from .warm_start import warm_start_from, reseed_ema
+        import json as _json
+
+        source = 'model' if args.init_from_raw else 'ema'
+        report = warm_start_from(trainer.model, args.init_from, source=source)
+        n_reseeded = reseed_ema(trainer.ema, trainer.model)
+        print(f"Re-seeded EMA from the warm weights ({n_reseeded} buffers); "
+              f"ema.step reset to 0.")
+
+        report_path = Path(config.checkpoint.output_dir).parent / 'warm_start.json'
+        report_path.write_text(_json.dumps(report, indent=2))
+        print(f"Warm-start report written to {report_path}")
+
     # Resume if checkpoint provided
     if args.resume:
         print(f"\nResuming from checkpoint: {args.resume}")

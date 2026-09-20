@@ -1,0 +1,82 @@
+arm: pixel-posttrain
+arm_letter: PP            # "P2" is already taken by geo-adapter-bugfix-restart,
+                          # so this arm uses PP (pixel post-train) to avoid collision.
+aliases: [pixel-posttrain-p1-warmstart]
+status: planned           # no run yet; the checker exempts planned arms from run_dirs
+mode: confirmatory        # gate frozen 2026-09-20 BEFORE the first run
+
+hypothesis: >
+  Warm-starting pixel-space training from the P1 latent-pretrain body (182 of 188
+  tensors) beats the from-scratch pixel champion (Arm J, faces70k-fp8) at the same
+  10,000-step budget, because P1 already supplies semantic structure and leaves P2
+  only the texture/photorealism work.
+
+falsified_if: >
+  At 10,000 steps P2 does not beat Arm J's matched step-10,000 values on the
+  decoded-image metrics (recon LPIPS <= 0.8264, text_only <= 0.9375, text_manip
+  <= 0.3443), or its G0 gates sit no closer to the frozen real-FFHQ band than
+  Arm J's. That would mean the latent pretrain bought nothing for photorealism.
+
+pre_registered_gate: >
+  PASS if at step 10000 ALL of: (1) recon LPIPS <= 0.8264 AND text_only <= 0.9375
+  AND text_manip <= 0.3443 (strictly better than Arm J at the same step);
+  (2) aesthetic >= 4.8183 AND CLIP >= 0.2193 AND face_conf >= 0.8585;
+  (3) >= 4 of the 6 G0 gates in-band vs the frozen real-FFHQ band
+  (research/avenues/gates_calibration.json); (4) no collapse: clean loss/grad and
+  no NaN through the first 1000 steps, non-degenerate visuals.
+
+differs_from: faces70k-fp8
+diff_summary: |
+  SCIENTIFIC (exactly one variable):
+  - warm start from the P1 step-10000 checkpoint via --init-from
+    (production/warm_start.py): 182/188 tensors transferred; the I/O projection
+    modules x_embedder / final_proj / output_conv re-initialised; optimizer FRESH;
+    EMA re-seeded from the warm weights.
+  INSTRUMENTATION / BUDGET (not scientific variables):
+  - total_steps 40000 -> 10000 (user budget decision)
+  - checkpoint.save_every 2500 -> 500 (a clean checkpoint must land exactly ON
+    each 1k segment boundary for the 1k-segment GPU policy)
+  - validation.visual_debug_interval 0 -> 1000 (visuals to review at boundaries)
+  - validation.interval_steps / num_samples kept VERBATIM (500 / 25) so the
+    step-10000 validation is like-for-like with Arm J's
+  - repa.decay_start_step / decay_end_step kept VERBATIM (8000 / 16000) so the
+    step-10000 comparison is one-variable; consequence: REPA weight is still 0.375
+    at the gate step and never fully sheds inside this budget (P1 used 4000->8000).
+
+# --- link fields ---
+branch: arm/pixel-posttrain
+tags: [arm/pixel-posttrain/registered]
+conclusions: []           # pending the verdict; numbered 1..N after the gate
+ledger_anchor: null       # no ledger entry until the verdict
+blog_brief: null
+blog_post: null
+
+# --- warm start (the scientific variable) ---
+warm_start:
+  from: experiments/latent-first-pretrain/runs/2026-09-13_2225/checkpoints/checkpoint_step0010000.pt
+  sha256: 6bd10df2db93b7945b1b1fa0b8982ea9fb87811895eff7d5e38f598a6b89b955
+  bytes: 2863122225
+  source: "ck['ema']['ema_params']"
+  from_step: 10000
+  transferred: 182
+  reinitialised: 6
+  reinitialised_tensors:
+    - x_embedder.proj.weight
+    - x_embedder.proj.bias
+    - final_proj.weight
+    - final_proj.bias
+    - output_conv.weight
+    - output_conv.bias
+
+# --- run provenance ---
+git_commit: bcc8d829cac8dd0ba02a558e9b685be96728655d
+git_dirty: false
+training_host: game
+training_gpu: RTX 4090
+training_steps: 10000
+data_snapshot: "FFHQ stratum 70k portraits"
+agent_model: null
+agent_model_snapshot: null
+run_dirs: []              # populated on launch; canonical run FIRST
+superseded_by: null
+supersedes: null
