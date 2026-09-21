@@ -113,8 +113,15 @@ def build_model(config: dict, device: torch.device) -> NanoDiT:
     return model
 
 
-def load_model(checkpoint_path: str, config: dict, device: torch.device) -> NanoDiT:
-    """Load prx-tg checkpoint and return model with EMA weights applied."""
+def load_model(checkpoint_path: str, config: dict, device: torch.device,
+               weights: str = "raw") -> NanoDiT:
+    """Load a prx-tg checkpoint and build the model.
+
+    weights="raw"  -> live weights (PROJECT DEFAULT: every recorded evaluation,
+                      including the gate anchors, uses these)
+    weights="ema"  -> the EMA copy, which the checkpoint nests one level down
+                      under "ema_params"
+    """
     print(f"Loading checkpoint: {checkpoint_path}")
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
@@ -142,12 +149,41 @@ def load_model(checkpoint_path: str, config: dict, device: torch.device) -> Nano
         print(f"  Note: {len(unexpected)} checkpoint tensor(s) unused by the model "
               f"(e.g. {sorted(unexpected)[:4]})")
 
-    # Apply EMA weights manually (avoids importing EMAModel)
-    ema_sd = strip_orig_mod(ckpt["ema"])
-    model_sd = model.state_dict()
-    for key in ema_sd:
-        if key in model_sd:
-            model_sd[key].copy_(ema_sd[key])
+    if weights == "ema":
+        # ckpt["ema"] is {"ema_params": {...}, "step": N}: the tensors live one
+        # level DOWN. Iterating the container dict matches no model keys at all,
+        # which silently yields RAW weights while the caller believes it got EMA.
+        # Hence the explicit extraction and the refusal below.
+        container = ckpt.get("ema")
+        if container is None:
+            raise RuntimeError(
+                f"{checkpoint_path} has no 'ema' entry — cannot sample EMA weights."
+            )
+        if isinstance(container, dict) and "ema_params" in container:
+            ema_sd = strip_orig_mod(container["ema_params"])
+            ema_step = container.get("step")
+        else:
+            ema_sd = strip_orig_mod(container)
+            ema_step = None
+        ema_sd, remapped_ema = remap_legacy_adapter_keys(ema_sd, model_keys)
+        if remapped_ema:
+            print(f"  Re-namespaced {len(remapped_ema)} legacy EMA tensor(s)")
+        model_sd = model.state_dict()
+        applied = 0
+        for key in ema_sd:
+            if key in model_sd and model_sd[key].shape == ema_sd[key].shape:
+                model_sd[key].copy_(ema_sd[key])
+                applied += 1
+        expected = sum(1 for k in model_sd if k in ema_sd)
+        if applied == 0 or applied != expected:
+            raise RuntimeError(
+                f"EMA load incomplete: applied {applied} of {expected} matching "
+                f"tensors from {checkpoint_path} — refusing to sample a "
+                f"half-EMA model."
+            )
+        print(f"  Weights: EMA  ({applied} tensors applied, ema.step={ema_step})")
+    else:
+        print("  Weights: RAW  (project default — all recorded evaluations use raw)")
 
     print(f"  Step: {ckpt.get('step', '?')}  |  "
           f"Params: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
@@ -251,26 +287,34 @@ def sample(
         drop_all = torch.ones(B, dtype=torch.bool, device=device)
         keep_all = torch.zeros(B, dtype=torch.bool, device=device)
 
+        # Conditioning travels through NanoDiT's **adapter_kwargs, NOT positionally.
+        # The old positional form filled return_repa_hidden/tread_enabled and then
+        # collided with the explicit tread_enabled= -> TypeError. Kwarg names and
+        # the CFG-drop names follow production/sample.py + StratumAdapter.forward
+        # (cfg_drop_dino, not the old cfg_drop_dino_cls).
+        cond = dict(dino_emb=dino_emb, text_emb=text_emb,
+                    dino_patches=dino_patches, text_mask=text_mask)
+
         # 1. Unconditional
         v_uncond = model(
-            zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
-            cfg_drop_text=drop_all, cfg_drop_dino_cls=drop_all, cfg_drop_dino_patches=drop_all,
-            tread_enabled=False,
+            zt, t_batch, tread_enabled=False,
+            **cond, cfg_drop_text=drop_all, cfg_drop_dino=drop_all,
+            cfg_drop_dino_patches=drop_all,
         )
 
         # 2. Text-only
         v_text = model(
-            zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
-            cfg_drop_text=keep_all, cfg_drop_dino_cls=drop_all, cfg_drop_dino_patches=drop_all,
-            tread_enabled=False,
+            zt, t_batch, tread_enabled=False,
+            **cond, cfg_drop_text=keep_all, cfg_drop_dino=drop_all,
+            cfg_drop_dino_patches=drop_all,
         )
 
         # 3. DINO-only (skipped if dino_scale=0, but still computed for correct
         #    null-conditioning path — the model sees null DINO + dropped text)
         v_dino = model(
-            zt, t_batch, dino_emb, text_emb, dino_patches, text_mask,
-            cfg_drop_text=drop_all, cfg_drop_dino_cls=keep_all, cfg_drop_dino_patches=keep_all,
-            tread_enabled=False,
+            zt, t_batch, tread_enabled=False,
+            **cond, cfg_drop_text=drop_all, cfg_drop_dino=keep_all,
+            cfg_drop_dino_patches=keep_all,
         )
 
         v_pred = v_uncond + text_scale * (v_text - v_uncond) + dino_scale * (v_dino - v_uncond)
@@ -342,6 +386,9 @@ Examples:
                         help="DINO CFG scale (default: from config, or 0.0 = text-only)")
     parser.add_argument("--seed", type=int, default=None,
                         help="Random seed (default: random)")
+    parser.add_argument("--weights", choices=["raw", "ema"], default="raw",
+                        help="Which weight copy to sample from: 'raw' (default; every "
+                             "recorded evaluation uses raw) or 'ema'.")
     parser.add_argument("--width", type=int, default=1024,
                         help="Output width in pixels (default: 1024)")
     parser.add_argument("--height", type=int, default=1024,
@@ -388,7 +435,7 @@ Examples:
     torch.manual_seed(seed)
 
     # ── Load model ──────────────────────────────────────────────────────
-    model = load_model(args.checkpoint, config, device)
+    model = load_model(args.checkpoint, config, device, weights=args.weights)
 
     # ── Encode text ─────────────────────────────────────────────────────
     t5 = T5Encoder(device)

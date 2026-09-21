@@ -96,7 +96,7 @@ def load_aesthetic_predictor(device):
 # -----------------------------------------------------------------------------
 # Main Evaluator Logic
 # -----------------------------------------------------------------------------
-def run_evaluation(checkpoint_path, config_path, output_dir, device='cuda', clip_model=None, clip_preprocess=None, clip_tokenizer=None, aesthetic_model=None, dwpose=None, t5=None, adapter_name="stratum"):
+def run_evaluation(checkpoint_path, config_path, output_dir, device='cuda', clip_model=None, clip_preprocess=None, clip_tokenizer=None, aesthetic_model=None, dwpose=None, t5=None, adapter_name="stratum", weights="raw"):
     print(f"--- PRX-TG Checkpoint Evaluator ---")
     print(f"Checkpoint: {checkpoint_path}")
     print(f"Output Dir: {output_dir}\n")
@@ -123,7 +123,7 @@ def run_evaluation(checkpoint_path, config_path, output_dir, device='cuda', clip
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
         
-    model = load_model(checkpoint_path, config, torch.device(device))
+    model = load_model(checkpoint_path, config, torch.device(device), weights=weights)
     model.eval()
     
     if t5 is None:
@@ -272,6 +272,10 @@ if __name__ == "__main__":
     parser.add_argument("-c", "--checkpoint", required=True, help="Path to checkpoint.pt")
     parser.add_argument("--config", help="Optional path to config.yaml", default=None)
     parser.add_argument("-o", "--output_dir", required=True, help="Output directory")
+    parser.add_argument("--weights", choices=["raw", "ema"], default="raw",
+                        help="Which weight copy to evaluate: 'raw' (default; every "
+                             "recorded number, including the gate anchors, is raw) "
+                             "or 'ema'.")
     args = parser.parse_args()
 
     # If config not provided, assume it's in the checkpoint's parent parent directory
@@ -280,4 +284,4 @@ if __name__ == "__main__":
         cp = Path(args.checkpoint).resolve()
         config_path = str(cp.parent.parent / "config.yaml")
 
-    run_evaluation(args.checkpoint, config_path, args.output_dir)
+    run_evaluation(args.checkpoint, config_path, args.output_dir, weights=args.weights)
