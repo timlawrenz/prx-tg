@@ -88,8 +88,33 @@ def main():
     def _strip_orig_mod(sd):
         return {k[len("_orig_mod."):] if k.startswith("_orig_mod.") else k: v
                 for k, v in sd.items()}
-    model.load_state_dict(_strip_orig_mod(ckpt['model']), strict=True)
-    ema.load_state_dict(_strip_orig_mod(ckpt['ema']))
+
+    # Pre-`adapter`-wrapper checkpoints (e.g. Arm J faces70k-fp8, June) store the
+    # conditioning projections as top-level keys (dino_proj.weight) while the
+    # current NanoDiT nests them under adapter.*. Re-namespace ONLY where the
+    # prefixed form is what the model expects (mirrors txt2img.remap_legacy_adapter_keys).
+    def _remap_legacy_adapter_keys(sd, model_keys):
+        out, remapped = {}, []
+        for k, v in sd.items():
+            if k in model_keys:
+                out[k] = v
+            elif f"adapter.{k}" in model_keys:
+                out[f"adapter.{k}"] = v
+                remapped.append(k)
+            else:
+                out[k] = v
+        return out, remapped
+
+    model_sd = _strip_orig_mod(ckpt['model'])
+    model_sd, remapped = _remap_legacy_adapter_keys(model_sd, set(model.state_dict().keys()))
+    if remapped:
+        print(f"  Re-namespaced {len(remapped)} legacy adapter tensor(s) "
+              f"(pre-`adapter` checkpoint), e.g. {remapped[0]} -> adapter.{remapped[0]}")
+    model.load_state_dict(model_sd, strict=True)
+    ema_sd = _strip_orig_mod(ckpt['ema'])
+    ema_sd['ema_params'], _ = _remap_legacy_adapter_keys(
+        ema_sd['ema_params'], set(model.state_dict().keys()))
+    ema.load_state_dict(ema_sd)
     
     model = model.to(device)
     for param in ema.ema_params.values():
