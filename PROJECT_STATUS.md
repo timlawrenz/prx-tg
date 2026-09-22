@@ -1,31 +1,38 @@
 # Project Status — prx-tg
 
-**Last updated:** 2026-09-02
-**Phase / status:** Phase 1b — Arm `dip-conv-head` 10k **COMPLETE, verdict GO-with-caveat** (criteria a/b/d PASS; G0 criterion NOT_VALIDATED → strike 1/3). Review workflow now has a web UI. Next: decide champion promotion / next arm via tick.
+**Last updated:** 2026-09-21
+**Phase / status:** PIVOT — Arm `pixel-posttrain` **CANCELLED (tainted)**, `latent-first-pretrain` **BLOCKED (tainted, never gated)**. New gated redesign approved in principle; Stage A (forensic baseline) starting.
 
 ## Current state
 
-- **Arm `dip-conv-head` 10k DONE — verdict GO-with-caveat.**
-  LPIPS 0.7251 (≤0.746 ✓), loss ~0.011 (≤0.0135 ✓), blind 10k-vs-5k win-rate 0.846
-  (CI LB 0.5776 > 0.5 ✓), calibration 1.0 ✓. FaceConf 0.488→0.707 (+45%).
-  Clean run, zero NaN, `checkpoint_step0010000.pt` saved.
-  **Caveat — G0 NOT_VALIDATED:** 3/6 G0 gates out-of-band at 10k (g0a noise floor,
-  g0d p50/p95 local contrast, all below frozen real-FFHQ band) → strike 1/3 in
-  registry (f6c079b). Photorealism still un-met.
-- **Next arm ACTIVE:** `gamma2-noise-scale` training on GPU (tmux `gamma2-10k`,
-  started 2026-09-02 ~16:16, log /tmp/gamma2_10k.log) — tick-selected to attack
-  the g0a failing gate.
-- **Blind-review web UI shipped** (`scripts/harness/review_server.py`, 0.0.0.0:8765):
-  neutral-URL A/B picker, idempotent votes.jsonl, reusable for any pool.
-- **QC fixes** (commit 22b9b67): eval loaders head_type parity, adapter mask-length
-  regression + 2 tests, resume provenance git fields.
-- **GitHub issue chain**: #2 (QC) #3 (blind review) #4 (ledger verdict) — ledger
-  entry written. Cron agent `prx-tg-dip-10k-research-agent` ready (gateway-gated).
-- **Remaining true gap: photorealism.** 10k renders are sharply improved but still
-  painterly — the primary success criterion is still un-met.
+- **Arm PP cancelled as tainted (2026-09-21, Tim).** P1 had no official gate, and
+  P1/PP were diagnosed as ignoring text conditioning while memorizing DINOv3 CLS
+  tokens as per-image keys into the training set. PP run `2026-09-20_1413` stopped
+  at step 2198/10000. Neither checkpoint may warm-start any future arm.
+- **Structural grounding for the diagnosis:** CLS is a per-image unique key present
+  ~45% of steps; text+CLS co-occur only ~40%; there is **no train/val/test split**
+  (validation reconstructs training images, so recon LPIPS rewards memorization);
+  the two instruments that would have caught it (`run_text_manip`, `run_dino_swap`)
+  exist but were disabled in P1's config.
+- **Plan v2 approved in principle** (`.hermes/plans/2026-09-22_0000-p1-pp-gated-redesign.md`):
+  Stage A forensic baseline → Stage B data prep + train/val/never-touched-test split
+  → Stage C gated P1 (optional dropout-profile ablation) → Stage D gated PP →
+  Stage E eidolon renderer.
+- **Decisions settled:** experiments stay at 10k scale (50k reserved for finals);
+  hegre split to be **vertical (person-level holdout)** when it binds at Stage E;
+  hegre excluded from all P1/PP training.
 
 ## Immediate blockers / next action
 
-1. Promote `dip-conv-head` 10k to champion? (tick decision / user call)
-2. Run next avenue candidate via tick (registry: gamma2-noise-scale, irepa-upgrade, ...)
-3. For autonomous drive: `hermes gateway start` (cron agent + issue chain dormant otherwise)
+1. **Stage A forensic baseline (running now):** A1 text-manip + A2 dino-swap +
+   A4 novel-CLS on P1-10k and Arm J-35k; A3 memorization probe (new script).
+2. Record Stage A verdict in the ledger; numbers become the baselines for
+   Stage C/D gates.
+3. Stage B: seeded 68k/1k/1k split manifest + fixed probe panel (git artifacts).
+
+## Headline result so far
+
+Dip-conv-head 10k: GO-with-caveat (LPIPS 0.7251, blind win-rate 0.846; G0
+photorealism NOT validated — strike 1/3). Photorealism still un-met.
+The P1/PP taint verdict now supersedes the warm-start path: the next backbone
+must come from a **gated** P1.

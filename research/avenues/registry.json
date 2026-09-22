@@ -207,7 +207,7 @@
     },
     {
       "id": "latent-first-pretrain",
-      "state": "active",
+      "state": "blocked",
       "prior": "high",
       "measurability": "med",
       "cost": "high",
@@ -230,7 +230,32 @@
         "hold_lifted": "2026-09-12 by user (choose latent-first for tonight)"
       },
       "verdicts": [],
-      "qualification_gate": "hold_lifted_by_user_2026-09-12"
+      "qualification_gate": "hold_lifted_by_user_2026-09-12",
+      "tainted": {
+        "date": "2026-09-21",
+        "verdict": "tainted",
+        "reason": "P1 had no official gate; diagnosed (Tim) as ignoring text conditioning and memorizing DINOv3 CLS tokens as per-image keys into the training set. Checkpoint may not be used as a warm-start source. P1 to be rebuilt as a gated process (plan .hermes/plans/2026-09-22_0000-p1-pp-gated-redesign.md)."
+      }
+    },
+    {
+      "id": "pixel-posttrain",
+      "state": "blocked",
+      "prior": "high",
+      "measurability": "high",
+      "cost": "med",
+      "strikes": 0,
+      "tainted": {
+        "date": "2026-09-21",
+        "verdict": "cancelled-tainted",
+        "reason": "Cancelled by Tim 2026-09-21: warm-started from the ungated, tainted P1 checkpoint. Run 2026-09-20_1413 stopped at step 2198. Not a science verdict \u2014 the arm was never allowed to answer its gate. Do NOT reactivate from this checkpoint."
+      },
+      "declaration": {
+        "scope": "Pixel-space post-train warm-started from P1 step-10000 (latent->pixel, Z-Image recipe).",
+        "qualification_gate": "cancelled_before_completion",
+        "config": "experiment-configs/pixel-posttrain/config.yaml"
+      },
+      "evidence_parts": [],
+      "verdicts": []
     }
   ]
 }

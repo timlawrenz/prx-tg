@@ -2,8 +2,20 @@ arm: pixel-posttrain
 arm_letter: PP            # "P2" is already taken by geo-adapter-bugfix-restart,
                           # so this arm uses PP (pixel post-train) to avoid collision.
 aliases: [pixel-posttrain-p1-warmstart]
-status: planned           # no run yet; the checker exempts planned arms from run_dirs
+status: cancelled_tainted # CANCELLED by Tim 2026-09-21: warm-started from the ungated,
+                          # tainted P1 checkpoint. Run 2026-09-20_1413 stopped at step
+                          # 2198 of 10000. Do NOT resume or build on this run.
 mode: confirmatory        # gate frozen 2026-09-20 BEFORE the first run
+cancellation:
+  date: 2026-09-21
+  stopped_at_step: 2198
+  reason: >
+    Warm-start source (P1 step-10000) was never officially gated and is diagnosed
+    as memorizing DINOv3 CLS tokens as per-image keys while ignoring text
+    conditioning. The taint propagates through the warm start; this arm could
+    never answer its own gate. Redesign: .hermes/plans/2026-09-22_0000-p1-pp-gated-redesign.md
+  run_dirs:
+    - experiments/pixel-posttrain/runs/2026-09-20_1413
 
 hypothesis: >
   Warm-starting pixel-space training from the P1 latent-pretrain body (182 of 188
