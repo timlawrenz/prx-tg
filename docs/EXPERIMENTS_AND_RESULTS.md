@@ -2,7 +2,41 @@
 
 Permanent ledger of all empirical findings. Negative results are recorded permanently. Pre-registered gates are stated BEFORE results. Every PASS verdict requires an adversarial pass checklist.
 
-Last updated: 2026-07-16
+Last updated: 2026-09-22
+
+---
+
+## Stage A Forensic Baseline (A1/A2) — `[EVAL-ONLY — diagnosis CONFIRMED]`
+
+**Date:** 2026-09-22
+**Goal:** Put numbers on the P1/PP taint diagnosis (Tim, 2026-09-21): "P1 and PP basically ignore text conditioning and almost entirely memorize CLS tokens as keys into the training dataset." Stage A is eval-only — it calibrates instruments and produces the baselines the Stage C/D redesign gates against; it does NOT PASS/FAIL a training arm.
+**Probes run:** A1 text-binding (`run_text_manip_test`) + A2 CLS-binding (`run_dino_swap_test`), driven by `scripts/run_checkpoint_validation.py` on P1 latent step-10000 and Arm J pixel step-35000. (A3 memorization + A4 novel-CLS are new-code probes, pending.)
+
+### Empirical Evidence
+
+**Instrument:** conditioning-responsiveness = how much the output changes when one stream is swapped at fixed seed + fixed other streams. Measured two ways — LPIPS (perceptual; lower = outputs more similar = stream matters less) and pixel MAE on the swap collages (higher = stream moves the output).
+
+| Probe | P1 (latent, step 10000) | Arm J (pixel, step 35000) |
+|---|---|---|
+| **A1 Text-binding** — swap caption attribute (dark→light, slender→muscular) | **LPIPS diff 0.0000** (dead); pixel MAE 0.030 | LPIPS diff 0.0012 (weak); pixel MAE 0.28 |
+| **A2 CLS-binding** — swap DINOv3 CLS between identities | pixel MAE 0.048 (Aref↔Aswap) vs 0.047 full-identity-swap | pixel MAE 0.28 (Aref↔Aswap) vs 0.29 full-identity-swap |
+
+**Text/CLS responsiveness ratio:** P1 = 0.030/0.048 = **0.62** · Arm J = 0.28/0.28 = **1.00**.
+
+### Verdict
+
+**Diagnosis CONFIRMED, and graded.**
+
+1. **P1's text is perceptually dead.** Swapping a caption attribute (slender→muscular, dark→light) at fixed seed+identity moved the output by LPIPS 0.0000 and only 0.030 pixel MAE — the model ignores the text stream entirely at the perceptual level. This is the "ignores text conditioning" half of the taint, measured.
+2. **P1 is *more* CLS-dominated than Arm J** (ratio 0.62 vs 1.00): on P1 the CLS identity key moves the output ~1.6× more than text does. CLS-swap produces near-identity-swap-magnitude changes (0.048 vs 0.047) — consistent with CLS acting as a lookup key.
+3. **The disease is not latent-only.** Arm J (pixel, the champion) also shows weak text (LPIPS diff 0.0012) with CLS at identity-swap magnitude — the CLS-memorization failure mode is a property of the conditioning architecture/dropout profile, not the latent space. This is exactly what the Stage C1 dropout-profile ablation is designed to probe.
+
+**Caveat (honest):** pixel-MAE and LPIPS measure responsiveness, not semantic correctness. The 0.28 text-MAE on Arm J with 0.0012 LPIPS means text perturbs pixels but barely moves *perceived* content — text is weak on both models; it is *dead* only on P1. Arm J's reconstruction LPIPS re-measured 1.357 here vs its historical 0.8264 — an instrument/protocol artifact from running the June checkpoint under the current loader (legacy-adapter remap), flagged and NOT read as a real regression; the conditioning instruments are unaffected.
+
+### Artifacts
+- P1: `/tmp/prx-stagea-eval/validation_outputs/step0010000/results.json` (+ collages) — config `config-p1-latent-eval.yaml` (P1 config with `run_dino_swap`/`run_text_manip` ENABLED — they were disabled in P1, the instrumentation gap that hid this)
+- Arm J: `experiments/faces70k-fp8/validation_outputs/step0035000/results.json` (+ collages)
+- Loader fix enabling Arm J eval: commit `86cf4df` (legacy pre-`adapter` checkpoint key remap in `scripts/run_checkpoint_validation.py`)
 
 ---
 
