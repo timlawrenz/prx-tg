@@ -97,6 +97,39 @@ only from approved corpus images (0 unresolved), so none can be stale.
 - Replicates `docs/assets/exp/sapiens2-keypoints-study/evidence-20260923/
   test_average_discriminative.py` in the eidolon repo.
 
+## VAE round-trip floor — step (a)
+
+`scripts/eidolon_vae_floor.py`, 24 samples from 24 distinct personas, CPU decode
+(`stratum-lora/.venv-cuda` — the only env with both the prx-tg decode stack and
+insightface), `describe_instrument()` provenance in the JSON.
+
+| measurement | mean | median | min | max |
+|---|---|---|---|---|
+| `a1` cos(embed(pixel), embed(decode(latent))) | **0.9998** | 0.9999 | 0.9989 | 1.0000 |
+| `a2` cos(embed(pixel), persona centroid we condition on) | **0.9985** | 0.9989 | 0.9941 | 0.9994 |
+| control cos(embed(decoded_i), centroid_j), i≠j (552 pairs) | 0.9927 | — | p95 0.9969 | 0.9981 |
+| `a3` MSE(pixel, decode(latent)) | 0.00022 | — | — | 0.00067 |
+
+1. **The VAE costs ~0.0002 of identity.** `a1` is 0.9998 with 100% of samples above
+   0.99, so the measurement path is essentially identity-preserving — the renderer
+   is judged against the ~0.82 ceiling, not against a VAE-degraded floor. Falsifiable
+   prediction this sets up: step (b), the ceiling measured through decoded latents,
+   should land near 0.8180, not materially below it.
+2. **The centroid we condition on does describe the image we train on.** `a2` is
+   0.9985 (own centroid), and it reproduces the ceiling's own-centroid cosine
+   (0.9985) from an independent direction: `a2` compares pixel.npy-derived vectors
+   against the stored centroid, while the ceiling compares v1-tree per-image
+   vectors against a leave-one-shoot-out centroid. Two independent computations
+   agreeing to four decimals is a validity check on the instrument.
+3. **Wrong-persona centroids are only ~0.0016 away, and the distributions OVERLAP.**
+   The control reaches max 0.9981 and p95 0.9969 against an own-centroid mean of
+   0.9985 — so an image that is merely a plausible average face can score high on a
+   single-threshold identity check. This is the same thin margin the ceiling
+   reported (0.0015), now seen from the pixel/VAE side. Consequences, both binding:
+   identity is scored by **rank** with a persona-level bootstrap CI, never a
+   threshold; and the cross-identity control is a **permanent** part of the
+   instrument, not a one-off check.
+
 ## Not yet done
 
 - **VAE round-trip floor** (`scripts/eidolon_vae_floor.py`): `a1` =

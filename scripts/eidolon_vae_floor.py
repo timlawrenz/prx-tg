@@ -27,7 +27,16 @@ CONVENTIONS (getting any of these wrong silently poisons the number):
     stored vectors and the DiT identity slot are L2-normalized (norm 1.0). Every
     cosine here is taken after L2-normalizing both sides.
 
-    .venv/bin/python scripts/eidolon_vae_floor.py --n 24 [--device cpu]
+Requires ONE interpreter with both the prx-tg decode stack (torch/diffusers/
+safetensors) and insightface (what the shared extractor uses). Neither prx-tg's
+training venv (no insightface) nor eidolon's venv (no insightface) has both, and
+mutating the training venv would endanger training reproducibility, so run it with:
+
+    /home/tim/source/activity/stratum-lora/.venv-cuda/bin/python \
+        scripts/eidolon_vae_floor.py --n 24 --device cpu
+
+--device cpu on purpose: the 4090 is claimed by the hegre latent encode, and
+onnxruntime is pinned to CPUExecutionProvider inside the extractor anyway.
 """
 import argparse
 import json
@@ -41,8 +50,17 @@ import torch
 sys.path.insert(0, "/home/tim/source/activity/eidolon")
 from tools.auraface import describe_instrument, extract_auraface  # noqa: E402
 
-sys.path.insert(0, "/home/tim/source/activity/prx-tg")
-from production.flux_ae import decode_latents, load_flux_ae_decoder  # noqa: E402
+# Import flux_ae by PATH, not as `production.flux_ae`: prx-tg's package __init__
+# pulls in training deps this evaluation env does not need, and the eval env is
+# deliberately NOT prx-tg's training venv (see the env note in the docstring).
+import importlib.util as _ilu  # noqa: E402
+
+_fa_path = "/home/tim/source/activity/prx-tg/production/flux_ae.py"
+_fa = _ilu.spec_from_file_location("prx_flux_ae", _fa_path)
+_fa_mod = _ilu.module_from_spec(_fa)
+_fa.loader.exec_module(_fa_mod)
+decode_latents = _fa_mod.decode_latents
+load_flux_ae_decoder = _fa_mod.load_flux_ae_decoder
 
 CORPUS = "/mnt/nas-ai-models/training-data/eidolon/hegre_corpus"
 OUT = "/home/tim/source/activity/prx-tg/research/results/eidolon-identity-instrument/vae_floor.json"
@@ -194,6 +212,10 @@ def main():
                             "p95": float(np.percentile(ctrl, 95)) if len(ctrl) else None,
                             "max": float(ctrl.max()) if len(ctrl) else None},
         "a3_mse_mean": float(np.mean(mses)), "a3_mse_max": float(np.max(mses)),
+        "interpreter": {
+            "sys_executable": sys.executable,
+            "torch": torch.__version__,
+        },
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "host": os.uname().nodename,
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
