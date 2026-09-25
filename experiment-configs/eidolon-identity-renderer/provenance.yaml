@@ -60,8 +60,12 @@ diff_summary: |
     keys fail closed; the legacy keys this project's frozen configs carry are declared
     no-ops (production/config_loader.py LEGACY_KEYS), and THIS arm's config carries none --
     verified by loading it: zero no-op warnings.
-  - STILL OPEN: p_identity_only (0.00 recommended, awaiting confirmation), architecture
-    freeze (needs a latency measurement), and the gate-eval harness.
+  - SETTLED (2026-09-24): dropout profile held at Arm O's 0.10/0.20/0.30 (p_identity_only
+    0.20), so the both-present fraction is 0.40 -- which is itself the ledger obligation to
+    report (the brief flags P1/PP's failure as a dropout-marginal problem at ~0.40, so a
+    future arm may test 0.60 by deleting the identity-only diagonal; deliberately NOT done
+    here, to keep a geometry result attributable to Arm O's validated recipe).
+  - STILL OPEN: architecture freeze (needs a latency measurement) and the gate-eval harness.
 
 # --- the four link fields (prx-tg addition) ---
 branch: arm/eidolon-identity-renderer

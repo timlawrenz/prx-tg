@@ -24,8 +24,9 @@
 #     conditioning; hegre joins FFHQ as a training source (2:1 weighted).
 #   - vs `eidolon-conditioning` / `hegre-geometry` (both PIXEL-space, ps16):
 #     this arm trains in FLUX-AE latent space (in_channels 16, patch_size 2).
-#   - vs `hegre-geometry`: p_identity_only 0.20 -> 0.00 (see adapter.cfg_dropout),
-#     and the multi-source it claimed is actually implemented here.
+#   - vs `hegre-geometry`: trains in FLUX-AE latent space, the dropout profile is held
+#     at Arm O's 0.10/0.20/0.30, and the multi-source that arm merely claimed is
+#     actually implemented here (it was silently dropped).
 #   - no warm-start, no PP stage, no weight donor, no REPA (hegre ships none).
 #
 # Expected outcome:
@@ -49,14 +50,21 @@ adapter:
   cfg_dropout:
     # Read by train.py L1372 for adapter_name == "eidolon": the adapter's own
     # 3-way partition, NOT the legacy 7-stream `training.cfg_dropout` schema.
-    # Marginals of a partition; the remainder (0.60) = steps with BOTH live.
+    # Marginals of a partition; the remainder (0.40) = steps with BOTH live.
     p_uncond: 0.10
-    # RECOMMENDED, AWAITING CONFIRMATION: 0.00 = never train
-    # identity-without-geometry. AuraFace carries pose (yaw R^2 ~0.46,
-    # pitch ~0.64), so that slice teaches "invent a pose from identity" — a
-    # conditioning state we never use at inference, since z_g is always supplied.
-    # `eidolon-conditioning` and `hegre-geometry` both ran 0.20 here.
-    p_identity_only: 0.00
+    # SETTLED 2026-09-24: 0.20 -- Arm O's profile, held deliberately.
+    # This is the only slice that forces identity to render a face with NO z_g, which
+    # is the pressure that stops z_g drifting into carrying facial structure. The gate
+    # probes exactly that (same identity, different z_g) and z_g carries identity at
+    # 8.31x the floor, so deleting this slice would trade gate safety for training mass.
+    # The cost is real and accepted: AuraFace leaks pose (yaw R^2~0.46, pitch~0.64), so
+    # this slice also teaches "invent a pose from identity" -- a state inference never
+    # uses (z_g is always supplied). Dropping it would raise the both-present fraction
+    # 0.40 -> 0.60, the slice where the disentanglement objective is trained; that
+    # variant is deliberately deferred to a SEPARATE arm so a geometry result stays
+    # attributable to Arm O's validated recipe.
+    # LEDGER OBLIGATION: state the both-present fraction (0.40) in the result entry.
+    p_identity_only: 0.20
     # geometry without identity — Arm O's recipe, the slice that produced
     # controlled yaw instead of the z_g -> identity shortcut.
     p_geometry_only: 0.30
