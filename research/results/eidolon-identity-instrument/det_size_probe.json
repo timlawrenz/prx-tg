@@ -1,0 +1,147 @@
+{
+  "measurement": "detection_convention_sensitivity (det_size + framing)",
+  "question": "do the FFHQ (det_size 512, full image) and hegre (default 640, face-filling crop) conventions produce comparable identity vectors?",
+  "reference_margin_cosine": 0.0015,
+  "reference_vae_floor": 0.0002,
+  "n_samples": 24,
+  "sample_selection": "deterministic sample (seed 1234) of the first 2000 FFHQ raws",
+  "configs": {
+    "full_d512": {
+      "det_size": [
+        512,
+        512
+      ],
+      "crop": false
+    },
+    "full_d640": {
+      "det_size": null,
+      "crop": false
+    },
+    "full_d320": {
+      "det_size": [
+        320,
+        320
+      ],
+      "crop": false
+    },
+    "crop_d512": {
+      "det_size": [
+        512,
+        512
+      ],
+      "crop": true
+    },
+    "crop_d640": {
+      "det_size": null,
+      "crop": true
+    }
+  },
+  "instrument_provenance": {
+    "model_name": "auraface",
+    "model_root": "/mnt/nas-ai-models",
+    "model_dir": "/mnt/nas-ai-models/models/auraface",
+    "det_size": null,
+    "det_size_note": "None means insightface default 640x640 -- CORPUS BEHAVIOUR. A tuple reproduces the FFHQ path and is a different instrument.",
+    "pad_fraction": 0.2,
+    "embedding": "normed_embedding (512-d, L2-normalised)",
+    "lda_components": 64,
+    "basis_dir": "/home/tim/source/activity/eidolon/experiments/geometry_pca/output",
+    "artifact_sha256": {
+      "auraface_preprocess.npz": "6bbc0937b7b83d6a3901df6525b8d2073e5c5e02cca395f2b00a5aa551201ebe",
+      "auraface_lda.npz": "8ebcc47f6de6cecb2f0d8dddb494fd3ec9bb42d0561186af1d1640ddfba487b8"
+    },
+    "basis_fingerprint": "120e1c5a1dc4f423",
+    "expected_basis_fingerprint": "120e1c5a1dc4f423",
+    "model_sha256": {
+      "glintr100.onnx": "a7933ea5330113b01c9b60351d8f4c33003f145d8470ac5f0e52ee2effe25c60",
+      "scrfd_10g_bnkps.onnx": "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91"
+    }
+  },
+  "results": {
+    "det_size_full_d512_vs_full_d640": {
+      "note": "det_size effect, full-frame framing",
+      "config_a": "full_d512",
+      "config_b": "full_d640",
+      "cos": {
+        "n": 24,
+        "mean": 0.9997609363122334,
+        "median": 0.9998204270363227,
+        "min": 0.9988799870166862,
+        "max": 0.9999313562109858,
+        "min_abs_delta": 0.0011200129833137673
+      }
+    },
+    "det_size_full_d512_vs_full_d320": {
+      "note": "sensitivity trend",
+      "config_a": "full_d512",
+      "config_b": "full_d320",
+      "cos": {
+        "n": 24,
+        "mean": 0.9997650557418399,
+        "median": 0.9997802445782806,
+        "min": 0.9993773057655895,
+        "max": 0.9999116794940477,
+        "min_abs_delta": 0.0006226942344105257
+      }
+    },
+    "framing_full_d512_vs_crop_d512": {
+      "note": "FRAMING effect (Tim's hypothesis)",
+      "config_a": "full_d512",
+      "config_b": "crop_d512",
+      "cos": {
+        "n": 9,
+        "mean": 0.9988146386955431,
+        "median": 0.998930219322917,
+        "min": 0.9977425026781502,
+        "max": 0.9993458881348631,
+        "min_abs_delta": 0.0022574973218497663
+      }
+    },
+    "det_size_under_crop_crop_d512_vs_crop_d640": {
+      "note": "det_size effect, face-filling framing",
+      "config_a": "crop_d512",
+      "config_b": "crop_d640",
+      "cos": null
+    },
+    "combined_corpus_vs_ffhq_full_d512_vs_crop_d640": {
+      "note": "FFHQ convention vs the hegre-like regime",
+      "config_a": "full_d512",
+      "config_b": "crop_d640",
+      "cos": null
+    },
+    "reproduce_full_d512_vs_stored_512d": {
+      "note": "recomputed raw->embed at the FFHQ convention vs the stored vector (CPU here, stored was CUDA: a mismatch is provider-or-resolution)",
+      "cos": {
+        "n": 24,
+        "mean": 0.9999755225530175,
+        "median": 0.9999848385727073,
+        "min": 0.9999218014756012,
+        "max": 1.0000000000000002,
+        "min_abs_delta": 7.819852439883146e-05
+      }
+    }
+  },
+  "outcomes": {
+    "full_d512": {
+      "detected": 24
+    },
+    "full_d640": {
+      "detected_after_padding": 15,
+      "detected": 9
+    },
+    "full_d320": {
+      "detected": 24
+    },
+    "crop_d512": {
+      "no_face": 15,
+      "detected_after_padding": 9
+    },
+    "crop_d640": {
+      "no_face": 24
+    }
+  },
+  "untested_axis": "provider (FFHQ used CUDA-then-CPU; this probe is CPU-only because the 4090 is claimed by the hegre latent encode)",
+  "timestamp": "2026-09-24T21:09:51-0400",
+  "host": "game",
+  "interpreter": "/home/tim/source/activity/stratum-lora/.venv-cuda/bin/python"
+}
