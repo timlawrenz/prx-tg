@@ -91,6 +91,9 @@ def main():
                     help="max queries per persona, from the held-out shoot only")
     ap.add_argument("--bootstrap", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--subset-personas", type=int, default=0,
+                    help="randomly restrict the index/query pool to N personas, to "
+                         "measure the CI a persona-disjoint holdout of that size buys")
     args = ap.parse_args()
 
     rng = random.Random(args.seed)
@@ -116,8 +119,12 @@ def main():
             print(f"[corpus] {i+1}/{len(entries)} mapped, {time.time()-t0:.0f}s", flush=True)
 
     personas = sorted(p for p, v in by_persona.items() if len({s for s, _ in v}) >= 2)
-    print(f"[corpus] {len(entries)} dirs | {len(personas)} personas with >=2 shoots | "
-          f"{unresolved} unresolved")
+    n_available = len(personas)
+    if args.subset_personas:
+        personas = sorted(rng.sample(personas, min(args.subset_personas, len(personas))))
+    print(f"[corpus] {len(entries)} dirs | {n_available} personas with >=2 shoots | "
+          f"{unresolved} unresolved"
+          + (f" | SUBSET to {len(personas)} personas" if args.subset_personas else ""))
 
     # --- per persona: hold out one shoot; centroid from the others ---
     q_vecs, q_owner = [], []
@@ -243,6 +250,8 @@ def main():
         "corpus": CORPUS,
         "n_corpus_dirs": len(entries),
         "n_personas_with_2plus_shoots": n_pers,
+        "n_personas_available": n_available,
+        "persona_subset": args.subset_personas or None,
         "unresolved_corpus_dirs": unresolved,
         "support_reads": support_used,
         "query_reads": query_used,
@@ -262,10 +271,12 @@ def main():
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "host": os.uname().nodename,
     }
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    with open(OUT, "w") as f:
+    out_path = OUT if not args.subset_personas else OUT.replace(
+        ".json", f"_personas{args.subset_personas}.json")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w") as f:
         json.dump(payload, f, indent=2)
-    print(f"\n[out] {OUT}")
+    print(f"\n[out] {out_path}")
 
 
 if __name__ == "__main__":
