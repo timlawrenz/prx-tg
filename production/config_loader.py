@@ -28,6 +28,14 @@ class ModelConfig:
     num_pose_joints: int = 133      # DWPose (v1: 133) or Sapiens 2 (v2: 308) keypoints
     pose_confidence_threshold: float = 0.05  # Hard-mask joints below this with [NULL_POSE]
 
+    # --- legacy keys: declared so byte-identical frozen configs still load,
+    # --- but NOT READ by any code. See LEGACY_KEYS below for the list.
+    dino_patches_enabled: Optional[bool] = None   # never read here; live knobs are
+                                                  # training.dino_patches.enabled and
+                                                  # adapter.dino_patches_enabled
+    shared_adaln: Optional[bool] = None           # shared-adaLN era (2026-05-24 runs)
+    adaln_lora_rank: Optional[int] = None          # shared-adaLN era (2026-05-24 runs)
+
 
 @dataclass
 class AdapterConfig:
@@ -341,6 +349,12 @@ class TrainingConfig:
     precision: Literal["float32", "bfloat16", "float16"] = "bfloat16"
     compile: bool = False  # torch.compile the model for ~20-40% speedup
     time_budget_minutes: float = 0  # 0 = disabled, >0 = stop after N minutes
+
+    # --- legacy keys: declared, never read (see LEGACY_KEYS) ---
+    resolution_schedule: Optional[List[Any]] = None  # planned resolution curriculum,
+                                                     # never implemented
+    save_every: Optional[int] = None                 # misplaced: CheckpointConfig owns
+                                                     # save_every (train.py reads it there)
     
 
 
@@ -398,6 +412,18 @@ class DataConfig:
     num_workers: int = 4
     prefetch_factor: int = 2
     pin_memory: bool = True
+
+    # --- legacy keys: declared, never read (see LEGACY_KEYS) ---
+    pixel_range: Optional[str] = None             # pixel-era normalisation band
+    latent_mode: Optional[bool] = None            # superseded by model.latent_space,
+                                                  # which is what data.py passes to the
+                                                  # StratumDataset constructor
+    stratum_source: Optional[str] = None          # early single-source hint; superseded
+                                                  # by stratum_dirs
+    horizontal_flip_prob: Optional[float] = None  # the webdataset loader takes this as a
+                                                  # CONSTRUCTOR arg; nothing ever passes a
+                                                  # config value, so setting it here has
+                                                  # never enabled a flip
 
 
 @dataclass
@@ -463,6 +489,11 @@ class PathConfig:
     """Path configuration."""
     t5_path: str = "models/t5xxl_fp16.safetensors"
 
+    # --- legacy key: declared, never read (see LEGACY_KEYS) ---
+    vae_path: Optional[str] = None   # documented in production/flux_ae.py's header but
+                                     # never passed: load_flux_ae_decoder() uses its own
+                                     # hardcoded default (/mnt/models/vae/ae.safetensors)
+
 
 @dataclass
 class Config:
@@ -476,6 +507,45 @@ class Config:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     paths: PathConfig = field(default_factory=PathConfig)
     adapter: AdapterConfig = field(default_factory=AdapterConfig)
+
+    # --- legacy key: declared, never read (see LEGACY_KEYS) ---
+    arm: Optional[str] = None   # free-form human label; nothing reads it
+
+
+# ── legacy key registry ───────────────────────────────────────────────────────
+# Keys that frozen configs carry but no code reads. They are declared as real
+# fields on the dataclasses above so byte-identical historical configs still
+# load, and listed here so the loader can SAY SO out loud rather than letting a
+# reader believe the key took effect. A silent no-op is exactly how
+# `hegre-geometry` (2026-07-05) came to advertise "weighted interleaving of ffhq
+# (70%) + hegre (30%)" while its loader read a single root.
+#
+# An entry here is a statement of fact ("no reader exists"), not a fix. Prefer
+# extending the mechanism; do not add to this list casually.
+LEGACY_KEYS: Dict[str, Dict[str, str]] = {
+    "ModelConfig": {
+        "dino_patches_enabled": "never read here; live knobs are "
+                                "training.dino_patches.enabled and adapter.dino_patches_enabled",
+        "shared_adaln": "shared-adaLN experiment era (2026-05-24); never read",
+        "adaln_lora_rank": "shared-adaLN experiment era (2026-05-24); never read",
+    },
+    "TrainingConfig": {
+        "resolution_schedule": "planned resolution curriculum; never implemented",
+        "save_every": "misplaced; CheckpointConfig.save_every is the live knob",
+    },
+    "DataConfig": {
+        "pixel_range": "pixel-era normalisation band",
+        "latent_mode": "superseded by model.latent_space",
+        "stratum_source": "superseded by data.stratum_dirs",
+        "horizontal_flip_prob": "loader CONSTRUCTOR arg; no config value reaches it",
+    },
+    "PathConfig": {
+        "vae_path": "never passed; flux_ae.py uses its own hardcoded default",
+    },
+    "Config": {
+        "arm": "free-form human label",
+    },
+}
 
 
 def load_config(config_path: str | Path) -> Config:
@@ -523,6 +593,13 @@ def load_config(config_path: str | Path) -> Config:
                     f"  {cls.__name__} declares: {', '.join(sorted(field_types))}\n"
                     f"  Fix: correct the key, declare it on the dataclass, or remove it."
                 )
+
+            # A declared legacy key still does nothing. Say so, so that nobody
+            # reading a frozen config believes the key took effect.
+            _legacy = LEGACY_KEYS.get(cls.__name__, {}).get(key)
+            if _legacy:
+                print(f"[config] {config_path}: `{full_key}` is a declared no-op "
+                      f"({_legacy}); its value is ignored.")
 
             if key in field_types:
                 field_type = field_types[key]

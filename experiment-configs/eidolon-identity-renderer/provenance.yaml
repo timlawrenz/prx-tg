@@ -56,7 +56,12 @@ diff_summary: |
   - no warm-start, no PP stage, no weight donor (fresh model, no lineage).
   - inherited from P1 and unchanged: 16ch FLUX-AE latent, input_size 128, patch_size 2,
     latent_space true, x_prediction, Muon lr 3e-4 -> min_lr 1e-6, effective batch 256.
-  - TBD (see config.yaml, PROVISIONAL): dropout profile, architecture freeze, step budget confirm.
+  - SETTLED (2026-09-24): step budget 10,000 in 1k blocks; ffhq:hegre = 2:1; unknown config
+    keys fail closed; the legacy keys this project's frozen configs carry are declared
+    no-ops (production/config_loader.py LEGACY_KEYS), and THIS arm's config carries none --
+    verified by loading it: zero no-op warnings.
+  - STILL OPEN: p_identity_only (0.00 recommended, awaiting confirmation), architecture
+    freeze (needs a latency measurement), and the gate-eval harness.
 
 # --- the four link fields (prx-tg addition) ---
 branch: arm/eidolon-identity-renderer
@@ -72,6 +77,13 @@ git_dirty: null
 training_host: null
 training_gpu: null
 training_steps: 10000
+training_step_policy: >-
+  10,000 steps granted and monitored in 1k BLOCKS. Each 1k boundary is a release point on the
+  shared 4090 (the latent-first 1k-SEGMENT policy: reserve only to the next boundary, release
+  there if another project is queued, auto-continue otherwise). checkpoint.save_every ==
+  validation.interval_steps == 1000, so every boundary yields both a resumable state and a
+  liveness sample; save_optimizer is true so a block resumed later continues the same
+  trajectory. The budget is NOT gated on a measured s/it.
 data_snapshot: "FFHQ stratum 70k latents + hegre_corpus 31,711 (flux latents encoding)"
 agent_model: null
 agent_model_snapshot: null

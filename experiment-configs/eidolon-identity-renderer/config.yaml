@@ -96,7 +96,11 @@ data:
   holdout_manifest: "experiment-configs/eidolon-identity-renderer/holdout.json"
 
 training:
-  total_steps: 10000           # TBD: gate on a measured s/it from the sanity run
+  # SETTLED: 10k steps, granted and monitored in 1k BLOCKS. The block boundary is
+  # the release point on the shared 4090 (see the latent-first 1k-SEGMENT policy):
+  # reserve only to the next 1k boundary, and release there if another project is
+  # queued. Not gated on a measured s/it — checkpoints land on the boundary.
+  total_steps: 10000
   warmup_steps: 500
   batch_size: 4
   grad_accumulation_steps: 64  # effective batch = 256
@@ -132,3 +136,25 @@ training:
   timestep_sampling: "logit_normal"
   logit_normal_loc: 0.0
   logit_normal_scale: 1.0
+
+# ── 1k-block execution (see training.total_steps) ──────────────────────────────
+checkpoint:
+  save_every: 1000         # one checkpoint per block: every boundary is a clean
+                           # release point and a resumable state
+  keep_last_n: 10          # a 10k run in 1k blocks keeps every boundary
+  save_optimizer: true     # REQUIRED to resume across a block boundary
+  output_dir: "checkpoints"
+
+validation:
+  enabled: true
+  interval_steps: 1000     # aligned to the block boundary, not a second cadence
+  num_samples: 16
+  # This arm has no text stream and no DINO stream (both disabled above), so the
+  # text-manipulation and dino-swap hooks have no input to vary. The identity
+  # check for this arm is run_eidolon_identity_swap_test (validate.py L944),
+  # wired into the gate harness; the in-run hooks are for liveness, not the verdict.
+  run_reconstruction: true
+  run_dino_swap: false
+  run_text_manip: false
+  visual_debug_interval: 1000
+  visual_debug_num_samples: 4
