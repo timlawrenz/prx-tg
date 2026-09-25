@@ -174,12 +174,13 @@ sampling:
 
 validation:
   enabled: true
-  # 500, not a 1k-block multiple: the yaw sweep is this arm's central diagnostic
-  # (z_g dim0 IS the yaw axis, |corr| 0.97, ~14 deg/sigma) and sampling it every
-  # 500 steps puts 20 points on the pose-binding curve over the 10k budget. The
-  # sweep costs 15 renders (3 personas x 5 values); reconstruction (25 indices) and
-  # the identity swap dominate the cost, so MEASURE one pass during block 1 before
-  # assuming 500 is affordable.
+  # One sweep per 1k block, not every 500: the yaw sweep is this arm's central
+  # diagnostic (z_g dim0 IS the yaw axis, |corr| 0.97, ~14 deg/sigma), and it rides
+  # the block boundary -- 10 labelled points on the pose-binding curve across the 10k
+  # budget, each taken at the same step a checkpoint is written. The sweep itself is
+  # only 15 renders (3 personas x 5 values); reconstruction (16 indices) and the
+  # identity swap dominate the cost. MEASURED 2026-09-25: one full pass ~5-9 min
+  # (reconstruction alone 3:08), i.e. ~1-1.5 h of the budget across 10 passes.
   # EFFECTIVE CADENCE ONLY. production/train.py fires validation from inside the
   # checkpoint branch (self.step % checkpoint_every == 0), so this value is not read
   # by the training loop: the yaw sweep actually runs once per 1k block, with the
