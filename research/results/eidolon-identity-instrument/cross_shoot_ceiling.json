@@ -1,0 +1,45 @@
+{
+  "measurement": "cross_shoot_identity_ceiling",
+  "definition": {
+    "index": "per-persona LDA centroid built from the persona's OTHER shoots",
+    "query": "per-image LDA from the held-out shoot, L2-normalized",
+    "leakage": "none \u2014 no query contributes to its own centroid",
+    "metric": "cosine ranking on L2-normalized vectors"
+  },
+  "config": {
+    "support": 100,
+    "queries": 5,
+    "bootstrap": 1000,
+    "seed": 7
+  },
+  "units": "LDA 64-d, L2-normalized (norm 1.0); on-disk per-image vectors are raw coords ~153",
+  "basis_fingerprint_expected": "120e1c5a1dc4f423",
+  "corpus": "/mnt/nas-ai-models/training-data/eidolon/hegre_corpus",
+  "n_corpus_dirs": 31711,
+  "n_personas_with_2plus_shoots": 313,
+  "unresolved_corpus_dirs": 7,
+  "support_reads": 21656,
+  "query_reads": 1467,
+  "skipped_personas": [],
+  "chance_R@1": 0.003194888178913738,
+  "ceiling": {
+    "R@1": 0.8179959100204499,
+    "R@5": 0.9270620313565099,
+    "R@10": 0.9427402862985685,
+    "median_rank": 1.0,
+    "n": 1467
+  },
+  "ceiling_R@1_persona_bootstrap_CI95": [
+    0.7901476142964045,
+    0.8456397992640303
+  ],
+  "margin": {
+    "own_mean": 0.9985005259513855,
+    "best_other_mean": 0.9970113039016724,
+    "gap_mean": 0.0014892782783135772
+  },
+  "reference_step0_replication_R@1": 0.891,
+  "caveat": "centroids use at most --support per-image vectors per persona, so they are noisier than the full corpus centroids; this makes the ceiling a slight LOWER bound on the true value.",
+  "timestamp": "2026-09-24T20:41:25-0400",
+  "host": "game"
+}
