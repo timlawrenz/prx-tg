@@ -373,6 +373,8 @@ def get_production_dataloader(config, device='cuda', adapter_name='stratum'):
             max_samples=data_cfg.stratum_max_samples,
             adapter_name=adapter_name,
             require_pose2=getattr(data_cfg, 'require_pose2', False),
+            basis_fingerprint=getattr(data_cfg, 'basis_fingerprint', None),
+            allow_unstamped_identity=getattr(data_cfg, 'allow_unstamped_identity', False),
             prefer_pose2=(int(getattr(config.model, 'num_pose_joints', 133)) == 308),
             latent_mode=bool(getattr(config.model, 'latent_space', False)),
             # Load only the streams this run consumes (per-sample I/O ↓ 3-4×):

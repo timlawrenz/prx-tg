@@ -365,6 +365,18 @@ class DataConfig:
     stratum_max_samples: Optional[int] = None
     require_pose2: bool = False       # Skip images without pose2.npy (for pose2 ablation)
 
+    # --- identity-basis guard (eidolon adapter only) ---
+    # The AuraFace-LDA identity vector is meaningless without the basis it was
+    # projected through: a refit changes both direction and magnitude, and the
+    # loader returns a valid-looking (64,) tensor either way. Set this to the
+    # fingerprint in the dataset dir's BASIS_FINGERPRINT.json so the loader
+    # refuses a mixed-basis identity slot instead of training on it.
+    basis_fingerprint: Optional[str] = None
+    # Escape hatch for a geometry-only reproduction of a concluded arm whose
+    # identity stream is already known-unsound. Downgrades the refusal to a
+    # loud warning; never enable it for an arm whose identity result will be read.
+    allow_unstamped_identity: bool = False
+
     num_workers: int = 4
     prefetch_factor: int = 2
     pin_memory: bool = True

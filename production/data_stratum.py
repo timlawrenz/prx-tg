@@ -141,6 +141,8 @@ class StratumDataset(IterableDataset):
         load_seg: bool = True,
         load_geometry_3d: bool = True,
         load_matting: bool = False,
+        expected_basis_fingerprint: Optional[str] = None,
+        allow_unstamped_identity: bool = False,
     ):
         """
         Args:
@@ -169,6 +171,13 @@ class StratumDataset(IterableDataset):
             load_geometry_3d: Load pointmap+normal2 (12.6MB when present) — False
                           when the geometry_3d CFG stream is disabled.
             load_matting: Load matting.npy (2MB) — True only for matting_edge arms.
+            expected_basis_fingerprint: For adapter_name="eidolon": the LDA basis
+                          fingerprint this run expects (see the dataset dir's
+                          BASIS_FINGERPRINT.json). A mismatch is refused — see
+                          _assert_identity_basis.
+            allow_unstamped_identity: Downgrade a missing/unverifiable basis stamp
+                          from an error to a warning. Does NOT excuse a measured
+                          scale mismatch.
         """
         self.stratum_dir = Path(stratum_dir)
         self.batch_size = batch_size
@@ -182,6 +191,12 @@ class StratumDataset(IterableDataset):
         self.load_seg = load_seg
         self.load_geometry_3d = load_geometry_3d
         self.load_matting = load_matting
+        self.expected_basis_fingerprint = expected_basis_fingerprint
+        self.allow_unstamped_identity = allow_unstamped_identity
+
+        # Refuse a mixed-basis identity slot before any sample is read (eidolon only).
+        _assert_identity_basis(self.stratum_dir, self.adapter_name,
+                               expected_basis_fingerprint, allow_unstamped_identity)
 
         # Scan directory for available samples (stable across rebuilds).
         # latent_mode gates on flux_latent.npy — images lacking the latent are skipped
@@ -406,6 +421,8 @@ def get_stratum_dataloader(
     load_seg: bool = True,
     load_geometry_3d: bool = True,
     load_matting: bool = False,
+    expected_basis_fingerprint: Optional[str] = None,
+    allow_unstamped_identity: bool = False,
 ) -> StratumDataset:
     """Create a StratumDataset dataloader.
 
@@ -437,4 +454,115 @@ def get_stratum_dataloader(
         load_seg=load_seg,
         load_geometry_3d=load_geometry_3d,
         load_matting=load_matting,
+        expected_basis_fingerprint=expected_basis_fingerprint,
+        allow_unstamped_identity=allow_unstamped_identity,
     )
+
+
+# Unit-norm refit coords measure ~1.0; raw coords ~153; pre-refit coords ~0.35.
+_IDENTITY_NORM_BAND = (0.5, 2.0)
+
+
+def _assert_identity_basis(
+    stratum_dir: Path,
+    adapter_name: str,
+    expected_fingerprint: Optional[str],
+    allow_unstamped: bool,
+) -> None:
+    """Refuse to feed the identity slot from a differently-basis'd dataset.
+
+    The 64-d AuraFace-LDA vector is only meaningful together with the basis it
+    was projected through. A refit changes both direction and magnitude, so a
+    slot built from one basis, mixed with arms trained on another, yields a
+    condition the model cannot use — and nothing else notices, because every
+    path returns a valid-looking (64,) tensor. That is the defect class that
+    produced the mixed-basis Eidolon arms.
+
+    Two checks, because they fail differently:
+      1. the directory stamp's basis_fingerprint must match the config's declared
+         expectation — catches a renamed or stale tree;
+      2. the MEASURED norm of a sample of identity vectors must sit in the
+         unit-norm band — catches a raw-coords (~153) or pre-refit (~0.35) tree
+         by reading the tensor, not by trusting a convention string.
+
+    `allow_unstamped` downgrades (1) to a warning. It deliberately does NOT
+    excuse (2): a measured scale mismatch is a definite confound, not a
+    bookkeeping gap.
+    """
+    if adapter_name != "eidolon":
+        return
+
+    label = "[StratumDataset] IDENTITY BASIS"
+
+    def _fail(msg: str) -> None:
+        if allow_unstamped:
+            print(f"[StratumDataset] WARNING: {msg}  "
+                  f"(proceeding: data.allow_unstamped_identity=true)")
+        else:
+            raise RuntimeError(
+                f"{msg}  Fix: set data.basis_fingerprint to the dataset's "
+                f"BASIS_FINGERPRINT.json value, or set "
+                f"data.allow_unstamped_identity=true to accept this knowingly "
+                f"(geometry-only runs of concluded arms only).")
+
+    stamp_path = stratum_dir / "BASIS_FINGERPRINT.json"
+    found, conv = None, None
+    if stamp_path.exists():
+        try:
+            stamp = json.loads(stamp_path.read_text())
+            found = stamp.get("basis_fingerprint")
+            conv = stamp.get("projection_convention")
+        except Exception as e:               # unreadable stamp = no evidence
+            _fail(f"{label} UNGUARDED: {stamp_path} is unreadable ({e}).")
+
+    if not found:
+        _fail(f"{label} UNGUARDED: {stratum_dir} carries no BASIS_FINGERPRINT.json, "
+              f"so the auraface_lda slot cannot be verified.")
+    elif expected_fingerprint and found != expected_fingerprint:
+        raise RuntimeError(
+            f"{label} MISMATCH: {stratum_dir} is stamped {found} but the config "
+            f"declares data.basis_fingerprint={expected_fingerprint}. The identity "
+            f"vectors are in a different basis (direction AND magnitude) than this "
+            f"run expects — refusing to train on a mixed-basis identity slot.")
+    elif not expected_fingerprint:
+        _fail(f"{label} UNGUARDED: {stratum_dir} is stamped {found} ({conv}) but the "
+              f"config declares no data.basis_fingerprint to check it against.")
+    else:
+        print(f"{label} stamp OK: {found} ({conv})")
+
+    # (2) measured scale, independent of the stamp and of its wording.
+    sample_dirs = []
+    try:
+        for d in sorted(stratum_dir.iterdir()):
+            if (d / "auraface_lda.npy").exists():
+                sample_dirs.append(d)
+                if len(sample_dirs) >= 8:
+                    break
+    except OSError as e:
+        _fail(f"{label} UNGUARDED: cannot list {stratum_dir} ({e}).")
+        return
+
+    if not sample_dirs:
+        _fail(f"{label} UNGUARDED: no auraface_lda.npy under {stratum_dir}.")
+        return
+
+    norms = []
+    for d in sample_dirs:
+        try:
+            norms.append(float(np.linalg.norm(np.load(d / "auraface_lda.npy"))))
+        except Exception:
+            continue
+    if not norms:
+        _fail(f"{label} UNGUARDED: sampled auraface_lda.npy files were unreadable.")
+        return
+
+    lo, hi = _IDENTITY_NORM_BAND
+    med = float(np.median(norms))
+    if not (lo <= med <= hi):
+        raise RuntimeError(
+            f"{label} SCALE MISMATCH: median norm {med:.3f} over {len(norms)} sampled "
+            f"identity vectors in {stratum_dir} falls outside the unit-norm band "
+            f"[{lo}, {hi}]. Unit-norm refit coords are ~1.0, raw coords ~153, "
+            f"pre-refit coords ~0.35. The DiT identity slot requires unit-norm "
+            f"vectors — refusing to train at a {med:.3f} scale.")
+    print(f"{label} scale OK: median norm {med:.3f} over {len(norms)} sampled vectors")
