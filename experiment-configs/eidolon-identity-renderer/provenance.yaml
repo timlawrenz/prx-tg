@@ -84,10 +84,33 @@ training_steps: 10000
 training_step_policy: >-
   10,000 steps granted and monitored in 1k BLOCKS. Each 1k boundary is a release point on the
   shared 4090 (the latent-first 1k-SEGMENT policy: reserve only to the next boundary, release
-  there if another project is queued, auto-continue otherwise). checkpoint.save_every ==
-  validation.interval_steps == 1000, so every boundary yields both a resumable state and a
-  liveness sample; save_optimizer is true so a block resumed later continues the same
+  there if another project is queued, auto-continue otherwise). checkpoint.save_every is
+  1000, so every 1k boundary yields a resumable state, while validation and its yaw sweep
+  run every 500 steps (see hook_policy below); save_optimizer is true so a resumed block
+  continues the same
   trajectory. The budget is NOT gated on a measured s/it.
+hook_policy:
+  validation_interval_steps: 500   # the yaw sweep is this arm's periodic check
+  yaw_sweep: >-
+    z_g dim0 IS the yaw axis (|corr| 0.97 with DWPose head yaw, ~14 deg/sigma:
+    scripts/diag_pose_cfg_sweep.py), so the validator's eidolon "geometry sweep" IS this
+    arm's yaw sweep. Before this change it fixed identity but NOT the noise -- each sweep
+    value drew its own initial latent -- so a pose change could not be attributed to z_g;
+    it now uses one seed per persona (intra-sample: same face, same noise, only z_g moves)
+    and sweeps -3..+3 sigma (~+/-42 deg) to match the post-run measurement's range.
+  what_the_in_run_sweep_does_not_do: >-
+    it produces a labelled collage and measures NOTHING. DWPose yaw and AuraFace identity
+    on those images are the post-run step (diag_pose_cfg_sweep.py, then the gate harness).
+    The collage must never be read as a metric.
+  visual_debug: disabled           # unseeded collage; redundant with the sweep and would
+                                   # stack a second hook on every multiple of 1000
+  cfg_branch_naming: >-
+    for adapter_name eidolon the dual-CFG branch names do not mean what they say: sample.py
+    builds the ladder from the text/DINO path, and for this adapter the "text" branch is
+    IDENTITY-only while the "dino" branch is GEOMETRY-only. So sampling.text_scale is the
+    IDENTITY scale and sampling.dino_scale the GEOMETRY scale. Both branches are partition
+    marginals consumed at EVAL time, which is why p_identity_only 0.20 is load-bearing for
+    inference and not only during training.
 data_snapshot: "FFHQ stratum 70k latents + hegre_corpus 31,711 (flux latents encoding)"
 agent_model: null
 agent_model_snapshot: null

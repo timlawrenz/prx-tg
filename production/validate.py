@@ -1025,15 +1025,23 @@ class ValidationRunner:
             'results': results,
         }
     
+    # z_g dim0 IS the yaw axis: |corr| = 0.97 with DWPose head yaw, ~14 deg/sigma
+    # (scripts/diag_pose_cfg_sweep.py). So for an eidolon arm this IS the yaw sweep.
     EIDOLON_GEOMETRY_SWEEP_INDICES = [10, 30, 50]
-    EIDOLON_GEOMETRY_SWEEP_DIM = 0  # which z_g dimension to sweep
-    EIDOLON_GEOMETRY_SWEEP_VALUES = [-2.0, -1.0, 0.0, 1.0, 2.0]
+    EIDOLON_GEOMETRY_SWEEP_DIM = 0  # 0 = yaw
+    # +/-3 sigma == ~+/-42 deg yaw, matching diag_pose_cfg_sweep.py so the in-run
+    # collage and the post-run measurement read the same range.
+    EIDOLON_GEOMETRY_SWEEP_VALUES = [-3.0, -1.5, 0.0, 1.5, 3.0]
     
     def run_eidolon_geometry_sweep_test(self, step, sampler, latent_size=None):
-        """Eidolon Test: Geometry sweep — fix identity, sweep one z_g dimension.
+        """Eidolon Test: yaw sweep — fix identity and noise, sweep z_g dim0 (yaw).
         
-        Fixes identity_emb, sweeps one z_g dimension through multiple values.
-        DWPose should track pose change, AuraFace should hold (same identity).
+        Fixes identity_emb and the initial noise, then sweeps z_g dim0 (the yaw
+        axis, |corr| 0.97) through EIDOLON_GEOMETRY_SWEEP_VALUES. What this
+        produces is a labelled COLLAGE -- it measures nothing. DWPose yaw and
+        AuraFace identity on these images is the post-run step
+        (scripts/diag_pose_cfg_sweep.py, and the gate harness); do not read the
+        collage as a metric.
         
         Args:
             step: current training step
@@ -1061,6 +1069,13 @@ class ValidationRunner:
             sweep_images = []
             sweep_labels = []
             
+            # ONE seed for the whole sweep. Without this the 5 sweep values each drew
+            # their own noise, so a pose change could not be attributed to z_g -- it
+            # was a mixture of the z_g change and a different initial draw. Fixed
+            # per sample_idx, so the sweep is intra-sample: same persona, same noise,
+            # only z_g moves.
+            sweep_seed = VALIDATION_NOISE_SEED_BASE + 5000 + sample_idx
+
             for val in self.EIDOLON_GEOMETRY_SWEEP_VALUES:
                 modified_geometry = base_geometry.clone()
                 modified_geometry[:, sweep_dim] = val
@@ -1070,8 +1085,17 @@ class ValidationRunner:
                     'geometry_emb': modified_geometry,
                 }
                 
+                # Eidolon reuses the dual-CFG ladder, so the branch NAMES do not mean
+                # what they say here: sample.py's "text" branch is IDENTITY-only and
+                # its "dino" branch is GEOMETRY-only. So text_scale is this arm's
+                # identity scale and dino_scale its geometry scale. Passed explicitly
+                # so a change to the sampler's own defaults cannot move the sweep
+                # silently.
                 gen = sampler.generate(
                     latent_size=latent_size,
+                    seed=sweep_seed,
+                    text_scale=self.text_scale,
+                    dino_scale=self.dino_scale,
                     **sweep_kwargs,
                 )[0]  # (3, H, W)
                 
@@ -1098,6 +1122,9 @@ class ValidationRunner:
                 'sample_idx': sample_idx,
                 'sweep_dim': sweep_dim,
                 'sweep_values': self.EIDOLON_GEOMETRY_SWEEP_VALUES,
+                'seed': sweep_seed,
+                'identity_scale': self.text_scale,   # the "text" branch IS identity
+                'geometry_scale': self.dino_scale,   # the "dino" branch IS geometry
             })
             
             del sweep_images, sweep_kwargs

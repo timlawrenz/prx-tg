@@ -153,16 +153,43 @@ checkpoint:
   save_optimizer: true     # REQUIRED to resume across a block boundary
   output_dir: "checkpoints"
 
+# ── in-train hooks ─────────────────────────────────────────────────────────────
+# Sampling used by the hooks below. NOTE: the dual-CFG branch NAMES do not survive
+# the adapter switch. sample.py builds the ladder from the text/DINO code path, and
+# for adapter_name: eidolon its "text" branch is IDENTITY-only while its "dino"
+# branch is GEOMETRY-only. So here:
+#   text_scale  = the IDENTITY guidance scale
+#   dino_scale  = the GEOMETRY (pose) guidance scale
+# These are also exactly the two partition marginals, consumed at EVAL time: the
+# identity-only branch is the geometry-CFG negative and the geometry-only branch is
+# the identity-CFG negative. That is why p_identity_only 0.20 is load-bearing at
+# inference and not only during training -- a 0.00 profile would feed the sampler an
+# untrained branch on every eval render.
+sampling:
+  num_steps: 50
+  text_scale: 3.0       # IDENTITY guidance
+  dino_scale: 2.0       # GEOMETRY (pose) guidance
+  self_guidance: false  # dual CFG, 3 passes: uncond + identity-only + geometry-only
+  guidance_scale: 3.0   # unused while self_guidance is false
+
 validation:
   enabled: true
-  interval_steps: 1000     # aligned to the block boundary, not a second cadence
+  # 500, not a 1k-block multiple: the yaw sweep is this arm's central diagnostic
+  # (z_g dim0 IS the yaw axis, |corr| 0.97, ~14 deg/sigma) and sampling it every
+  # 500 steps puts 20 points on the pose-binding curve over the 10k budget. The
+  # sweep costs 15 renders (3 personas x 5 values); reconstruction (25 indices) and
+  # the identity swap dominate the cost, so MEASURE one pass during block 1 before
+  # assuming 500 is affordable.
+  interval_steps: 500
   num_samples: 16
-  # This arm has no text stream and no DINO stream (both disabled above), so the
-  # text-manipulation and dino-swap hooks have no input to vary. The identity
-  # check for this arm is run_eidolon_identity_swap_test (validate.py L944),
-  # wired into the gate harness; the in-run hooks are for liveness, not the verdict.
   run_reconstruction: true
+  # Skipped for the eidolon adapter by the validator itself (validate.py's
+  # run_validation). The "dino" CFG branch still exists -- as the geometry pass.
   run_dino_swap: false
   run_text_manip: false
-  visual_debug_interval: 1000
+  # DISABLED for this arm: the sweep collage IS the visualization here (labelled,
+  # 5 z_g values, fixed identity), whereas visual_debug draws FRESH noise on every
+  # call -- it passes no seed -- so its images cannot be tracked across steps and
+  # would double the hook cost at every multiple of 1000.
+  visual_debug_interval: 0
   visual_debug_num_samples: 4
