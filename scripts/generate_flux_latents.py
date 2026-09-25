@@ -41,11 +41,20 @@ def main():
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--sleep-s", type=float, default=0.0, help="insert sleep between dirs (rate-limit NAS)")
     ap.add_argument("--nvidia-free-floor", type=float, default=5.0, help="GB; pause if other procs consume below this")
+    ap.add_argument("--root", type=str, default=STRATUM,
+                    help="dataset root holding per-sample dirs (default: FFHQ stratum). "
+                         "Each dir must contain pixel.npy (3,1024,1024) f16.")
     ap.add_argument("--request-from", type=str, default="", help="scheduler job id (heartbeat uses it)")
     args = ap.parse_args()
 
-    dirs = sorted(d for d in os.listdir(STRATUM) if os.path.isdir(os.path.join(STRATUM, d)))
-    print(f"[init] {len(dirs)} stratum dirs")
+    ROOT = os.path.abspath(args.root)
+    if not os.path.isdir(ROOT):
+        print(f"[fatal] root does not exist: {ROOT}")
+        sys.exit(2)
+
+    dirs = sorted(d for d in os.listdir(ROOT) if os.path.isdir(os.path.join(ROOT, d)))
+    print(f"[init] root={ROOT}")
+    print(f"[init] {len(dirs)} sample dirs")
 
     vae = csd.VAE(sd=cu.load_torch_file(AE_PATH))
     print("[vae] FLUX AE loaded")
@@ -55,7 +64,7 @@ def main():
     for i, d in enumerate(dirs):
         if args.limit and i >= args.limit:
             break
-        dp = os.path.join(STRATUM, d)
+        dp = os.path.join(ROOT, d)
         out_np = os.path.join(dp, "flux_latent.npy")
         tmp_np = out_np + ".tmp.npy"  # np.save appends .npy; use .tmp.npy so replace target is clean
         if os.path.exists(out_np):  # resume

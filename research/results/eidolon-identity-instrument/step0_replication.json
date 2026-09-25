@@ -1,0 +1,42 @@
+{
+  "replicates": "evidence-20260923/test_average_discriminative.py",
+  "recorded": {
+    "R@1": 0.8879,
+    "R@5": 0.9502,
+    "R@10": 0.9657,
+    "chance_R@1": 0.0031
+  },
+  "chance_R@1": 0.003076923076923077,
+  "n_queries": 321,
+  "n_personas_index": 325,
+  "provenance": {
+    "basis_files": {
+      "auraface_lda.npz": "8ebcc47f6de6cecb",
+      "auraface_preprocess.npz": "6bbc0937b7b83d6a"
+    },
+    "basis_fingerprint": "120e1c5a1dc4f423",
+    "index_convention": "averages/*.lda.npy, L2-normalized (norm 1.0)",
+    "query_convention": "per-image LDA, L2-normalized (raw norm ~153)",
+    "seed": 42,
+    "run_at": "2026-09-24T20:28:06-0400"
+  },
+  "cosine": {
+    "R@1": 0.8909657320872274,
+    "R@5": 0.9501557632398754,
+    "R@10": 0.9657320872274143,
+    "median_rank": 1.0
+  },
+  "euclidean": {
+    "R@1": 0.8909657320872274,
+    "R@5": 0.9501557632398754,
+    "R@10": 0.9657320872274143,
+    "median_rank": 1.0
+  },
+  "margin": {
+    "own_mean": 0.04939155477020989,
+    "nearest_other_mean": 0.07401538357361494,
+    "margin_mean": 0.02462382880340505,
+    "frac_own_lt_other": 0.8909657320872274
+  },
+  "replication_delta_cosine_R@1": 0.0030657320872273797
+}

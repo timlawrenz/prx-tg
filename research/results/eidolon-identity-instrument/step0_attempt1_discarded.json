@@ -1,0 +1,49 @@
+{
+  "A_index": {
+    "n_queries": 1284,
+    "R@1": 0.8426791277258567,
+    "R@5": 0.9026479750778816,
+    "R@10": 0.911993769470405,
+    "median_rank": 1.0,
+    "mean_own_minus_best_other_sim": -0.0007205471166076899,
+    "n_personas": 321,
+    "chance_R@1": 0.003115264797507788
+  },
+  "B_cross_shoot": {
+    "n_queries": 1284,
+    "R@1": 0.8200934579439252,
+    "R@5": 0.8925233644859814,
+    "R@10": 0.9010903426791277,
+    "median_rank": 1.0,
+    "mean_own_minus_best_other_sim": -0.0005554520789179737,
+    "n_personas": 321,
+    "chance_R@1": 0.003115264797507788
+  },
+  "published_reference": {
+    "R@1": 0.8879,
+    "R@5": 0.9502,
+    "R@10": 0.9657,
+    "chance_R@1": 0.0031,
+    "source": "2026-09-23 brief \u00a73.2 (persona-average index)"
+  },
+  "provenance": {
+    "basis_dir": "/home/tim/source/activity/eidolon/experiments/geometry_pca/output",
+    "basis_files": {
+      "auraface_lda.npz": "8ebcc47f6de6cecb",
+      "auraface_preprocess.npz": "6bbc0937b7b83d6a"
+    },
+    "computed_basis_fingerprint": "120e1c5a1dc4f423",
+    "expected_basis_fingerprint": "120e1c5a1dc4f423",
+    "v1_lda_convention": "refit basis, raw coords (norm ~153)",
+    "corpus_convention": "refit basis + L2-normalize (norm 1.0)",
+    "corpus_manifest_content_fingerprint": "e2f66241288e1f50",
+    "note_on_fingerprints": "basis_fingerprint = sha256(basis artifacts) = the projection; lda_basis_fingerprint = sha256(corpus averages/*.lda.npy) = the content. Different by design.",
+    "query_convention": "per-image LDA L2-normalized (raw norm ~150.9)",
+    "index_convention": "corpus centroids, unit-norm, 64-d",
+    "tail": "FFHQ cannot appear here: 1 image/identity gives no cross-shoot pair",
+    "git_commit": "82cdac55978445258bca9bdf93040ffe7806be75",
+    "run_at": "2026-09-24T20:26:12-0400",
+    "seed": 42,
+    "per_persona": 4
+  }
+}
