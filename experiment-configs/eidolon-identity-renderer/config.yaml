@@ -2,8 +2,16 @@
 # eidolon-identity-renderer (Arm EIR) — canonical config
 #
 # STATUS: PROVISIONAL — NOT FROZEN. No training run may launch against this file
-# until every `TBD` below is resolved and this header is replaced with the
+# until the remaining TBDs are resolved and this header is replaced with the
 # frozen-at-run-start statement (AGENTS.md §0.2, §0.7 rule 2).
+#
+# NOTE ON KEYS: every key below is declared on a config dataclass. Unknown keys
+# now FAIL CLOSED (production/config_loader.py), because an unread key silently
+# makes the config lie about the run — that is how hegre-geometry (2026-07-05)
+# came to claim "weighted interleaving of ffhq (70%) + hegre (30%)" while its
+# loader read one root. Earlier revisions of THIS file had three such keys
+# (`experiment`, `extra_stratum_dirs`, `data.latent_mode`); all are gone.
+# Verify with: .venv/bin/python scripts/smoke_stratum_dataloader.py
 #
 # What this arm tests (ablation hypothesis):
 #   That a from-scratch FLUX-VAE latent DiT carrying the Eidolon adapter learns a
@@ -13,82 +21,114 @@
 #
 # How it differs from the baseline:
 #   - vs `latent-first-pretrain` (P1): Eidolon adapter replaces text/DINO
-#     conditioning; hegre joins FFHQ as a training source.
-#   - vs `eidolon-conditioning`: that arm is PIXEL-space (in_channels 3, ps 16);
-#     this arm trains in FLUX-AE latent space.
-#   - no warm-start, no PP stage, no weight donor, no REPA (hegre ships no
-#     dinov3_patches) — see README.md.
+#     conditioning; hegre joins FFHQ as a training source (2:1 weighted).
+#   - vs `eidolon-conditioning` / `hegre-geometry` (both PIXEL-space, ps16):
+#     this arm trains in FLUX-AE latent space (in_channels 16, patch_size 2).
+#   - vs `hegre-geometry`: p_identity_only 0.20 -> 0.00 (see adapter.cfg_dropout),
+#     and the multi-source it claimed is actually implemented here.
+#   - no warm-start, no PP stage, no weight donor, no REPA (hegre ships none).
 #
 # Expected outcome:
 #   PASS on the pre-registered gate (held-out identity retrieval well above
-#   chance on both probes, references 0.9504 at a 32-persona index and 0.8180 at
-#   313). The informative failure to watch for is the MEMORIZATION SIGNATURE:
-#   strong on trained identities, weak on held-out ones — a FAIL even when the
-#   trained-identity number looks good.
+#   chance on both probes; references 0.9504 at a 32-persona index, 0.8180 at
+#   313, ~1.0 for the FFHQ fidelity probe). The informative failure to watch for
+#   is the MEMORIZATION SIGNATURE: strong on trained identities, weak on held-out
+#   ones — a FAIL even when the trained-identity number looks good.
 #
-# Gate + holdout live in provenance.yaml and data/splits/eidolon-identity-holdout.json.
+# Gate + holdout: provenance.yaml and holdout.json (this directory).
 # =============================================================================
 
-# --- frozen by the pre-registration (decided, do not silently drift) ---
-experiment:
-  slug: eidolon-identity-renderer
-  arm_letter: EIR
-  mode: confirmatory            # set BEFORE the first run
-  frozen: false                 # PROVISIONAL: flips to true only at run start
+adapter:
+  name: "eidolon"
+  identity_dim: 64
+  z_g_dim: 50
+  # Arm O's proven per-dim basis. The CFG guard lives in adapters.py
+  # (EidolonAdapter.forward): the basis is only added when geometry is live,
+  # which is what stopped Arm N's collapse. Do not enable without that guard.
+  geometry_token_basis: true
+  cfg_dropout:
+    # Read by train.py L1372 for adapter_name == "eidolon": the adapter's own
+    # 3-way partition, NOT the legacy 7-stream `training.cfg_dropout` schema.
+    # Marginals of a partition; the remainder (0.60) = steps with BOTH live.
+    p_uncond: 0.10
+    # RECOMMENDED, AWAITING CONFIRMATION: 0.00 = never train
+    # identity-without-geometry. AuraFace carries pose (yaw R^2 ~0.46,
+    # pitch ~0.64), so that slice teaches "invent a pose from identity" — a
+    # conditioning state we never use at inference, since z_g is always supplied.
+    # `eidolon-conditioning` and `hegre-geometry` both ran 0.20 here.
+    p_identity_only: 0.00
+    # geometry without identity — Arm O's recipe, the slice that produced
+    # controlled yaw instead of the z_g -> identity shortcut.
+    p_geometry_only: 0.30
+
+model:
+  hidden_size: 768             # P1's body: a known-good shape, no lineage claim
+  depth: 18
+  num_heads: 12
+  patch_size: 2                # 128/2 = 64x64 tokens == the pixel ps16 grid
+  mlp_ratio: 4.0
+  in_channels: 16              # FLUX-AE latent channels
+  prediction_type: x_prediction
+  input_size: 128              # latent spatial size (1024px / 8x AE)
+  latent_space: true           # latent-mode discriminator (drives the loader)
 
 data:
-  source: stratum
-  stratum_dir: /mnt/nas-ai-models/training-data/ffhq/stratum
-  # hegre joins as the multi-shot identity source (the only source of the
-  # pose-invariance signal); its personas are the model's mechanism, not enrichment.
-  extra_stratum_dirs:
-    - /mnt/nas-ai-models/training-data/eidolon/hegre_corpus
-  latent_mode: true             # flux_latent.npy (16,128,128); NOT pixel.npy
-  # IDENTITY-BASIS GUARD (see production/data_stratum.py::_assert_identity_basis):
-  # a mixed-basis identity slot trains silently, which is the defect that produced
-  # the mixed-basis Eidolon arms.
+  source: "stratum"
+  stratum_dir: "/mnt/nas-ai-models/training-data/ffhq/stratum"   # validation/vdbg root
+  # Weighted interleaving — IMPLEMENTED NOW (MultiStratumDataset). `weight` is a
+  # relative DRAW SHARE per epoch: 2:1 = FFHQ drawn twice as often as hegre. The
+  # binding root gets one full pass; a shorter root is recycled within the epoch
+  # so the configured ratio actually holds for the whole epoch.
+  stratum_dirs:
+    - dir: "/mnt/nas-ai-models/training-data/ffhq/stratum"
+      weight: 2.0
+    - dir: "/mnt/nas-ai-models/training-data/eidolon/hegre_corpus"
+      weight: 1.0
+  # IDENTITY-BASIS GUARD: a mixed-basis identity slot trains silently, and that is
+  # the defect that produced the mixed-basis Eidolon arms. Both trees carry this
+  # fingerprint; the loader also measures the sampled vector norm (unit band).
   basis_fingerprint: "120e1c5a1dc4f423"
   allow_unstamped_identity: false
-  # LOCKED identity-level holdout: identities whose vectors are NEVER fed in training,
-  # so the gate measures generalization rather than recall.
-  holdout_manifest: data/splits/eidolon-identity-holdout.json
-
-conditioning:
-  adapter_name: eidolon
-  identity:
-    space: lda                 # 64-d, nuisance-cleaned (pitch/yaw projected out)
-    dim: 64
-    stream: adaLN              # per-persona identity via adaLN
-    # UNITS: the DiT identity slot expects L2-NORMALIZED vectors (norm 1.0).
-    # On-disk per-image vectors are RAW (~153); the corpus slot is unit-norm.
-    unit_norm: true
-  geometry:
-    space: z_g
-    dim: 50
-    stream: cross_attention
-    basis: per_dim             # per-dim basis (Arm O's proven geometry recipe)
-  text: false                  # NO text stream in this arm
-  repa: false                  # hegre ships no dinov3_patches.npy -> REPA dropped
-
-# --- model shape: inherits P1 (see README "Open items") ---
-model:
-  in_channels: 16              # FLUX-AE latent
-  input_size: 128
-  patch_size: 2                # keeps P1's 64x64 token grid
-  latent_space: true
-  prediction_type: x_prediction
-  TBD_architecture: "inherit P1's 768x18 body — not yet frozen in this file"
+  # LOCKED identity-level holdout: 6,996 FFHQ identity dirs + 32 hegre personas
+  # never enter training, so the gate measures generalization, not recall. The
+  # loader verifies each list's recorded sha256 and fails closed if the manifest
+  # does not describe the tree.
+  holdout_manifest: "experiment-configs/eidolon-identity-renderer/holdout.json"
 
 training:
-  steps: 10000                 # 1k-segment granularity (GPU scheduler policy)
-  optimizer: muon
-  lr: 3.0e-4
-  min_lr: 1.0e-6
-  effective_batch: 256
-  # TBD: dropout profile is an OPEN DECISION (README "Open items" #1).
-  #   p_identity_only is the dangerous slice: AuraFace leaks pose (yaw R^2 ~0.46,
-  #   pitch ~0.64), so without the CFG guard it injects noise rather than signal.
-  TBD_p_uncond: 0.10
-  TBD_p_identity_only: 0.20
-  TBD_p_geometry_only: 0.30
-  TBD_note: "marginals of a partition; remainder = fraction of steps with BOTH streams"
+  total_steps: 10000           # TBD: gate on a measured s/it from the sanity run
+  warmup_steps: 500
+  batch_size: 4
+  grad_accumulation_steps: 64  # effective batch = 256
+  grad_clip: 1.0
+  ema_decay: 0.9999
+  ema_warmup_steps: 1000
+  optimizer:
+    type: "Muon"
+    lr: 3.0e-4
+    min_lr: 1.0e-6
+    betas: [0.9, 0.95]
+    weight_decay: 0.03
+    eps: 1.0e-8
+    muon:
+      momentum: 0.95
+      nesterov: true
+      ns_steps: 5
+      adjust_lr_fn: "match_rms_adamw"
+  # The eidolon adapter drops both streams; disabling them avoids reading 8.4 MB
+  # of dinov3_patches per sample for nothing.
+  dino_patches:
+    enabled: false
+  repa:
+    enabled: false             # hegre ships zero dinov3_patches.npy -> REPA is not
+                               # available on the source that carries the mechanism
+  tread:
+    enabled: true
+    routing_probability: 0.5
+    route_start: 1
+    route_end: -1
+    self_guidance: true
+    guidance_scale: 3.0
+  timestep_sampling: "logit_normal"
+  logit_normal_loc: 0.0
+  logit_normal_scale: 1.0

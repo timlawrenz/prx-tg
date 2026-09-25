@@ -359,16 +359,30 @@ def get_production_dataloader(config, device='cuda', adapter_name='stratum'):
     prefetch_factor = getattr(data_cfg, 'prefetch_factor', 2) if num_workers > 0 else None
 
     if getattr(data_cfg, 'source', 'webdataset') == 'stratum':
-        from .data_stratum import get_stratum_dataloader
+        from .data_stratum import (get_stratum_dataloader, get_multi_stratum_dataloader,
+                                   load_holdout_exclusions)
         print(f"  Data source: stratum")
-        print(f"  Stratum dir: {data_cfg.stratum_dir}")
         print(f"  Batch size: {training_cfg.batch_size}")
         print(f"  Dataloader workers: {num_workers} (pin_memory={pin_memory})")
-        
-        dataset = get_stratum_dataloader(
-            stratum_dir=data_cfg.stratum_dir,
-            batch_size=training_cfg.batch_size,
-            shuffle=True,
+
+        # ── identity-level holdout ─────────────────────────────────────────
+        # Both exclusion sets go to EVERY root: an FFHQ entry matches a dir
+        # name, a hegre entry matches the persona before `--`, and each root
+        # fails closed if a supplied set matches nothing there. So the config
+        # cannot silently train on the identities the gate is measured on.
+        excl = {}
+        holdout_path = getattr(data_cfg, 'holdout_manifest', None)
+        if holdout_path:
+            ex = load_holdout_exclusions(holdout_path)
+            excl = {'exclude_dirs': ex['dirs'], 'exclude_personas': ex['personas']}
+            print(f"  Holdout manifest: {holdout_path} "
+                  f"({len(ex['dirs'])} dir ids, {len(ex['personas'])} persona ids)")
+        else:
+            print("  warning: no data.holdout_manifest — no identity-level holdout "
+                  "is excluded, so this run cannot measure unseen-identity "
+                  "generalization (the gate would measure recall)")
+
+        root_kwargs = dict(
             target_latent_size=config.model.input_size,
             max_samples=data_cfg.stratum_max_samples,
             adapter_name=adapter_name,
@@ -377,14 +391,34 @@ def get_production_dataloader(config, device='cuda', adapter_name='stratum'):
             allow_unstamped_identity=getattr(data_cfg, 'allow_unstamped_identity', False),
             prefer_pose2=(int(getattr(config.model, 'num_pose_joints', 133)) == 308),
             latent_mode=bool(getattr(config.model, 'latent_space', False)),
-            # Load only the streams this run consumes (per-sample I/O ↓ 3-4×):
+            # Load only the streams this run consumes (per-sample I/O down 3-4x):
             load_dino_patches=bool(getattr(getattr(config.training, 'dino_patches', None), 'enabled', True)),
             load_seg=(bool(getattr(getattr(config.training, 'seg_weight', None), 'enabled', False))
                       or bool(getattr(getattr(config.training, 'matting_edge', None), 'enabled', False))),
             load_geometry_3d=(float(getattr(getattr(config.training, 'cfg_dropout', None),
                                            'p_drop_geometry_3d', 0.0) or 0.0) > 0),
             load_matting=bool(getattr(getattr(config.training, 'matting_edge', None), 'enabled', False)),
+            **excl,
         )
+
+        strata = getattr(data_cfg, 'stratum_dirs', None)
+        if strata:
+            print(f"  Multi-source: {len(strata)} roots (weighted interleaving)")
+            for e in strata:
+                d_ = e.get('dir') if isinstance(e, dict) else e
+                w_ = e.get('weight', 1.0) if isinstance(e, dict) else 1.0
+                print(f"    {d_}  weight={w_}")
+            dataset = get_multi_stratum_dataloader(
+                strata, batch_size=training_cfg.batch_size, shuffle=True, **root_kwargs)
+        else:
+            print(f"  Stratum dir: {data_cfg.stratum_dir}")
+            dataset = get_stratum_dataloader(
+                stratum_dir=data_cfg.stratum_dir,
+                batch_size=training_cfg.batch_size,
+                shuffle=True,
+                **root_kwargs,
+            )
+
         return DataLoader(
             dataset,
             batch_size=None,

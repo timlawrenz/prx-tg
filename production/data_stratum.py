@@ -143,6 +143,8 @@ class StratumDataset(IterableDataset):
         load_matting: bool = False,
         expected_basis_fingerprint: Optional[str] = None,
         allow_unstamped_identity: bool = False,
+        exclude_dirs: Optional[set] = None,
+        exclude_personas: Optional[set] = None,
     ):
         """
         Args:
@@ -193,6 +195,11 @@ class StratumDataset(IterableDataset):
         self.load_matting = load_matting
         self.expected_basis_fingerprint = expected_basis_fingerprint
         self.allow_unstamped_identity = allow_unstamped_identity
+        # Identity-level holdout. `exclude_dirs` matches a sample directory name
+        # (FFHQ: the identity IS the dir), `exclude_personas` matches the part
+        # before `--` (hegre: one dir per shot of a persona).
+        self.exclude_dirs = exclude_dirs or set()
+        self.exclude_personas = exclude_personas or set()
 
         # Refuse a mixed-basis identity slot before any sample is read (eidolon only).
         _assert_identity_basis(self.stratum_dir, self.adapter_name,
@@ -202,18 +209,53 @@ class StratumDataset(IterableDataset):
         # latent_mode gates on flux_latent.npy — images lacking the latent are skipped
         # entirely (never mixed with pixel fallback).
         img_file = "flux_latent.npy" if latent_mode else "pixel.npy"
+        # The eidolon adapter needs its identity + geometry sidecars on EVERY
+        # sample it is offered. Without this the scan counts dirs that the loader
+        # then throws on, so the printed sample count is not what the run
+        # consumes (40 FFHQ dirs carry a latent but no auraface_lda.npy).
+        needs_eidolon = (self.adapter_name == "eidolon")
         existing = sorted([
             d for d in self.stratum_dir.iterdir()
             if d.is_dir() and (d / img_file).exists()
             and (not require_pose2 or (d / "pose2.npy").exists())
             and (not prefer_pose2 or (d / "pose2.npy").exists())
+            and (not needs_eidolon
+                 or ((d / "auraface_lda.npy").exists() and (d / "z_g.npy").exists()))
         ])
+        # ── identity-level holdout: drop excluded identities BEFORE any cap ──
+        n_scanned = len(existing)
+        if self.exclude_dirs or self.exclude_personas:
+            existing = [d for d in existing if not self._is_excluded(d)]
+            n_excluded = n_scanned - len(existing)
+            print(f"[StratumDataset] holdout: excluded {n_excluded} of {n_scanned} dirs "
+                  f"({len(self.exclude_dirs)} dir ids, {len(self.exclude_personas)} persona ids)")
+            # Fail closed if nothing matched: it means the manifest does not
+            # describe THIS tree, and training on the holdout silently is the one
+            # failure this mechanism exists to prevent.
+            if n_excluded == 0:
+                raise RuntimeError(
+                    f"holdout excluded 0 of {n_scanned} dirs under {self.stratum_dir} — "
+                    f"the manifest does not describe this tree (wrong root, or the tree "
+                    f"was rebuilt). Refusing to train on the holdout.")
         if max_samples is not None and len(existing) > max_samples:
             existing = existing[:max_samples]
         self._dirs = existing
         print(f"[StratumDataset] {len(self._dirs)} samples in {self.stratum_dir}"
               + (f" (latent_mode=True)" if latent_mode else "")
               + (f" (require_pose2=True)" if require_pose2 else ""))
+
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _persona_of(name: str) -> Optional[str]:
+        """Persona id from a sample dir name, or None for a flat (FFHQ) tree."""
+        return name.split("--", 1)[0] if "--" in name else None
+
+    def _is_excluded(self, d: Path) -> bool:
+        if d.name in self.exclude_dirs:
+            return True
+        persona = self._persona_of(d.name)
+        return persona is not None and persona in self.exclude_personas
 
     # ------------------------------------------------------------------
 
@@ -434,6 +476,8 @@ def get_stratum_dataloader(
     load_matting: bool = False,
     expected_basis_fingerprint: Optional[str] = None,
     allow_unstamped_identity: bool = False,
+    exclude_dirs: Optional[set] = None,
+    exclude_personas: Optional[set] = None,
 ) -> StratumDataset:
     """Create a StratumDataset dataloader.
 
@@ -467,6 +511,8 @@ def get_stratum_dataloader(
         load_matting=load_matting,
         expected_basis_fingerprint=expected_basis_fingerprint,
         allow_unstamped_identity=allow_unstamped_identity,
+        exclude_dirs=exclude_dirs,
+        exclude_personas=exclude_personas,
     )
 
 
@@ -577,3 +623,167 @@ def _assert_identity_basis(
             f"pre-refit coords ~0.35. The DiT identity slot requires unit-norm "
             f"vectors — refusing to train at a {med:.3f} scale.")
     print(f"{label} scale OK: median norm {med:.3f} over {len(norms)} sampled vectors")
+
+
+# ======================================================================
+# Identity-level holdout + multi-source weighted interleaving
+# ======================================================================
+
+def load_holdout_exclusions(manifest_path: str) -> dict:
+    """Read the LOCKED identity-holdout manifest into exclusion sets.
+
+    Returns {"dirs": {...}, "personas": {...}}. Each list's recorded sha256 is
+    verified before use: the manifest is a frozen artifact, and one silently
+    regenerated under an already-gated run would change the training set behind
+    the gate's back.
+
+    The digest convention must match scripts/build_identity_holdout.py exactly:
+    sha256 over each element encoded with a trailing newline, in list order.
+    """
+    import hashlib
+    import json
+
+    p = Path(manifest_path)
+    if not p.is_file():
+        raise FileNotFoundError(f"holdout manifest not found: {p}")
+    m = json.loads(p.read_text())
+
+    def _digest(items):
+        h = hashlib.sha256()
+        for it in items:
+            h.update(it.encode() + b"\n")
+        return h.hexdigest()
+
+    out = {"dirs": set(), "personas": set()}
+    for section, key in (("ffhq", "dirs"), ("hegre", "personas")):
+        block = m.get(section) or {}
+        items = block.get("holdout") or []
+        recorded = block.get("holdout_sha256")
+        if recorded and _digest(items) != recorded:
+            raise ValueError(
+                f"holdout manifest {p} section `{section}` does NOT match its "
+                f"recorded sha256 (recorded {str(recorded)[:16]}, computed "
+                f"{_digest(items)[:16]}). The manifest drifted since it was locked. "
+                f"Regenerate it deliberately and re-derive the gate — do not train "
+                f"on a silent change to the holdout.")
+        if items:
+            out[key] |= set(items)
+
+    if not out["dirs"] and not out["personas"]:
+        raise ValueError(f"holdout manifest {p} declares no exclusions — refusing.")
+    return out
+
+
+class MultiStratumDataset:
+    """Weighted interleaving of several per-image stratum roots.
+
+    One epoch emits samples from every root, interleaved in random order, with
+    each root's share set by its weight. `weight` is a relative DRAW SHARE, not a
+    cap:
+
+        k   = max_i(len(list_i) / w_i)     # the binding root
+        N_i = round(k * w_i)               # draws for root i
+
+    so the configured ratio holds EXACTLY while no root is under-used: the root
+    that binds gets one full pass, and shorter roots are recycled (reshuffled
+    each cycle) to top up their share. That is deliberate — the scarce root here
+    is the one carrying the mechanism under test (hegre is the only multi-shot
+    source), so its share must not collapse to its natural size ratio.
+
+    Each root keeps its OWN identity-basis guard and holdout exclusion, because
+    the trees carry different units (FFHQ: identity == dir; hegre: dir == one
+    shot of a persona).
+    """
+
+    def __init__(self, datasets: list, weights: list, batch_size: int = 4,
+                 shuffle: bool = True, seed: int = 1234):
+        if len(datasets) != len(weights):
+            raise ValueError("datasets and weights must be the same length")
+        if any(w <= 0 for w in weights):
+            raise ValueError(f"weights must be positive, got {weights}")
+        for ds in datasets:
+            if len(ds._dirs) == 0:
+                raise RuntimeError(
+                    f"root {ds.stratum_dir} yielded 0 samples — refusing to start "
+                    f"with an empty source. A silently empty root is how a "
+                    f"multi-source arm quietly becomes a single-source arm.")
+        self.datasets = datasets
+        self.weights = [float(w) for w in weights]
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.seed = seed
+        self._epoch = 0
+
+        lens = [len(d._dirs) for d in datasets]
+        k = max(l / w for l, w in zip(lens, self.weights))
+        draws = [int(round(k * w)) for w in self.weights]
+        print("[MultiStratumDataset] weighted interleaving:")
+        for ds, w, l, n in zip(datasets, self.weights, lens, draws):
+            print(f"    {Path(ds.stratum_dir).name:18s} weight={w:<6g} "
+                  f"available={l:<7d} draws/epoch={n:<7d} recycle={n/l:.2f}x")
+        print(f"    epoch = {sum(draws)} samples -> {sum(draws) // batch_size} batches")
+
+    def _epoch_schedule(self):
+        """(root_index, dir_path) pairs for one epoch, order shuffled."""
+        import random
+        rng = random.Random(self.seed + self._epoch)
+        self._epoch += 1
+        lens = [len(d._dirs) for d in self.datasets]
+        k = max(l / w for l, w in zip(lens, self.weights))
+        sched = []
+        for i, (l, w) in enumerate(zip(lens, self.weights)):
+            need, picked = int(round(k * w)), []
+            while len(picked) < need:
+                order = list(range(l))
+                rng.shuffle(order)
+                picked.extend(order[:need - len(picked)])
+            sched.extend((i, self.datasets[i]._dirs[j]) for j in picked)
+        if self.shuffle:
+            rng.shuffle(sched)
+        return sched
+
+    def __iter__(self):
+        buf = []
+        for ri, d in self._epoch_schedule():
+            try:
+                buf.append(self.datasets[ri]._load(d))
+            except Exception as e:
+                print(f"[MultiStratumDataset] skipping {d.name}: {e}")
+                continue
+            if len(buf) == self.batch_size:
+                yield _collate(buf)
+                buf = []
+        # tail dropped — same behaviour as StratumDataset (partial=False)
+
+    def __len__(self):
+        lens = [len(d._dirs) for d in self.datasets]
+        k = max(l / w for l, w in zip(lens, self.weights))
+        return sum(int(round(k * w)) for w in self.weights) // self.batch_size
+
+
+def get_multi_stratum_dataloader(roots, batch_size: int = 4, shuffle: bool = True,
+                                 seed: int = 1234, **kwargs) -> MultiStratumDataset:
+    """Build a MultiStratumDataset from [{"dir": ..., "weight": ...}, ...].
+
+    Every remaining kwarg is passed through to each per-root StratumDataset, so
+    the guards (basis fingerprint, holdout exclusions, latent_mode) apply per
+    root rather than once for the whole run.
+    """
+    if not roots:
+        raise ValueError("stratum_dirs is empty")
+    datasets, weights = [], []
+    for entry in roots:
+        if isinstance(entry, str):
+            root, w = entry, 1.0
+        elif isinstance(entry, dict):
+            root = entry.get("dir") or entry.get("path")
+            w = float(entry.get("weight", 1.0))
+        else:
+            raise ValueError(f"stratum_dirs entry must be a str or dict, got {entry!r}")
+        if not root:
+            raise ValueError(f"stratum_dirs entry declares no dir: {entry}")
+        datasets.append(StratumDataset(stratum_dir=root, batch_size=batch_size, **kwargs))
+        weights.append(w)
+    return MultiStratumDataset(datasets, weights, batch_size=batch_size,
+                               shuffle=shuffle, seed=seed)
+

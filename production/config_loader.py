@@ -5,7 +5,7 @@ Loads YAML config and provides structured access to all hyperparameters.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 import os
 import yaml
 
@@ -365,6 +365,24 @@ class DataConfig:
     stratum_max_samples: Optional[int] = None
     require_pose2: bool = False       # Skip images without pose2.npy (for pose2 ablation)
 
+    # --- multi-source training: weighted interleaving of per-image roots ---
+    # Each entry is {"dir": <root>, "weight": <float>}. weight is the relative
+    # DRAW SHARE per epoch (2:1 => the first root is drawn twice as often as the
+    # second), not a cap: a root whose list is shorter than its share is recycled
+    # within the epoch so the configured ratio actually holds.
+    # This key appeared in hegre-geometry's config from 2026-07-05, but no code
+    # ever read it -- that arm trained on `stratum_dir` alone while its config
+    # advertised "weighted interleaving of ffhq (70%) + hegre (30%)". It is
+    # implemented now, and unknown keys fail closed so it cannot happen again.
+    stratum_dirs: Optional[List[Dict[str, Any]]] = None
+
+    # --- identity-level holdout (see scripts/build_identity_holdout.py) ---
+    # ffhq entries exclude that sample dir outright; hegre entries exclude that
+    # persona's dirs (the name before `--`). The recorded sha256 of each list is
+    # verified on load, so a regenerated manifest cannot silently change the
+    # training set under a run that was gated on the old one.
+    holdout_manifest: Optional[str] = None
+
     # --- identity-basis guard (eidolon adapter only) ---
     # The AuraFace-LDA identity vector is meaningless without the basis it was
     # projected through: a refit changes both direction and magnitude, and the
@@ -473,7 +491,7 @@ def load_config(config_path: str | Path) -> Config:
         config_dict = yaml.safe_load(f)
     
     # Recursively build dataclass instances
-    def build_dataclass(cls, data):
+    def build_dataclass(cls, data, dotted=""):
         if data is None:
             return cls()
         
@@ -482,6 +500,30 @@ def load_config(config_path: str | Path) -> Config:
         kwargs = {}
         
         for key, value in data.items():
+            full_key = f"{dotted}.{key}" if dotted else key
+
+            # ── FAIL CLOSED on unknown keys ────────────────────────────────
+            # A key the code does not read is a silent no-op: the config then
+            # advertises behaviour the run does not have, and nothing errors.
+            # That is exactly how `hegre-geometry` came to claim "weighted
+            # interleaving of ffhq (70%) + hegre (30%)" while its loader read
+            # one root only: `stratum_dirs` was an undeclared key, dropped
+            # without a word, and its conclusion ("data augmentation alone
+            # doesn't fix it") was drawn from a run that never saw the data.
+            # Fail loudly instead, with the nearest declared names as a hint.
+            if key not in field_types:
+                import difflib
+                near = difflib.get_close_matches(key, list(field_types), n=3, cutoff=0.5)
+                hint = f" Did you mean: {', '.join(near)}?" if near else ""
+                raise ValueError(
+                    f"{config_path}: unknown config key `{full_key}` — "
+                    f"{cls.__name__} declares no such field.{hint}\n"
+                    f"  An unread key silently does nothing, so the config would "
+                    f"claim behaviour this run does not have.\n"
+                    f"  {cls.__name__} declares: {', '.join(sorted(field_types))}\n"
+                    f"  Fix: correct the key, declare it on the dataclass, or remove it."
+                )
+
             if key in field_types:
                 field_type = field_types[key]
                 
@@ -530,7 +572,7 @@ def load_config(config_path: str | Path) -> Config:
                             base_type = known_dataclass_fields[key]
                             
                 if is_dataclass and isinstance(value, dict):
-                    kwargs[key] = build_dataclass(base_type, value)
+                    kwargs[key] = build_dataclass(base_type, value, full_key)
                 else:
                     # Expand $ENV_VAR references in string values (e.g. $STRATUM_DIR).
                     # If the var is unset, expandvars leaves $VAR as-is; fall back to
