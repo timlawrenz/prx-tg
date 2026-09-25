@@ -1,0 +1,94 @@
+# =============================================================================
+# eidolon-identity-renderer (Arm EIR) — canonical config
+#
+# STATUS: PROVISIONAL — NOT FROZEN. No training run may launch against this file
+# until every `TBD` below is resolved and this header is replaced with the
+# frozen-at-run-start statement (AGENTS.md §0.2, §0.7 rule 2).
+#
+# What this arm tests (ablation hypothesis):
+#   That a from-scratch FLUX-VAE latent DiT carrying the Eidolon adapter learns a
+#   GENERALIZABLE identity mapping from a two-source LDA conditioning stream
+#   (FFHQ per-image vectors + hegre persona centroids) rather than memorizing
+#   per-image identity keys. No text: identity is the only content control.
+#
+# How it differs from the baseline:
+#   - vs `latent-first-pretrain` (P1): Eidolon adapter replaces text/DINO
+#     conditioning; hegre joins FFHQ as a training source.
+#   - vs `eidolon-conditioning`: that arm is PIXEL-space (in_channels 3, ps 16);
+#     this arm trains in FLUX-AE latent space.
+#   - no warm-start, no PP stage, no weight donor, no REPA (hegre ships no
+#     dinov3_patches) — see README.md.
+#
+# Expected outcome:
+#   PASS on the pre-registered gate (held-out identity retrieval well above
+#   chance on both probes, references 0.9504 at a 32-persona index and 0.8180 at
+#   313). The informative failure to watch for is the MEMORIZATION SIGNATURE:
+#   strong on trained identities, weak on held-out ones — a FAIL even when the
+#   trained-identity number looks good.
+#
+# Gate + holdout live in provenance.yaml and data/splits/eidolon-identity-holdout.json.
+# =============================================================================
+
+# --- frozen by the pre-registration (decided, do not silently drift) ---
+experiment:
+  slug: eidolon-identity-renderer
+  arm_letter: EIR
+  mode: confirmatory            # set BEFORE the first run
+  frozen: false                 # PROVISIONAL: flips to true only at run start
+
+data:
+  source: stratum
+  stratum_dir: /mnt/nas-ai-models/training-data/ffhq/stratum
+  # hegre joins as the multi-shot identity source (the only source of the
+  # pose-invariance signal); its personas are the model's mechanism, not enrichment.
+  extra_stratum_dirs:
+    - /mnt/nas-ai-models/training-data/eidolon/hegre_corpus
+  latent_mode: true             # flux_latent.npy (16,128,128); NOT pixel.npy
+  # IDENTITY-BASIS GUARD (see production/data_stratum.py::_assert_identity_basis):
+  # a mixed-basis identity slot trains silently, which is the defect that produced
+  # the mixed-basis Eidolon arms.
+  basis_fingerprint: "120e1c5a1dc4f423"
+  allow_unstamped_identity: false
+  # LOCKED identity-level holdout: identities whose vectors are NEVER fed in training,
+  # so the gate measures generalization rather than recall.
+  holdout_manifest: data/splits/eidolon-identity-holdout.json
+
+conditioning:
+  adapter_name: eidolon
+  identity:
+    space: lda                 # 64-d, nuisance-cleaned (pitch/yaw projected out)
+    dim: 64
+    stream: adaLN              # per-persona identity via adaLN
+    # UNITS: the DiT identity slot expects L2-NORMALIZED vectors (norm 1.0).
+    # On-disk per-image vectors are RAW (~153); the corpus slot is unit-norm.
+    unit_norm: true
+  geometry:
+    space: z_g
+    dim: 50
+    stream: cross_attention
+    basis: per_dim             # per-dim basis (Arm O's proven geometry recipe)
+  text: false                  # NO text stream in this arm
+  repa: false                  # hegre ships no dinov3_patches.npy -> REPA dropped
+
+# --- model shape: inherits P1 (see README "Open items") ---
+model:
+  in_channels: 16              # FLUX-AE latent
+  input_size: 128
+  patch_size: 2                # keeps P1's 64x64 token grid
+  latent_space: true
+  prediction_type: x_prediction
+  TBD_architecture: "inherit P1's 768x18 body — not yet frozen in this file"
+
+training:
+  steps: 10000                 # 1k-segment granularity (GPU scheduler policy)
+  optimizer: muon
+  lr: 3.0e-4
+  min_lr: 1.0e-6
+  effective_batch: 256
+  # TBD: dropout profile is an OPEN DECISION (README "Open items" #1).
+  #   p_identity_only is the dangerous slice: AuraFace leaks pose (yaw R^2 ~0.46,
+  #   pitch ~0.64), so without the CFG guard it injects noise rather than signal.
+  TBD_p_uncond: 0.10
+  TBD_p_identity_only: 0.20
+  TBD_p_geometry_only: 0.30
+  TBD_note: "marginals of a partition; remainder = fraction of steps with BOTH streams"

@@ -2,7 +2,7 @@
 
 Living map of all active, planned, and concluded workstreams. Each entry links to the experiment arm directory under `experiments/{slug}/`. Status tags: `[ACTIVE]`, `[CONCLUDED]`, `[TBD]`, `[DISCONTINUED]`.
 
-Last updated: 2026-08-30
+Last updated: 2026-09-24
 
 ---
 
@@ -15,6 +15,26 @@ Last updated: 2026-08-30
   * **Criterion (c) G0 NOT_VALIDATED → strike 1/3** (g0a/g0d p50/p95 out-of-band
     vs frozen real-FFHQ band; no 5k G0 baseline). Improved but not yet photorealistic;
     champion candidate vs 5k baseline, arm still `active` in registry.
+
+* **Arm EIR — `eidolon-identity-renderer`** (`experiment-configs/eidolon-identity-renderer/`) `[PLANNED — PRE-REGISTERED, NOT YET RUN]`
+  * Branch `arm/eidolon-identity-renderer`. From-scratch **FLUX-VAE latent** DiT (16ch, 128²,
+    patch 2 — P1-shaped) carrying the Eidolon adapter: 64-d AuraFace-LDA identity via adaLN
+    + z_g geometry via cross-attention, per-dim basis. **No text**, no REPA (hegre ships no
+    `dinov3_patches`), no warm-start, no PP stage, no weight donor.
+  * Question: does the two-source LDA stream (FFHQ per-image vectors + hegre persona
+    centroids) produce a **generalizable** identity mapping, or per-image lookup?
+  * **Gate (frozen before the first run):** held-out identity retrieval, rank-based R@1 with a
+    bootstrap CI LB > 0.5 on all three probes — FFHQ unseen-identity fidelity (index 6,996,
+    ref ~1.0), hegre unseen-persona generalization (index 32, ref **0.9504**), hegre
+    persistence (index 313, ref **0.8180**). The ceiling is **index-size dependent**, so each
+    number is read against the ceiling measured at its own index size.
+  * **Holdout locked:** `experiment-configs/eidolon-identity-renderer/holdout.json`, seed `20260925` —
+    6,996 FFHQ identities (sha256 `2967fafac71f2a75`) + 32 hegre personas (sha256
+    `705936d1c0f3b805`), identities whose vectors are never fed in training, so the gate
+    measures generalization rather than recall.
+  * Instrument, measured before the arm exists: `research/results/eidolon-identity-instrument/`.
+  * Pre-registration: `experiment-configs/eidolon-identity-renderer/provenance.yaml`;
+    `config.yaml` there is **PROVISIONAL** (dropout profile + architecture freeze outstanding).
 
 * **[ACTIVE] Phase 1b Research Loop** — photorealism gates + blind review + avenue registry
   (`.hermes/plans/2026-08-30_photorealism-gates-blind-review.md`). M1 shipped 2026-08-30;

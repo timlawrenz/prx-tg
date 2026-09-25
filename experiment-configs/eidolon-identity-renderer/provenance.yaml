@@ -1,0 +1,104 @@
+arm: eidolon-identity-renderer
+arm_letter: EIR
+aliases: [eidolon-renderer, identity-renderer]
+mode: confirmatory            # gate frozen BEFORE the first run
+status: planned               # never run yet -> no run_dirs (see §0.3)
+
+hypothesis: >-
+  A from-scratch FLUX-VAE latent DiT (P1-shaped: 16ch, 128x128, patch 2) carrying the
+  Eidolon adapter (64-d AuraFace-LDA identity via adaLN + z_g geometry via
+  cross-attention) learns a GENERALIZABLE identity mapping from the two-source LDA
+  conditioning stream -- FFHQ per-image vectors plus hegre persona centroids -- rather
+  than memorizing per-image identity keys. Stated as a prediction: conditioning on the
+  vector of a person never seen in identity-training renders that person, and a pose
+  change leaves the identity intact.
+
+falsified_if: >-
+  Any of: (a) FFHQ unseen-identity fidelity R@1 CI LB <= 0.5 on the 6,996-identity
+  holdout (chance 1.4e-4), or (b) hegre unseen-persona generalization cross-shoot R@1
+  CI LB <= 0.5 on the 32-persona holdout (chance 0.031), or (c) the MEMORIZATION
+  SIGNATURE -- held-out scores are much weaker than trained-identity scores while the
+  trained-identity number looks good. (c) is a FAIL even though a naive reading of its
+  trained-identity number looks like success; it is the specific risk this arm exists
+  to expose.
+
+pre_registered_gate: >-
+  PASS requires ALL THREE, each a rank-based retrieval R@1 with a PERSONA/IDENTITY-level
+  bootstrap CI and a hard floor of CI LB > 0.5 (chance is 1.4e-4 / 0.031 / 0.003
+  respectively, so 0.5 is unambiguously above chance and matches the bar the project's
+  existing gates already use):
+  (1) FFHQ unseen-identity FIDELITY: 1-shot retrieval, index = the 6,996 held-out
+      identity vectors; reference ceiling ~1.0 (measured VAE round-trip a1 = 0.9998).
+  (2) hegre unseen-persona GENERALIZATION: cross-shoot retrieval, index = the 32
+      held-out personas; reference ceiling 0.9504 measured AT THIS INDEX SIZE.
+  (3) hegre PERSISTENCE/RECALL: cross-shoot retrieval, index = all 313 corpus personas
+      (trained personas included); reference ceiling 0.8180.
+  REPORTING RULES THAT ARE PART OF THE GATE:
+  - the renderer's number must be read against the ceiling measured at the SAME index
+    size (the ceiling is index-size dependent: 0.9504 at 32, 0.9005 at 96, 0.8180 at 313);
+  - no absolute cosine threshold may be used (the identity margin is ~0.0015 cosine and
+    the own/wrong-centroid distributions overlap);
+  - batch.skipped / no_face counts must be reported alongside every R@1 -- a face-filling
+    image returns no_face at the corpus det_size convention (24/24 in a synthetic probe),
+    and silently dropping those would compute the metric on the most flattering subset;
+  - if the metric path fails to produce a number for an arm, that is NOT a PASS.
+  Non-identity criteria carried from the arm's design: decoded output must not collapse
+  (no void/darkness onset), and the geometry sweep must move pose monotonically across
+  z_g dim0 (Arm O's proven geometry diagnostic).
+
+differs_from: latent-first-pretrain
+diff_summary: |
+  - conditioning: text/DINO (P1) -> Eidolon adapter, identity (LDA 64-d, adaLN) + z_g
+    (50-d, cross-attention, per-dim basis). NO text stream at all.
+  - data source: FFHQ stratum alone -> FFHQ stratum PLUS hegre_corpus (the multi-shot
+    identity source; the only place pose-invariance can be learned).
+  - REPA dropped: hegre ships zero dinov3_patches.npy.
+  - no warm-start, no PP stage, no weight donor (fresh model, no lineage).
+  - inherited from P1 and unchanged: 16ch FLUX-AE latent, input_size 128, patch_size 2,
+    latent_space true, x_prediction, Muon lr 3e-4 -> min_lr 1e-6, effective batch 256.
+  - TBD (see config.yaml, PROVISIONAL): dropout profile, architecture freeze, step budget confirm.
+
+# --- the four link fields (prx-tg addition) ---
+branch: arm/eidolon-identity-renderer
+tags: [arm/eidolon-identity-renderer/registered]
+conclusions: []              # filled at the verdict; numbered 1..N
+ledger_anchor: null          # no ledger entry yet — arm is `planned`
+blog_brief: null
+blog_post: null
+
+# --- run provenance ---
+git_commit: null             # set at the first run
+git_dirty: null
+training_host: null
+training_gpu: null
+training_steps: 10000
+data_snapshot: "FFHQ stratum 70k latents + hegre_corpus 31,711 (flux latents encoding)"
+agent_model: null
+agent_model_snapshot: null
+run_dirs: []                 # status: planned -> no runs yet
+superseded_by: null
+supersedes: null
+
+# --- instrument + holdout provenance (measured BEFORE this arm) ---
+pre_registration_evidence:
+  instrument_dir: research/results/eidolon-identity-instrument/
+  instrument_findings:
+    - "Step 0 replication REPRODUCED: cosine R@1 0.8910 vs recorded 0.8879 (delta = one query of 321); R@5/R@10 exact."
+    - "THE CEILING IS INDEX-SIZE DEPENDENT: 0.9504 at 32 personas, 0.9005 at 96, 0.8180 at 313 (leave-one-shoot-out)."
+    - "Identity margin is ~0.0015 cosine; own (0.9985) and wrong-centroid (max 0.9981) distributions OVERLAP -> rank/margin only, no threshold."
+    - "VAE round-trip costs ~0.0002 of identity (a1 = 0.9998), so a render is judged against the cross-shoot ceiling, not a VAE-degraded floor."
+    - "Detection convention moves the vector ~0.0002 (det_size 512 vs 640) -> immaterial; but DETECTION SURVIVAL is not: a face-filling crop returns no_face 24/24 at default 640."
+    - "Identity basis fingerprint: 120e1c5a1dc4f423 (all three consumed trees); a mixed-basis slot is refused by the loader guard (commit 1b5a03b)."
+  holdout_manifest: experiment-configs/eidolon-identity-renderer/holdout.json
+  holdout_builder: scripts/build_identity_holdout.py
+  holdout_seed: 20260925
+  ffhq_holdout_sha256: 2967fafac71f2a75          # 6,996 identities
+  hegre_holdout_sha256: 705936d1c0f3b805         # 32 personas of a 313 pool
+  hegre_pool_note: >-
+    pool reproduced with the CEILING's eligibility rule (corpus dirs resolving into the
+    LDA tree, >=2 sets among their own corpus samples) = 313, not the looser
+    ">=2 set dirs exist" rule = 320; otherwise the 0.9504 reference is not exact.
+  holdout_is_never_touched_test: false
+  holdout_note: >-
+    both holdouts are monitored in-training as well as used for the verdict; the plan's
+    separate never-touched slice is a Stage B reconciliation, not invented here.
