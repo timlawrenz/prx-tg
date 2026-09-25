@@ -40,19 +40,37 @@ Two consequences for the instrument:
 1. **Identity must be measured as a rank/margin statistic with a persona-level
    bootstrap CI — never as an absolute cosine threshold.** Any fixed cosine cut
    would sit inside the noise.
-2. **G6's reference point is 0.8910, not 1.0.** A renderer's cross-shoot R@1 has
-   ~0.89 as the practical ceiling for faithful vectors, so a lower render score
-   must be read against that ceiling, not against perfection.
+2. **G6's reference point is ~0.82, not 0.8910 and not 1.0.** Step 0's 0.8910 is
+   itself inflated by leakage (see the ceiling section below); a render score must
+   be read against the cross-shoot ceiling, not against perfection.
 
-## What was discarded, and why
+## Cross-shoot ceiling — the number G6 is read against
 
-An earlier attempt used the **321 corpus centroids** as the index with 1,284
-arbitrary per-image queries and returned R@1 0.8427. That is not a failed
-replication — it is a *different measurement* (wrong index artefact, wrong query
-population). Discarded. Its companion `B_cross_shoot` figure (0.8201) is also
-untrustworthy: its queries came from the whole v1 `lda` tree instead of
-approved corpus images only. The cross-shoot ceiling must be re-measured with
-corpus-restricted queries.
+Step 0's queries are leaky: one image per persona, matched against that persona's
+average computed over ALL shots, query image included. That inflates the number,
+and the inflation *is* the cross-shoot penalty. Re-measured with a
+leave-one-shoot-out centroid (index built from the persona's OTHER shoots, queries
+from a held-out shoot, corpus-restricted) via `scripts/eidolon_cross_shoot_ceiling.py`:
+
+| centroid support | R@1 | 95% CI (persona bootstrap) | R@5 | R@10 | n |
+|---|---|---|---|---|---|
+| 30 vectors | 0.8039 | [0.7707, 0.8381] | 0.8970 | 0.9146 | 913 |
+| ~69 vectors | **0.8180** | [0.7901, 0.8456] | 0.9271 | 0.9427 | 1467 |
+
+The 0.014 spread is centroid-support noise, so the ceiling is **~0.82** — a slight
+*lower* bound, since the full average uses ~100 vectors per persona. **Leakage
+correction = 0.8910 − 0.8180 = 0.0730.**
+
+Margin, stable across both runs and consistent with Step 0 once converted:
+own 0.9985 vs best-other 0.9970 → gap **0.0015** in cosine (~0.05 Euclidean on
+unit vectors). 313 of 321 corpus personas have ≥2 shoots, so 8 can never form a
+cross-shoot pair; 7 of 31,711 corpus dirs do not resolve against the v1 lda tree
+(0.02%).
+
+**Discarded, not a failed replication:** an early attempt used the 321 corpus
+centroids as the index with 1,284 arbitrary per-image queries (R@1 0.8427) — a
+different measurement — plus a companion `B_cross_shoot` 0.8201 whose queries came
+from the whole v1 tree rather than approved corpus images.
 
 ## Known residue, adjudicated upstream (recorded so it is not re-raised)
 
@@ -81,10 +99,22 @@ only from approved corpus images (0 unresolved), so none can be stale.
 
 ## Not yet done
 
-- VAE round-trip floor, cross-shoot ceiling and pose-actually-moved control —
-  all need eidolon's `extract_auraface_for_eval()` helper for the
-  pixel -> AuraFace path (detection + alignment + embedding).
-- **prx-tg-side gap:** `production/data_stratum.py` loads `auraface_lda.npy`
-  without calling eidolon's `assert_basis`, so it can ingest a differently-basis'd
-  identity slot silently. That is the guard whose absence produced the
-  mixed-basis arms. Wiring it needs `ffhq/stratum`'s stamp status confirmed first.
+- **VAE round-trip floor** (`scripts/eidolon_vae_floor.py`): `a1` =
+  cos(embed(pixel), embed(decode(latent))) isolates the VAE's identity cost; `a2`
+  = cos(embed(pixel), persona centroid) checks that the centroid we *condition on*
+  describes the image we *train on* — the corpus ships the persona centroid in
+  every sample dir, not a per-image vector; control = cross-identity cosines.
+  No GPU claim needed (CPU decode). Awaiting first run.
+- **Step (b):** the ceiling measured *through* the VAE, against 0.8180.
+- **Pose-actually-moved control** (DWPose yaw on decoded latents).
+- eidolon's shared extractor landed at `e5390a4` (`tools/auraface`:
+  `extract_auraface`, `extract_auraface_batch`, `describe_instrument`,
+  `verify_basis`), so the pixel → AuraFace path exists. Input convention is
+  (H,W,3) **BGR uint8** (= `cv2.imread` order) — an RGB tensor must be reversed
+  before it is passed in.
+- **prx-tg-side gap: closed.** `production/data_stratum.py` now refuses a
+  mixed-basis identity slot (stamp match *and* measured unit-norm band), commit
+  `1b5a03b`. It is deliberately a *local* guard rather than a call to eidolon's
+  `assert_basis`: the loader must not import a sibling repo that is absent on
+  Vast.ai, and `verify_basis()` guards the *extractor's* basis (auto-called before
+  extraction) rather than the dataset directory's. Complementary, not duplicated.
