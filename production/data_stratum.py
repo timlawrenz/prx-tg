@@ -340,17 +340,28 @@ class StratumDataset(IterableDataset):
         return sample
 
     def _load_sample_eidolon(self, d: Path) -> dict:
-        """Load minimal eidolon sample (pixel + identity + geometry only).
+        """Load minimal eidolon sample (identity + geometry + image).
 
         Does NOT load T5, DINO, pose, or seg — the EidolonAdapter drops them.
         Returns zero-filled stubs for fields the collate function expects.
+
+        Honors `latent_mode`: the image slot is either the FLUX-AE latent
+        (16,128,128) read directly, or the resized pixel tensor. Getting this
+        wrong feeds a 3-channel image to a 16-channel patch embed, so the two
+        paths must not be conflated (and reading pixel.npy when the latent is
+        all we need wastes 6.3 MB of NAS I/O per sample).
         """
-        pixel       = np.load(d / 'pixel.npy')           # (3, H, W) f16
-        identity_emb = np.load(d / 'auraface_lda.npy')   # (64,) float64
+        identity_emb = np.load(d / 'auraface_lda.npy')   # (64,) float64|float32
         geometry_emb = np.load(d / 'z_g.npy')            # (50,) float32
         meta        = json.loads((d / 'metadata.json').read_text())
 
-        image_data = _resize_image(pixel, self.target_latent_size)
+        if self.latent_mode:
+            # Latents are already at target resolution — no resize, no augmentation.
+            image_data = torch.from_numpy(
+                np.load(d / 'flux_latent.npy').astype(np.float32))   # (16,128,128)
+        else:
+            pixel = np.load(d / 'pixel.npy')             # (3, H, W) f16
+            image_data = _resize_image(pixel, self.target_latent_size)
 
         return {
             'image_data':     image_data,
