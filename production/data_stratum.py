@@ -674,7 +674,7 @@ def load_holdout_exclusions(manifest_path: str) -> dict:
     return out
 
 
-class MultiStratumDataset:
+class MultiStratumDataset(IterableDataset):
     """Weighted interleaving of several per-image stratum roots.
 
     One epoch emits samples from every root, interleaved in random order, with
@@ -743,17 +743,43 @@ class MultiStratumDataset:
         return sched
 
     def __iter__(self):
-        buf = []
-        for ri, d in self._epoch_schedule():
-            try:
-                buf.append(self.datasets[ri]._load(d))
-            except Exception as e:
-                print(f"[MultiStratumDataset] skipping {d.name}: {e}")
-                continue
-            if len(buf) == self.batch_size:
-                yield _collate(buf)
-                buf = []
-        # tail dropped — same behaviour as StratumDataset (partial=False)
+        """Yield collated batches indefinitely, sharded across workers.
+
+        Two things this must do, both learned the hard way on the arm's first launch:
+
+        1. Be an IterableDataset (see the class line). A plain class is treated by
+           DataLoader as MAP-style, so it indexes the dataset -> TypeError
+           "'MultiStratumDataset' object is not subscriptable" inside every worker,
+           and the trainer dies seconds into step 0.
+        2. Shard across workers, exactly as StratumDataset does. A DataLoader with
+           num_workers>0 calls __iter__ in EVERY worker, so without sharding each
+           worker would emit the whole epoch: 4x duplicated data, and the epoch the
+           run actually trains on would be 4x the length computed here.
+
+        Infinite, like StratumDataset: the epoch order is re-derived (and re-shuffled)
+        each pass, including the reshuffling that recycles the shorter root.
+        """
+        import math
+        import torch.utils.data
+
+        worker_info = torch.utils.data.get_worker_info()
+        while True:
+            schedule = self._epoch_schedule()
+            if worker_info is not None:
+                per_worker = int(math.ceil(len(schedule) / float(worker_info.num_workers)))
+                wid = worker_info.id
+                schedule = schedule[wid * per_worker:(wid + 1) * per_worker]
+            buf = []
+            for ri, d in schedule:
+                try:
+                    buf.append(self.datasets[ri]._load(d))
+                except Exception as e:
+                    print(f"[MultiStratumDataset] skipping {d.name}: {e}")
+                    continue
+                if len(buf) == self.batch_size:
+                    yield _collate(buf)
+                    buf = []
+            # tail dropped — same behaviour as StratumDataset (partial=False)
 
     def __len__(self):
         lens = [len(d._dirs) for d in self.datasets]

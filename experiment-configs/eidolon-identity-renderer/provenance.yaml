@@ -86,11 +86,15 @@ training_step_policy: >-
   shared 4090 (the latent-first 1k-SEGMENT policy: reserve only to the next boundary, release
   there if another project is queued, auto-continue otherwise). checkpoint.save_every is
   1000, so every 1k boundary yields a resumable state, while validation and its yaw sweep
-  run every 500 steps (see hook_policy below); save_optimizer is true so a resumed block
+  run once per 1k block, with the checkpoint (see hook_policy below); save_optimizer is true so a resumed block
   continues the same
   trajectory. The budget is NOT gated on a measured s/it.
 hook_policy:
-  validation_interval_steps: 500   # the yaw sweep is this arm's periodic check
+  # CORRECTED 2026-09-25 (measured, not assumed): validation is triggered from the
+  # checkpoint branch of production/train.py, so the yaw sweep runs once per 1k block,
+  # not every 500. validation.interval_steps is NOT read by the training loop -- it is
+  # printed at startup and then ignored. This arm's periodic check = 1 sweep per block.
+  validation_interval_steps: 1000
   yaw_sweep: >-
     z_g dim0 IS the yaw axis (|corr| 0.97 with DWPose head yaw, ~14 deg/sigma:
     scripts/diag_pose_cfg_sweep.py), so the validator's eidolon "geometry sweep" IS this

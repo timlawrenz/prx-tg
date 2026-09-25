@@ -500,6 +500,11 @@ def main():
             source=getattr(config.data, 'source', 'webdataset'),
             stratum_dir=getattr(config.data, 'stratum_dir', '/workspace/stratum'),
             adapter_name=config.adapter.name,
+            # The validation dataloader builds its OWN StratumDataset, so it needs the
+            # guard values too: without them the identity-basis guard rejects the
+            # unstamped root and every validation step fails as a non-fatal [WARN].
+            expected_basis_fingerprint=getattr(config.data, 'basis_fingerprint', None),
+            allow_unstamped_identity=getattr(config.data, 'allow_unstamped_identity', False),
         )
     
     # Create visual debugging function (if enabled)

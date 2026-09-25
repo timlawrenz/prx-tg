@@ -1291,6 +1291,8 @@ def create_validation_fn(
     stratum_dir="/workspace/stratum",
     adapter_name="stratum",
     gamma=1.0,
+    expected_basis_fingerprint=None,
+    allow_unstamped_identity=False,
 ):
     """Create validation function for training loop.
     
@@ -1335,6 +1337,8 @@ def create_validation_fn(
                 source=source,
                 stratum_dir=stratum_dir,
                 adapter_name=adapter_name,
+                expected_basis_fingerprint=expected_basis_fingerprint,
+                allow_unstamped_identity=allow_unstamped_identity,
             )
         
         if runner is None:

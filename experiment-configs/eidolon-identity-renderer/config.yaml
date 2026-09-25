@@ -180,7 +180,12 @@ validation:
   # sweep costs 15 renders (3 personas x 5 values); reconstruction (25 indices) and
   # the identity swap dominate the cost, so MEASURE one pass during block 1 before
   # assuming 500 is affordable.
-  interval_steps: 500
+  # EFFECTIVE CADENCE ONLY. production/train.py fires validation from inside the
+  # checkpoint branch (self.step % checkpoint_every == 0), so this value is not read
+  # by the training loop: the yaw sweep actually runs once per 1k block, with the
+  # checkpoint. Set to match that so the file does not claim a cadence the code cannot
+  # deliver. (A repo-wide finding: ~100 configs carry this knob; it is a dead knob.)
+  interval_steps: 1000
   num_samples: 16
   run_reconstruction: true
   # Skipped for the eidolon adapter by the validator itself (validate.py's

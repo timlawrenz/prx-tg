@@ -10,6 +10,7 @@ Cross-attention receives concatenated sequence: [T5, DINO_CLS, DINO_patches]
 where DINO_CLS serves as a global fallback token and patches provide spatial alignment.
 """
 
+import inspect
 import math
 import torch
 import torch.nn as nn
@@ -352,6 +353,33 @@ class DiPHead(nn.Module):
         nn.init.zeros_(self.up2.bias)
 
 
+def _adapter_kwargs_for(adapter_cls, kwargs):
+    """Return only the kwargs `adapter_cls.__init__` actually accepts.
+
+    `train_production` builds ONE shared adapter_kwargs dict for every adapter, but
+    the adapters accept different subsets (geometry_3d_enabled belongs to
+    StratumAdapter, geometry_token_basis to EidolonAdapter). The strip-lists that
+    used to reconcile the two were hand-maintained and drifted: when
+    geometry_3d_enabled was added to the shared dict only the stratum branch was
+    updated, so EidolonAdapter raised TypeError AT MODEL CONSTRUCTION. That killed 11
+    consecutive launch attempts overnight, one per 30-minute tick, and looked like a
+    process dying with no traceback -- an appended log puts the unbuffered stderr
+    traceback at the TOP of the file while `tail` shows the buffered stdout of the
+    last run. Introspecting the real signature cannot drift.
+
+    Dropping an inapplicable key is not the same as silently ignoring a typo: an
+    unknown CONFIG key still fails closed in config_loader, whereas a declared key
+    this adapter simply has no use for is genuinely inapplicable -- and it is
+    printed, never dropped in silence.
+    """
+    accepted = set(inspect.signature(adapter_cls.__init__).parameters) - {"self"}
+    dropped = sorted(k for k in kwargs if k not in accepted)
+    if dropped:
+        print(f"[model] {adapter_cls.__name__}: ignoring {len(dropped)} inapplicable "
+              f"kwarg(s): {', '.join(dropped)}")
+    return {k: v for k, v in kwargs.items() if k in accepted}
+
+
 class NanoDiT(nn.Module):
     """Nano DiT: 12L, 384H, 6A for validation testing."""
     
@@ -426,22 +454,18 @@ class NanoDiT(nn.Module):
                 "pose_confidence_threshold": adapter_kwargs.pop("pose_confidence_threshold", pose_confidence_threshold),
                 "dino_pool_factor": adapter_kwargs.pop("dino_pool_factor", dino_pool_factor),
             }
-            # Strip eidolon-only kwargs that train_production always injects
-            for key in ("identity_dim", "z_g_dim", "geometry_token_basis", "cfg_dropout"):
-                adapter_kwargs.pop(key, None)
+            # Keep only what each adapter's own signature accepts (see
+            # _adapter_kwargs_for). The hand-maintained strip-lists this replaces
+            # drifted and cost a whole night of launch cycles.
             self.adapter = StratumAdapter(
                 hidden_size=hidden_size,
                 **stratum_kwargs,
-                **adapter_kwargs,
+                **_adapter_kwargs_for(StratumAdapter, adapter_kwargs),
             )
         elif adapter_name == "eidolon":
-            # Strip stratum-specific keys that train_production may have injected
-            for key in ("num_pose_joints", "pose_confidence_threshold", "dino_patches_enabled", "dino_pool_factor",
-                         "dino_dim", "dino_patch_dim", "text_dim", "pose_dim"):
-                adapter_kwargs.pop(key, None)
             self.adapter = EidolonAdapter(
                 hidden_size=hidden_size,
-                **adapter_kwargs,
+                **_adapter_kwargs_for(EidolonAdapter, adapter_kwargs),
             )
         else:
             raise ValueError(f"Unknown adapter: {adapter_name}")

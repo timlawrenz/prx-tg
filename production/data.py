@@ -231,6 +231,8 @@ def get_deterministic_validation_dataloader(
     source="webdataset",
     stratum_dir="/workspace/stratum",
     adapter_name="stratum",
+    expected_basis_fingerprint=None,
+    allow_unstamped_identity=False,
 ):
     """Create deterministic validation dataloader for consistent testing.
 
@@ -258,6 +260,12 @@ def get_deterministic_validation_dataloader(
             target_latent_size=target_latent_size,
             max_samples=100,  # use first 100 for validation
             adapter_name=adapter_name,
+            # Inherit the training loader's identity-basis guard. Without these the
+            # guard fires inside StratumDataset.__init__ and validation fails on every
+            # step -- reported only as a non-fatal [WARN], so a run can look healthy
+            # while producing no eval evidence at all.
+            expected_basis_fingerprint=expected_basis_fingerprint,
+            allow_unstamped_identity=allow_unstamped_identity,
         )
     
     dataset = ValidationDataset(
