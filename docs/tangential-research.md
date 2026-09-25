@@ -305,3 +305,63 @@ prx-tg IS a pixel-space model — this is the first large-scale empirical map of
 - **Qwen3-4B text stack / FLUX-AE internals** — prx-tg uses t5-large offline embeddings and no VAE in the pixel path.
 - **L2P / full-AsymFlow method comparisons** — prx-tg uses only the low-rank AsymFlow noise projection (rank 8, `train.py:6`), not the full AsymFlow model. The paper's comparison is mixed (their γ=2 recipe beats AsymFlow on most benchmarks, AsymFlow wins GenEval on FLUX2-klein), so it is not a verdict on prx-tg's cheap variant — test γ on top of it rather than ripping it out.
 
+---
+
+## 2026-09-21 — Qwen-Image-2.1 + Qwen-Image-VAE-2.0 (unified T2I/editing, 7B single-stream DiT)
+
+**Source:** https://huggingface.co/Qwen/Qwen-Image-2.1 (released 2026.09.20)
+**Also:** [GitHub](https://github.com/QwenLM/Qwen-Image-2.1) · [Blog](https://qwen.ai/blog?id=qwen-image-2.1) · [Qwen-Image-VAE-2.0, arXiv:2605.13565](https://arxiv.org/abs/2605.13565) · [DC-AE, arXiv:2410.10733](https://arxiv.org/abs/2410.10733)
+**Domain:** Latent-space text-to-image + editing (7B single-stream DiT). The *generation* side is not prx-tg's architecture; the **VAE** and **noise-schedule** components are directly load-bearing for prx-tg's P1→P2 plan.
+
+### Summary
+
+7B visual generator (32 single-stream DiT layers, hidden 4096 = 32×128-head, `mlp_ratio 3`, `patch_size 1`, 3-axis RoPE `[16,56,56]`), text encoder **Qwen3-VL 8B** (`context_in_dim 4096`, encodes text *and* condition images into one representation), **64-channel RGBA VAE at 16× spatial compression** (`z_dim 64`, `base_dim 96`, `decoder_base_dim 144`, `is_residual: true`, per-channel `latents_mean`/`latents_std`), FlowMatch-Euler-discrete scheduler with **dynamic shifting** (`base_shift 0.5`, `max_shift 0.9`, exponential, `base_image_seq_len 256`, `max_image_seq_len 8192`). 2K native (2048²), 40 steps. Headline 2.0→2.1 deltas: native RGBA, up to 10 reference images, mask/annotation local edits, mixed-granularity attention (token-level causal for text, chunk-level bidirectional per image) + prefix-KV-cache reuse, and — listed as a first-class improvement — **"realistic textures, improved typography, portrait lighting, fine details."**
+
+### Relevance to prx-tg
+
+#### 1. The VAE ceiling has a *published* fix, and it is not "more latent bandwidth" — **most actionable**
+
+**prx-tg application:** `vae-ceiling` (2026-09-10) concluded that the FLUX AE's encode→decode of a *real* photo is washed/mushy (luminance 0.437→0.855, contrast 0.239→0.154) and that the AE, not the latent model, is the binding constraint. Its queued follow-up leaves the replacement open ("FLUX AE ... **or a better AE**"). Qwen-Image-2.1's VAE is the productized descendant of **Qwen-Image-VAE-2.0**, whose entire subject is reconstruction bottlenecks under high spatial compression; its two named techniques are **Global Skip Connections** (residual autoencoding) and **expanded latent channels**, trained at billion-image scale with a synthetic rendering engine.
+
+The non-obvious part, and the reason this reframes the search: **Qwen 2.1's latent has exactly the same raw bandwidth as the FLUX AE.** f16 with 64 channels = 64/16² = **0.25 floats per pixel**; FLUX f8 with 16 channels = 16/8² = **0.25 floats per pixel**. Qwen moved the *same* bit budget to 4× fewer spatial positions and 4× more channels, and reports better reconstruction. Their VAE-2.0 report claims the f16 variant beats FLUX's f8 VAE outright (f16c128: SSIM 0.9706, docs-legibility NED 0.9617 vs FLUX.1-dev's 0.9546), and even f32c192 matches established f8 VAE quality. **So the vae-ceiling follow-up should not be scoped as "find a higher-capacity AE" but as "test a residual/skip-connection decoder at the same token budget."** DC-AE (`mit-han-lab`, arXiv:2410.10733) is the independent parallel result — Residual Autoencoding + expressive latent, same two ideas, and its diffusers card is **MIT** (permissive), unlike the Qwen line.
+
+- **Effort:** Very low — extend the existing `scripts/vae_ceiling_test.py` harness with two more `autoencoders:` rows (Qwen 2.1 VAE; DC-AE f32c32) and re-run its already-queued 16-image pass (~6 min, batch 1).
+- **Isolation:** Deterministic, no training — same falsification frame as the 2026-09-10 run (real photo → encode → decode, LPIPS + luminance/contrast). Single variable: the AE.
+- **Token-neutral, if it ever graduates:** at 1024² the Qwen f16 VAE yields a **64×64 latent**; at `patch_size 1` that is exactly prx-tg's current 64×64 token grid (pixel ps16, and P1's FLUX-AE ps2 on 128×128). A latent-backend swap therefore does **not** change sequence length or per-step compute — only the decode fidelity. Re-encoding 70k FFHQ latents is a short GPU job.
+- **Risk / license caveat:** Qwen-Image-2.1 is under the **Qwen Research License (non-commercial only, §2a)**; §4b additionally requires "Built with Qwen" attribution if the materials are used to train or improve a model that is distributed. Treat the Qwen VAE as an **evaluation-only** reference row, not a production latent backend, until a commercial license is considered. DC-AE (MIT) is the license-clean candidate to carry forward.
+- **Also note:** `vae-ceiling` has no ledger entry, branch, or tag yet, and `research/results/` is gitignored — per AGENTS.md §0.1 that soft data must reach the repo.
+
+#### 2. Resolution-conditional noise shifting — **cheap, pre-registerable, independent of γ**
+
+**prx-tg application:** Qwen's scheduler sets `use_dynamic_shifting: true` (exponential time-shift, `base_shift 0.5 → max_shift 0.9`, interpolated on `base_image_seq_len 256 → max_image_seq_len 8192`). This is the SD3/Flux-family recipe: the noise schedule is reparametrised by **sequence length**, so high-resolution/long-sequence inputs are not systematically under- or over-noised relative to short ones. prx-tg trains **multiple aspect-ratio buckets** (`1024×1024`, `1216×832`, …) with a **single global, resolution-independent** schedule (`timestep_sampling: logit_normal`, `logit_normal_loc 0.0`, `scale 1.0`). Whether prx-tg's buckets see consistent effective SNR is currently unmeasured.
+
+- **Distinct from `gamma2-noise-scale`:** γ changes the *interpolant exponent* (`z_t = (1−t)·x0 + t^γ·z1`); dynamic shift reparametrises the *timestep distribution*. Different mechanism, can be tested independently, and γ≠1 does not substitute for it.
+- **Effort:** Low — a shift function on `t` in the sampler/training loop plus a config block; no new data, no architecture change.
+- **Isolation:** Single-variable arm (`dynamic-shift`) vs the current static logit-normal, ideally parked until the γ question is settled so the two schedule changes don't confound each other.
+- **Risk:** Low-moderate — the constants are calibrated for *latent* space at 2K; prx-tg is pixel-space at 1024², so the shift constants need their own calibration rather than copying `base_shift/max_shift`.
+
+#### 3. Strong VLM text encoder is the frontier norm — **confirms the already-flagged encoder upgrade**
+
+**prx-tg application:** Qwen 2.1 uses a **Qwen3-VL 8B** encoder emitting a 4096-dim unified text + condition-image representation; the 2026-08-18 Z-Image entry noted the same stack choice (Qwen3-4B). prx-tg's text stream is T5, 1024-dim, 512 tokens, precomputed offline. This is now a **second independent data point** (after Hunyuan3D-Buffalo) that a rich semantic/multimodal tower beats a weak fixed text encoder, and it lands on the stream the 2026-08-10 entry already identified as prx-tg's weakest leg and the known text-only-collapse pitfall. The re-encode is a pure offline data-regen job (70k captions once); the only code change is the text-projection input dim.
+
+#### 4. Prompt rewriting shipped as a first-class 9B component — **caption detail is load-bearing**
+
+**prx-tg application:** Qwen ships two fine-tuned **Qwen3.5-VL 9B** rewriters (T2I and edit) as official pipeline parts, not extras: the release explicitly recommends them because short prompts underperform. That is strong evidence that caption/description *detail* is a quality lever big enough to be worth a dedicated model. Two carry-overs: (a) supporting evidence for the planned stratum2 captioning pass (see the H3 "verbalize the same spatial facts" and Buffalo "monotonic tiers + calibrated quality score" lessons); (b) directly usable at inference time as a prompt-expansion step in prx-tg's sampling path. Their rewriter also **predicts an aspect ratio** (`wh_ratio`) — i.e. bucket selection is treated as a learnable decision, relevant to prx-tg's multi-aspect sampling.
+
+#### 5. Failure-mode convergence — **the last mile is texture/lighting, not semantics**
+
+**prx-tg application:** The 2.0→2.1 delta is explicitly *textures, typography, portrait lighting, fine detail* — plus a new VAE — with no change in size or unified-gen+edit design. prx-tg's own logged failure signature is the same fight from the other side: G0b spectral slope **OUT (too steep)** and G0a noise floor **OUT (too smooth)** at step 10000, verdict "painterly". Two independent projects landing on "high-frequency texture fidelity is the binding constraint" is useful corroboration that prx-tg is attacking the right gate, and that the productive levers are the **texture path** (output head, latent/decode fidelity, pixel post-train phase) rather than more semantic conditioning. It also reinforces the existing P1/P2 split: Qwen keeps a *separate, heavily engineered* decode path alive rather than trusting the latent to carry texture.
+
+#### 6. Prefix KV cache — **no action; prx-tg is already structurally equivalent**
+
+Qwen's efficiency win comes from the condition prefix (text + reference images) being static across denoising steps and therefore encoded and cached once. prx-tg's conditioning (T5, DINOv3, DWPose) is precomputed offline into `.npy` sidecars and never re-encoded per step, so the benefit is already banked by construction. Nothing to adopt.
+
+### Not relevant to prx-tg
+
+- **Native RGBA / transparent-layer generation and editing** — prx-tg outputs opaque face photographs; alpha output is a compositing capability with no path in. (stratum2's matting pass is for conditioning/filter selection, not output format.)
+- **Up to 10 reference images / identity-preserving composition** — prx-tg generates *novel* identities; multi-reference composition is an editing capability for *given* subjects. Task scope differs (false-competition rule).
+- **Mask / circle / painted-annotation local editing** — editing, not generation.
+- **Qwen-Image-Bench, typography and text-rendering numbers** — face-domain irrelevant; only relative signals carry.
+- **FlagOS multi-chip / 2K serving latency** — not prx-tg's regime. Mild aside: Qwen lists day-0 **AMD Radeon ROCm + Diffusers** support with accuracy aligned across platforms, which is one more data point that the ROCm path (Strix Halo) is viable for image-model inference.
+- **`mlp_ratio 3`** — a 7B-scale parameter-budget choice; at 240M the FFN saving is ~12% and not independently motivated.
+
