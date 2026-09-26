@@ -208,6 +208,43 @@ pose_diagnostics:
       Report measured pose diversity (sweep response under a geometry-dominant ladder) alongside the gate
       result, and prefer the seed-variation identity probe (same identity, different noise seeds), which
       does not depend on geometry working at all.
+  real_data_signal_test:
+    question: >-
+      Is the rendered eye-region patch (grey mass falling monotonically with z_g dim0,
+      0.3158 -> 0.0805 on step0006000/sample30) a faithful reproduction of a real
+      eye-region correlate of yaw in the training data?
+    method: >-
+      Identical metric (desaturated mid-luminance fraction, sat<=40 & 40<val<230) and identical
+      crop geometry (r = 0.35 x interocular, iBUG 36-47) applied to n=400 real FFHQ training
+      images, against their true yaw from pose.npy (nose x-offset / interocular, normalised
+      landmarks converted to pixels).
+    result:
+      r_grey_vs_yaw_imageleft: -0.045
+      r_grey_vs_yaw_imageright: +0.031
+      r_grey_vs_absyaw: [-0.024, +0.003]
+      r_grey_vs_zgdim0: [+0.051, -0.017]
+      per_yaw_quintile: [0.0700, 0.0845, 0.0634, 0.0779, 0.0517]
+      per_image_grey_std: 0.115
+    verdict: >-
+      NO SUCH SIGNAL IN THE DATA. The rendered patch is not a data correlate; the model
+      manufactures an ordered response to dim0 that nothing in the training set supports.
+    interpretation: >-
+      Consistent with: the model has learned a dependency on the conditioning dimension
+      (the signal reaches the pixels, ordered) without yet implementing the geometry.
+      Also consistent with the pre-existing measurement that dim0 <-> real yaw IS a true
+      axis in the data (|r|=0.942): the input carries yaw, and the renderer has not yet
+      turned that into rotation. NOT evidence of a dead or detached conditioning path.
+  lr_schedule_implication:
+    schedule: "linear warmup 500 -> cosine decay to min_lr over total_steps=10000 (train.py:677)"
+    observation: >-
+      lr is 3.0e-4 at warmup end, ~1.1e-4 at step 6000, and reaches min_lr 1e-6 at 10k.
+      The remaining 4k steps therefore have little capacity to acquire NEW structure
+      (head rotation), which is consistent with the plan for a longer attempt.
+    consequence: >-
+      A 50k/100k attempt CANNOT be a continuation of this run: the cosine has already
+      decayed to 1e-6 over a 10k horizon, so continuing would train at ~1e-6 and freeze.
+      It needs a fresh schedule over the longer horizon (warm-start from the 10k checkpoint
+      with re-warmed lr is far cheaper than from scratch).
   evidence:
     arm_o_control: experiment-configs/eidolon-identity-renderer/audit/armo_control/
     dilution_test_step3006: experiment-configs/eidolon-identity-renderer/audit/dilution_step3006/
