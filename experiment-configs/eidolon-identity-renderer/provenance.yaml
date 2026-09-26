@@ -2,7 +2,7 @@ arm: eidolon-identity-renderer
 arm_letter: EIR
 aliases: [eidolon-renderer, identity-renderer]
 mode: confirmatory            # gate frozen BEFORE the first run
-status: planned               # never run yet -> no run_dirs (see §0.3)
+status: active                # running: 10k steps in 1k blocks; blocks 1-3 complete (steps 1000/2000/3000)
 
 hypothesis: >-
   A from-scratch FLUX-VAE latent DiT (P1-shaped: 16ch, 128x128, patch 2) carrying the
@@ -76,10 +76,10 @@ blog_brief: null
 blog_post: null
 
 # --- run provenance ---
-git_commit: null             # set at the first run
-git_dirty: null
-training_host: null
-training_gpu: null
+git_commit: b345e64
+git_dirty: false
+training_host: game
+training_gpu: RTX 4090
 training_steps: 10000
 training_step_policy: >-
   10,000 steps granted and monitored in 1k BLOCKS. Each 1k boundary is a release point on the
@@ -118,9 +118,46 @@ hook_policy:
 data_snapshot: "FFHQ stratum 70k latents + hegre_corpus 31,711 (flux latents encoding)"
 agent_model: null
 agent_model_snapshot: null
-run_dirs: []                 # status: planned -> no runs yet
+run_dirs:                    # canonical run FIRST (§0.3); hard artifacts stay on the NAS
+  - experiments/eidolon-identity-renderer/runs/2026-09-25_0734
 superseded_by: null
 supersedes: null
+
+# --- axis verification (measured DURING the run, 2026-09-25; closes an open item) ---
+axis_verification:
+  question: "Is z_g dim0 really the head-yaw axis that this arm's sweep conditions on?"
+  method: >-
+    300 real FFHQ training dirs carrying BOTH z_g.npy and pose.npy. Head yaw computed from
+    each image's own DWPose 68-landmark face subset (pose.npy, COCO-WholeBody indices 23:91)
+    as the nose-tip horizontal offset from the eye midpoint, normalised by interocular
+    distance (signed; monotone in yaw). Then per-dimension Pearson correlation against z_g.
+  result:
+    dim0_abs_corr: 0.942
+    dim0_rank: 1                # of 50 dimensions
+    runner_up: "dim3 0.202, dim7 0.176, dim4 0.168"
+    median_abs_corr_all_dims: 0.068
+    z_g_per_dim_std: 1.053      # whitened -> the sweep's +-3.0 is 2.8 sigma and in-distribution
+    z_g_dim0_data_range: "min -2.6, max +2.6"
+  verdict: >-
+    CONFIRMED. dim0 is a near-pure yaw axis — 14x the median dimension, with all other dims at
+    noise level. The sweep's axis premise is VALID and its values are in-distribution: this arm
+    is not conditioning on a wrong or empty axis. Consequence: the absent yaw in the rendered
+    sweep is NOT a conditioning defect, so the suspect is downstream of the conditioning (the
+    geometry path in the model, or eval-time dilution by the dual-CFG ladder).
+  evidence:
+    script: experiment-configs/eidolon-identity-renderer/audit/zg_pose_audit.py
+    figures:
+      - experiment-configs/eidolon-identity-renderer/audit/zg_yaw_corr_perdim.png
+      - experiment-configs/eidolon-identity-renderer/audit/zg_pose_audit.png
+      - experiment-configs/eidolon-identity-renderer/audit/zg_sweep_landmarks.png
+  documentation_discrepancy: >-
+    The producing experiment (eidolon experiments/geometry_pca, arm zg-posenorm) records its
+    shipped encoder as 3D-frontalized and pose-INVARIANT, reporting a 4.92x yaw suppression
+    (std across yaw 1.451 -> 0.295). The shipped z_g is not pose-invariant in that sense:
+    dim0 tracks yaw at |r| = 0.942. Either the FFHQ z_g predates the frontalized encoder
+    (the zg tree is dated 2026-06-26, the encoder artifacts 2026-07-23) or the claimed
+    invariance does not survive into the PCA space. It does not affect this arm — the data is
+    what it is — but that provenance must NOT be read as "z_g carries no yaw".
 
 # --- instrument + holdout provenance (measured BEFORE this arm) ---
 pre_registration_evidence:
