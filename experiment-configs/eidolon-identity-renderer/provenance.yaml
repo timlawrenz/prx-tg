@@ -1,325 +1,382 @@
 arm: eidolon-identity-renderer
 arm_letter: EIR
-aliases: [eidolon-renderer, identity-renderer]
-mode: confirmatory            # gate frozen BEFORE the first run
-status: active                # running: 10k steps in 1k blocks; blocks 1-3 complete (steps 1000/2000/3000)
-
-hypothesis: >-
-  A from-scratch FLUX-VAE latent DiT (P1-shaped: 16ch, 128x128, patch 2) carrying the
-  Eidolon adapter (64-d AuraFace-LDA identity via adaLN + z_g geometry via
-  cross-attention) learns a GENERALIZABLE identity mapping from the two-source LDA
-  conditioning stream -- FFHQ per-image vectors plus hegre persona centroids -- rather
-  than memorizing per-image identity keys. Stated as a prediction: conditioning on the
-  vector of a person never seen in identity-training renders that person, and a pose
-  change leaves the identity intact.
-
-falsified_if: >-
-  Any of: (a) FFHQ unseen-identity fidelity R@1 CI LB <= 0.5 on the 6,996-identity
-  holdout (chance 1.4e-4), or (b) hegre unseen-persona generalization cross-shoot R@1
-  CI LB <= 0.5 on the 32-persona holdout (chance 0.031), or (c) the MEMORIZATION
-  SIGNATURE -- held-out scores are much weaker than trained-identity scores while the
-  trained-identity number looks good. (c) is a FAIL even though a naive reading of its
-  trained-identity number looks like success; it is the specific risk this arm exists
-  to expose.
-
-pre_registered_gate: >-
-  PASS requires ALL THREE, each a rank-based retrieval R@1 with a PERSONA/IDENTITY-level
-  bootstrap CI and a hard floor of CI LB > 0.5 (chance is 1.4e-4 / 0.031 / 0.003
-  respectively, so 0.5 is unambiguously above chance and matches the bar the project's
-  existing gates already use):
-  (1) FFHQ unseen-identity FIDELITY: 1-shot retrieval, index = the 6,996 held-out
-      identity vectors; reference ceiling ~1.0 (measured VAE round-trip a1 = 0.9998).
-  (2) hegre unseen-persona GENERALIZATION: cross-shoot retrieval, index = the 32
-      held-out personas; reference ceiling 0.9504 measured AT THIS INDEX SIZE.
-  (3) hegre PERSISTENCE/RECALL: cross-shoot retrieval, index = all 313 corpus personas
-      (trained personas included); reference ceiling 0.8180.
-  REPORTING RULES THAT ARE PART OF THE GATE:
-  - the renderer's number must be read against the ceiling measured at the SAME index
-    size (the ceiling is index-size dependent: 0.9504 at 32, 0.9005 at 96, 0.8180 at 313);
-  - no absolute cosine threshold may be used (the identity margin is ~0.0015 cosine and
-    the own/wrong-centroid distributions overlap);
-  - batch.skipped / no_face counts must be reported alongside every R@1 -- a face-filling
-    image returns no_face at the corpus det_size convention (24/24 in a synthetic probe),
-    and silently dropping those would compute the metric on the most flattering subset;
-  - if the metric path fails to produce a number for an arm, that is NOT a PASS.
-  Non-identity criteria carried from the arm's design: decoded output must not collapse
-  (no void/darkness onset), and the geometry sweep must move pose monotonically across
-  z_g dim0 (Arm O's proven geometry diagnostic).
-
+aliases:
+- eidolon-renderer
+- identity-renderer
+mode: confirmatory
+status: active
+hypothesis: 'A from-scratch FLUX-VAE latent DiT (P1-shaped: 16ch, 128x128, patch 2) carrying the Eidolon
+  adapter (64-d AuraFace-LDA identity via adaLN + z_g geometry via cross-attention) learns a GENERALIZABLE
+  identity mapping from the two-source LDA conditioning stream -- FFHQ per-image vectors plus hegre persona
+  centroids -- rather than memorizing per-image identity keys. Stated as a prediction: conditioning on
+  the vector of a person never seen in identity-training renders that person, and a pose change leaves
+  the identity intact.'
+falsified_if: 'Any of: (a) FFHQ unseen-identity fidelity R@1 CI LB <= 0.5 on the 6,996-identity holdout
+  (chance 1.4e-4), or (b) hegre unseen-persona generalization cross-shoot R@1 CI LB <= 0.5 on the 32-persona
+  holdout (chance 0.031), or (c) the MEMORIZATION SIGNATURE -- held-out scores are much weaker than trained-identity
+  scores while the trained-identity number looks good. (c) is a FAIL even though a naive reading of its
+  trained-identity number looks like success; it is the specific risk this arm exists to expose.'
+pre_registered_gate: "PASS requires ALL THREE, each a rank-based retrieval R@1 with a PERSONA/IDENTITY-level\
+  \ bootstrap CI and a hard floor of CI LB > 0.5 (chance is 1.4e-4 / 0.031 / 0.003 respectively, so 0.5\
+  \ is unambiguously above chance and matches the bar the project's existing gates already use): (1) FFHQ\
+  \ unseen-identity FIDELITY: 1-shot retrieval, index = the 6,996 held-out\n    identity vectors; reference\
+  \ ceiling ~1.0 (measured VAE round-trip a1 = 0.9998).\n(2) hegre unseen-persona GENERALIZATION: cross-shoot\
+  \ retrieval, index = the 32\n    held-out personas; reference ceiling 0.9504 measured AT THIS INDEX\
+  \ SIZE.\n(3) hegre PERSISTENCE/RECALL: cross-shoot retrieval, index = all 313 corpus personas\n    (trained\
+  \ personas included); reference ceiling 0.8180.\nREPORTING RULES THAT ARE PART OF THE GATE: - the renderer's\
+  \ number must be read against the ceiling measured at the SAME index\n  size (the ceiling is index-size\
+  \ dependent: 0.9504 at 32, 0.9005 at 96, 0.8180 at 313);\n- no absolute cosine threshold may be used\
+  \ (the identity margin is ~0.0015 cosine and\n  the own/wrong-centroid distributions overlap);\n- batch.skipped\
+  \ / no_face counts must be reported alongside every R@1 -- a face-filling\n  image returns no_face at\
+  \ the corpus det_size convention (24/24 in a synthetic probe),\n  and silently dropping those would\
+  \ compute the metric on the most flattering subset;\n- if the metric path fails to produce a number\
+  \ for an arm, that is NOT a PASS. Non-identity criteria carried from the arm's design: decoded output\
+  \ must not collapse (no void/darkness onset), and the geometry sweep must move pose monotonically across\
+  \ z_g dim0 (Arm O's proven geometry diagnostic)."
 differs_from: latent-first-pretrain
-diff_summary: |
-  - conditioning: text/DINO (P1) -> Eidolon adapter, identity (LDA 64-d, adaLN) + z_g
-    (50-d, cross-attention, per-dim basis). NO text stream at all.
-  - data source: FFHQ stratum alone -> FFHQ stratum PLUS hegre_corpus (the multi-shot
-    identity source; the only place pose-invariance can be learned).
-  - REPA dropped: hegre ships zero dinov3_patches.npy.
-  - no warm-start, no PP stage, no weight donor (fresh model, no lineage).
-  - inherited from P1 and unchanged: 16ch FLUX-AE latent, input_size 128, patch_size 2,
-    latent_space true, x_prediction, Muon lr 3e-4 -> min_lr 1e-6, effective batch 256.
-  - SETTLED (2026-09-24): step budget 10,000 in 1k blocks; ffhq:hegre = 2:1; unknown config
-    keys fail closed; the legacy keys this project's frozen configs carry are declared
-    no-ops (production/config_loader.py LEGACY_KEYS), and THIS arm's config carries none --
-    verified by loading it: zero no-op warnings.
-  - SETTLED (2026-09-24): dropout profile held at Arm O's 0.10/0.20/0.30 (p_identity_only
-    0.20), so the both-present fraction is 0.40 -- which is itself the ledger obligation to
-    report (the brief flags P1/PP's failure as a dropout-marginal problem at ~0.40, so a
-    future arm may test 0.60 by deleting the identity-only diagonal; deliberately NOT done
-    here, to keep a geometry result attributable to Arm O's validated recipe).
-  - STILL OPEN: architecture freeze (needs a latency measurement) and the gate-eval harness.
-
-# --- the four link fields (prx-tg addition) ---
+diff_summary: "- conditioning: text/DINO (P1) -> Eidolon adapter, identity (LDA 64-d, adaLN) + z_g\n \
+  \ (50-d, cross-attention, per-dim basis). NO text stream at all.\n- data source: FFHQ stratum alone\
+  \ -> FFHQ stratum PLUS hegre_corpus (the multi-shot\n  identity source; the only place pose-invariance\
+  \ can be learned).\n- REPA dropped: hegre ships zero dinov3_patches.npy.\n- no warm-start, no PP stage,\
+  \ no weight donor (fresh model, no lineage).\n- inherited from P1 and unchanged: 16ch FLUX-AE latent,\
+  \ input_size 128, patch_size 2,\n  latent_space true, x_prediction, Muon lr 3e-4 -> min_lr 1e-6, effective\
+  \ batch 256.\n- SETTLED (2026-09-24): step budget 10,000 in 1k blocks; ffhq:hegre = 2:1; unknown config\n\
+  \  keys fail closed; the legacy keys this project's frozen configs carry are declared\n  no-ops (production/config_loader.py\
+  \ LEGACY_KEYS), and THIS arm's config carries none --\n  verified by loading it: zero no-op warnings.\n\
+  - SETTLED (2026-09-24): dropout profile held at Arm O's 0.10/0.20/0.30 (p_identity_only\n  0.20), so\
+  \ the both-present fraction is 0.40 -- which is itself the ledger obligation to\n  report (the brief\
+  \ flags P1/PP's failure as a dropout-marginal problem at ~0.40, so a\n  future arm may test 0.60 by\
+  \ deleting the identity-only diagonal; deliberately NOT done\n  here, to keep a geometry result attributable\
+  \ to Arm O's validated recipe).\n- STILL OPEN: architecture freeze (needs a latency measurement) and\
+  \ the gate-eval harness.\n"
 branch: arm/eidolon-identity-renderer
-tags: [arm/eidolon-identity-renderer/registered]
-conclusions: []              # filled at the verdict; numbered 1..N
-ledger_anchor: null          # no ledger entry yet — arm is `planned`
+tags:
+- arm/eidolon-identity-renderer/registered
+conclusions: []
+ledger_anchor: null
 blog_brief: null
 blog_post: null
-
-# --- run provenance ---
 git_commit: b345e64
 git_dirty: false
 training_host: game
 training_gpu: RTX 4090
 training_steps: 10000
-training_step_policy: >-
-  10,000 steps granted and monitored in 1k BLOCKS. Each 1k boundary is a release point on the
-  shared 4090 (the latent-first 1k-SEGMENT policy: reserve only to the next boundary, release
-  there if another project is queued, auto-continue otherwise). checkpoint.save_every is
-  1000, so every 1k boundary yields a resumable state, while validation and its yaw sweep
-  run once per 1k block, with the checkpoint (see hook_policy below); save_optimizer is true so a resumed block
-  continues the same
-  trajectory. The budget is NOT gated on a measured s/it.
+training_step_policy: '10,000 steps granted and monitored in 1k BLOCKS. Each 1k boundary is a release
+  point on the shared 4090 (the latent-first 1k-SEGMENT policy: reserve only to the next boundary, release
+  there if another project is queued, auto-continue otherwise). checkpoint.save_every is 1000, so every
+  1k boundary yields a resumable state, while validation and its yaw sweep run once per 1k block, with
+  the checkpoint (see hook_policy below); save_optimizer is true so a resumed block continues the same
+  trajectory. The budget is NOT gated on a measured s/it.'
 hook_policy:
-  # CORRECTED 2026-09-25 (measured, not assumed): validation is triggered from the
-  # checkpoint branch of production/train.py, so the yaw sweep runs once per 1k block,
-  # not every 500. validation.interval_steps is NOT read by the training loop -- it is
-  # printed at startup and then ignored. This arm's periodic check = 1 sweep per block.
   validation_interval_steps: 1000
-  yaw_sweep: >-
-    z_g dim0 IS the yaw axis (|corr| 0.97 with DWPose head yaw, ~14 deg/sigma:
-    scripts/diag_pose_cfg_sweep.py), so the validator's eidolon "geometry sweep" IS this
-    arm's yaw sweep. Before this change it fixed identity but NOT the noise -- each sweep
-    value drew its own initial latent -- so a pose change could not be attributed to z_g;
-    it now uses one seed per persona (intra-sample: same face, same noise, only z_g moves)
-    and sweeps -3..+3 sigma (~+/-42 deg) to match the post-run measurement's range.
-  what_the_in_run_sweep_does_not_do: >-
-    it produces a labelled collage and measures NOTHING. DWPose yaw and AuraFace identity
-    on those images are the post-run step (diag_pose_cfg_sweep.py, then the gate harness).
+  yaw_sweep: 'z_g dim0 IS the yaw axis (|corr| 0.97 with DWPose head yaw, ~14 deg/sigma: scripts/diag_pose_cfg_sweep.py),
+    so the validator''s eidolon "geometry sweep" IS this arm''s yaw sweep. Before this change it fixed
+    identity but NOT the noise -- each sweep value drew its own initial latent -- so a pose change could
+    not be attributed to z_g; it now uses one seed per persona (intra-sample: same face, same noise, only
+    z_g moves) and sweeps -3..+3 sigma (~+/-42 deg) to match the post-run measurement''s range.'
+  what_the_in_run_sweep_does_not_do: it produces a labelled collage and measures NOTHING. DWPose yaw and
+    AuraFace identity on those images are the post-run step (diag_pose_cfg_sweep.py, then the gate harness).
     The collage must never be read as a metric.
-  visual_debug: disabled           # unseeded collage; redundant with the sweep and would
-                                   # stack a second hook on every multiple of 1000
-  cfg_branch_naming: >-
-    for adapter_name eidolon the dual-CFG branch names do not mean what they say: sample.py
-    builds the ladder from the text/DINO path, and for this adapter the "text" branch is
-    IDENTITY-only while the "dino" branch is GEOMETRY-only. So sampling.text_scale is the
-    IDENTITY scale and sampling.dino_scale the GEOMETRY scale. Both branches are partition
-    marginals consumed at EVAL time, which is why p_identity_only 0.20 is load-bearing for
-    inference and not only during training.
-data_snapshot: "FFHQ stratum 70k latents + hegre_corpus 31,711 (flux latents encoding)"
+  visual_debug: disabled
+  cfg_branch_naming: 'for adapter_name eidolon the dual-CFG branch names do not mean what they say: sample.py
+    builds the ladder from the text/DINO path, and for this adapter the "text" branch is IDENTITY-only
+    while the "dino" branch is GEOMETRY-only. So sampling.text_scale is the IDENTITY scale and sampling.dino_scale
+    the GEOMETRY scale. Both branches are partition marginals consumed at EVAL time, which is why p_identity_only
+    0.20 is load-bearing for inference and not only during training.'
+data_snapshot: FFHQ stratum 70k latents + hegre_corpus 31,711 (flux latents encoding)
 agent_model: null
 agent_model_snapshot: null
-run_dirs:                    # canonical run FIRST (§0.3); hard artifacts stay on the NAS
-  - experiments/eidolon-identity-renderer/runs/2026-09-25_0734
+run_dirs:
+- experiments/eidolon-identity-renderer/runs/2026-09-25_0734
 superseded_by: null
 supersedes: null
-
-# --- axis verification (measured DURING the run, 2026-09-25; closes an open item) ---
 axis_verification:
-  question: "Is z_g dim0 really the head-yaw axis that this arm's sweep conditions on?"
-  method: >-
-    300 real FFHQ training dirs carrying BOTH z_g.npy and pose.npy. Head yaw computed from
-    each image's own DWPose 68-landmark face subset (pose.npy, COCO-WholeBody indices 23:91)
-    as the nose-tip horizontal offset from the eye midpoint, normalised by interocular
-    distance (signed; monotone in yaw). Then per-dimension Pearson correlation against z_g.
+  question: Is z_g dim0 really the head-yaw axis that this arm's sweep conditions on?
+  method: 300 real FFHQ training dirs carrying BOTH z_g.npy and pose.npy. Head yaw computed from each
+    image's own DWPose 68-landmark face subset (pose.npy, COCO-WholeBody indices 23:91) as the nose-tip
+    horizontal offset from the eye midpoint, normalised by interocular distance (signed; monotone in yaw).
+    Then per-dimension Pearson correlation against z_g.
   result:
     dim0_abs_corr: 0.942
-    dim0_rank: 1                # of 50 dimensions
-    runner_up: "dim3 0.202, dim7 0.176, dim4 0.168"
+    dim0_rank: 1
+    runner_up: dim3 0.202, dim7 0.176, dim4 0.168
     median_abs_corr_all_dims: 0.068
-    z_g_per_dim_std: 1.053      # whitened -> the sweep's +-3.0 is 2.8 sigma and in-distribution
-    z_g_dim0_data_range: "min -2.6, max +2.6"
-  verdict: >-
-    CONFIRMED. dim0 is a near-pure yaw axis — 14x the median dimension, with all other dims at
-    noise level. The sweep's axis premise is VALID and its values are in-distribution: this arm
-    is not conditioning on a wrong or empty axis. Consequence: the absent yaw in the rendered
-    sweep is NOT a conditioning defect, so the suspect is downstream of the conditioning (the
-    geometry path in the model, or eval-time dilution by the dual-CFG ladder).
+    z_g_per_dim_std: 1.053
+    z_g_dim0_data_range: min -2.6, max +2.6
+  verdict: 'CONFIRMED. dim0 is a near-pure yaw axis — 14x the median dimension, with all other dims at
+    noise level. The sweep''s axis premise is VALID and its values are in-distribution: this arm is not
+    conditioning on a wrong or empty axis. Consequence: the absent yaw in the rendered sweep is NOT a
+    conditioning defect, so the suspect is downstream of the conditioning (the geometry path in the model,
+    or eval-time dilution by the dual-CFG ladder).'
   evidence:
     script: experiment-configs/eidolon-identity-renderer/audit/zg_pose_audit.py
     figures:
-      - experiment-configs/eidolon-identity-renderer/audit/zg_yaw_corr_perdim.png
-      - experiment-configs/eidolon-identity-renderer/audit/zg_pose_audit.png
-      - experiment-configs/eidolon-identity-renderer/audit/zg_sweep_landmarks.png
-  documentation_discrepancy: >-
-    The producing experiment (eidolon experiments/geometry_pca, arm zg-posenorm) records its
-    shipped encoder as 3D-frontalized and pose-INVARIANT, reporting a 4.92x yaw suppression
-    (std across yaw 1.451 -> 0.295). The shipped z_g is not pose-invariant in that sense:
-    dim0 tracks yaw at |r| = 0.942. Either the FFHQ z_g predates the frontalized encoder
-    (the zg tree is dated 2026-06-26, the encoder artifacts 2026-07-23) or the claimed
-    invariance does not survive into the PCA space. It does not affect this arm — the data is
-    what it is — but that provenance must NOT be read as "z_g carries no yaw".
-
-# --- in-run diagnostics (2026-09-25): the pose question, and what it does to the gate ---
+    - experiment-configs/eidolon-identity-renderer/audit/zg_yaw_corr_perdim.png
+    - experiment-configs/eidolon-identity-renderer/audit/zg_pose_audit.png
+    - experiment-configs/eidolon-identity-renderer/audit/zg_sweep_landmarks.png
+  documentation_discrepancy: 'The producing experiment (eidolon experiments/geometry_pca, arm zg-posenorm)
+    records its shipped encoder as 3D-frontalized and pose-INVARIANT, reporting a 4.92x yaw suppression
+    (std across yaw 1.451 -> 0.295). The shipped z_g is not pose-invariant in that sense: dim0 tracks
+    yaw at |r| = 0.942. Either the FFHQ z_g predates the frontalized encoder (the zg tree is dated 2026-06-26,
+    the encoder artifacts 2026-07-23) or the claimed invariance does not survive into the PCA space. It
+    does not affect this arm — the data is what it is — but that provenance must NOT be read as "z_g carries
+    no yaw".'
 pose_diagnostics:
-  summary: >-
-    z_g dim0 is a validated yaw axis (see axis_verification). The rendered sweep does NOT turn the head
-    at step 3006 under ANY conditioning ladder, including geometry-only at 10x. A positive control against
-    Arm O (zg-token-basis-cfg-guard, the ledger's PASS arm) shows this is the NORMAL state at ~3k steps,
-    not a failure of this arm.
+  summary: z_g dim0 is a validated yaw axis (see axis_verification). The rendered sweep does NOT turn
+    the head at step 3006 under ANY conditioning ladder, including geometry-only at 10x. A positive control
+    against Arm O (zg-token-basis-cfg-guard, the ledger's PASS arm) shows this is the NORMAL state at
+    ~3k steps, not a failure of this arm.
   metric_validation:
-    how: "The identical sweep + DWPose yaw proxy (nose offset / interocular, COCO-133, CPU) run against Arm O's own checkpoints."
-    arm_o_step3000: "yaw spread 0-3 px, non-monotone at every ladder -> the ledger's step-3000 'visible yaw' is NOT reproducible by metric."
-    arm_o_step5000: "8-15 px, MONOTONE (consistently signed) under geometry-dominant ladders -> the metric does detect a real binding, and the ledger's step-5000 claim is confirmed."
-    verdict: >-
-      METRIC VALIDATED. Consequence: a flat yaw at ~3k steps is unremarkable (Arm O was equally flat at
-      3000), so this arm's step-3006 null is NOT evidence of failure. Re-test at 5000+ before judging.
+    how: The identical sweep + DWPose yaw proxy (nose offset / interocular, COCO-133, CPU) run against
+      Arm O's own checkpoints.
+    arm_o_step3000: yaw spread 0-3 px, non-monotone at every ladder -> the ledger's step-3000 'visible
+      yaw' is NOT reproducible by metric.
+    arm_o_step5000: 8-15 px, MONOTONE (consistently signed) under geometry-dominant ladders -> the metric
+      does detect a real binding, and the ledger's step-5000 claim is confirmed.
+    verdict: 'METRIC VALIDATED. Consequence: a flat yaw at ~3k steps is unremarkable (Arm O was equally
+      flat at 3000), so this arm''s step-3006 null is NOT evidence of failure. Re-test at 5000+ before
+      judging.'
     evidence: experiment-configs/eidolon-identity-renderer/audit/armo_control/
-  binding_is_weak: >-
-    8-15 px of nose movement is a few degrees, not the ~42 deg the sweep's 14 deg/sigma premise assumes.
-    The binding is directional and real but far smaller than advertised — relevant before the identity
-    gate leans on z_g for pose diversity.
+  binding_is_weak: 8-15 px of nose movement is a few degrees, not the ~42 deg the sweep's 14 deg/sigma
+    premise assumes. The binding is directional and real but far smaller than advertised — relevant before
+    the identity gate leans on z_g for pose diversity.
   validator_ladder_blindness:
-    finding: >-
-      The binding appears ONLY under geometry-dominant conditioning (geoonly 0.0/4.0, 0.0/10.0, id1_geo8).
-      Under this arm's validator ladder (identity 3.0 / geometry 2.0) it stays flat even at Arm O's step
-      5000, where the binding demonstrably exists.
-    consequence: >-
-      The in-run `eidolon_geometry_sweep` cannot see a real yaw binding, so a 'no yaw' reading from it is
-      unfalsifiable — which is also why the ledger's yaw was 'visually assessed'.
-    obligation: "Add a geometry-dominant ladder to the sweep BEFORE any arm's yaw is judged."
+    finding: The binding appears ONLY under geometry-dominant conditioning (geoonly 0.0/4.0, 0.0/10.0,
+      id1_geo8). Under this arm's validator ladder (identity 3.0 / geometry 2.0) it stays flat even at
+      Arm O's step 5000, where the binding demonstrably exists.
+    consequence: The in-run `eidolon_geometry_sweep` cannot see a real yaw binding, so a 'no yaw' reading
+      from it is unfalsifiable — which is also why the ledger's yaw was 'visually assessed'.
+    obligation: Add a geometry-dominant ladder to the sweep BEFORE any arm's yaw is judged.
   cfg_guard_defect:
-    finding: >-
-      adapters.py:284 guards the per-dim token basis with `not cfg_drop_geo.all()`, but train.py:282 draws
-      the CFG dropout PER SAMPLE (`torch.rand(B)`). The basis is therefore skipped only when the ENTIRE
-      batch is geometry-dropped — 0.3^B, i.e. ~0.8% of steps at B=4. On the other ~99% it is added even to
-      geometry-zeroed samples, the 'pure noise injection' the ledger blames for Arm N's collapse.
-    introduced: "86bab8a (2026-07-19) — Arm O's own fix commit, so Arm O trained under the same defect."
-    inference_time: "Correct: drop_all skips the basis, keep_all adds it."
-    status: "REAL DEFECT, unfixed. Not the cause of the step-3006 null (Arm O carries it too and binds by 5k)."
+    finding: adapters.py:284 guards the per-dim token basis with `not cfg_drop_geo.all()`, but train.py:282
+      draws the CFG dropout PER SAMPLE (`torch.rand(B)`). The basis is therefore skipped only when the
+      ENTIRE batch is geometry-dropped — 0.3^B, i.e. ~0.8% of steps at B=4. On the other ~99% it is added
+      even to geometry-zeroed samples, the 'pure noise injection' the ledger blames for Arm N's collapse.
+    introduced: 86bab8a (2026-07-19) — Arm O's own fix commit, so Arm O trained under the same defect.
+    inference_time: 'Correct: drop_all skips the basis, keep_all adds it.'
+    status: REAL DEFECT, unfixed. Not the cause of the step-3006 null (Arm O carries it too and binds
+      by 5k).
   vacuous_pass_risk:
-    finding: >-
-      The registered gate is identity consistency (R@1 > 0.5 on three probes) across different z_g. If z_g
-      produces no pose diversity, the model renders the same frontal face whatever z_g says, and 'same
-      identity across different poses' is satisfied because there are no different poses.
-    consequence: >-
-      A PASS on the registered gate would be VACUOUS if the geometry stream never produces pose variation.
-      This must be reported WITH the verdict, not discovered after it.
-    mitigation: >-
-      Report measured pose diversity (sweep response under a geometry-dominant ladder) alongside the gate
-      result, and prefer the seed-variation identity probe (same identity, different noise seeds), which
-      does not depend on geometry working at all.
+    finding: The registered gate is identity consistency (R@1 > 0.5 on three probes) across different
+      z_g. If z_g produces no pose diversity, the model renders the same frontal face whatever z_g says,
+      and 'same identity across different poses' is satisfied because there are no different poses.
+    consequence: A PASS on the registered gate would be VACUOUS if the geometry stream never produces
+      pose variation. This must be reported WITH the verdict, not discovered after it.
+    mitigation: Report measured pose diversity (sweep response under a geometry-dominant ladder) alongside
+      the gate result, and prefer the seed-variation identity probe (same identity, different noise seeds),
+      which does not depend on geometry working at all.
   real_data_signal_test:
-    question: >-
-      Is the rendered eye-region patch (grey mass falling monotonically with z_g dim0,
-      0.3158 -> 0.0805 on step0006000/sample30) a faithful reproduction of a real
-      eye-region correlate of yaw in the training data?
-    method: >-
-      Identical metric (desaturated mid-luminance fraction, sat<=40 & 40<val<230) and identical
-      crop geometry (r = 0.35 x interocular, iBUG 36-47) applied to n=400 real FFHQ training
-      images, against their true yaw from pose.npy (nose x-offset / interocular, normalised
-      landmarks converted to pixels).
+    question: Is the rendered eye-region patch (grey mass falling monotonically with z_g dim0, 0.3158
+      -> 0.0805 on step0006000/sample30) a faithful reproduction of a real eye-region correlate of yaw
+      in the training data?
+    method: Identical metric (desaturated mid-luminance fraction, sat<=40 & 40<val<230) and identical
+      crop geometry (r = 0.35 x interocular, iBUG 36-47) applied to n=400 real FFHQ training images, against
+      their true yaw from pose.npy (nose x-offset / interocular, normalised landmarks converted to pixels).
     result:
       r_grey_vs_yaw_imageleft: -0.045
-      r_grey_vs_yaw_imageright: +0.031
-      r_grey_vs_absyaw: [-0.024, +0.003]
-      r_grey_vs_zgdim0: [+0.051, -0.017]
-      per_yaw_quintile: [0.0700, 0.0845, 0.0634, 0.0779, 0.0517]
+      r_grey_vs_yaw_imageright: 0.031
+      r_grey_vs_absyaw:
+      - -0.024
+      - 0.003
+      r_grey_vs_zgdim0:
+      - 0.051
+      - -0.017
+      per_yaw_quintile:
+      - 0.07
+      - 0.0845
+      - 0.0634
+      - 0.0779
+      - 0.0517
       per_image_grey_std: 0.115
-    verdict: >-
-      NO SUCH SIGNAL IN THE DATA. The rendered patch is not a data correlate; the model
-      manufactures an ordered response to dim0 that nothing in the training set supports.
-    interpretation: >-
-      Consistent with: the model has learned a dependency on the conditioning dimension
-      (the signal reaches the pixels, ordered) without yet implementing the geometry.
-      Also consistent with the pre-existing measurement that dim0 <-> real yaw IS a true
-      axis in the data (|r|=0.942): the input carries yaw, and the renderer has not yet
-      turned that into rotation. NOT evidence of a dead or detached conditioning path.
+    verdict: NO SUCH SIGNAL IN THE DATA. The rendered patch is not a data correlate; the model manufactures
+      an ordered response to dim0 that nothing in the training set supports.
+    interpretation: 'Consistent with: the model has learned a dependency on the conditioning dimension
+      (the signal reaches the pixels, ordered) without yet implementing the geometry. Also consistent
+      with the pre-existing measurement that dim0 <-> real yaw IS a true axis in the data (|r|=0.942):
+      the input carries yaw, and the renderer has not yet turned that into rotation. NOT evidence of a
+      dead or detached conditioning path.'
   yaw_emergence_and_mechanism:
-    emergence: >-
-      The z_g dim0 -> head rotation response appeared BETWEEN step 5000 and step 7000, inside
-      the 10k budget. Probe (4 CFG ladders x 3 samples, seed 1234, 50-step sampler, latent
-      space, VAE-decoded): step 5000 = 7-35 px nose displacement, mostly non-monotone under the
-      standard ladder; step 7000 = 46-93 px, MONOTONE decreasing in all 12 ladder/sample rows.
-      Prediction recorded earlier ("yaw should appear around 4-5k if this arm follows Arm O's
-      schedule") was directionally right; it arrived by 7k.
-    validator_ladder_note_corrected: >-
-      The earlier note that the validator's ladder (identity 3.0 / geometry 2.0) is BLIND to the
-      binding is too strong. It was INSENSITIVE while the signal was weak (<=5000: 7-9 px). At
-      step 7000 the same standard ladder shows 46-52 px, monotone. A geometry-dominant ladder is
-      still the more sensitive instrument early on, but the standard ladder is not blind.
+    emergence: 'The z_g dim0 -> head rotation response appeared BETWEEN step 5000 and step 7000, inside
+      the 10k budget. Probe (4 CFG ladders x 3 samples, seed 1234, 50-step sampler, latent space, VAE-decoded):
+      step 5000 = 7-35 px nose displacement, mostly non-monotone under the standard ladder; step 7000
+      = 46-93 px, MONOTONE decreasing in all 12 ladder/sample rows. Prediction recorded earlier ("yaw
+      should appear around 4-5k if this arm follows Arm O''s schedule") was directionally right; it arrived
+      by 7k.'
+    validator_ladder_note_corrected: 'The earlier note that the validator''s ladder (identity 3.0 / geometry
+      2.0) is BLIND to the binding is too strong. It was INSENSITIVE while the signal was weak (<=5000:
+      7-9 px). At step 7000 the same standard ladder shows 46-52 px, monotone. A geometry-dominant ladder
+      is still the more sensitive instrument early on, but the standard ladder is not blind.'
     mechanism_test:
-      question: >-
-        Operator read of the step-7000 geometry-dominant grid: "partial deformation (the sides
-        are shortened), partial real 3d occlusion (the nose shows the person's nose left side,
-        hides the nose's right side and vice versa)". Is it a real 3D projection or a 2D squash?
-      method: >-
-        Discriminating signature in the 68 iBUG landmarks: a true rotation leaves the projected
-        interocular nearly constant (eyes lie near the rotation axis) while hiding the far cheek
-        (asymmetric jaw distances to the nose tip); a 2D squash shortens both sides together and
-        changes the interocular. Reference: n=500 real FFHQ faces with yaw from pose.npy; render:
-        step-7000 geoonly_id0_geo10 panels, DWPose landmarks, identical metric definitions.
+      question: 'Operator read of the step-7000 geometry-dominant grid: "partial deformation (the sides
+        are shortened), partial real 3d occlusion (the nose shows the person''s nose left side, hides
+        the nose''s right side and vice versa)". Is it a real 3D projection or a 2D squash?'
+      method: 'Discriminating signature in the 68 iBUG landmarks: a true rotation leaves the projected
+        interocular nearly constant (eyes lie near the rotation axis) while hiding the far cheek (asymmetric
+        jaw distances to the nose tip); a 2D squash shortens both sides together and changes the interocular.
+        Reference: n=500 real FFHQ faces with yaw from pose.npy; render: step-7000 geoonly_id0_geo10 panels,
+        DWPose landmarks, identical metric definitions.'
       real_reference:
-        inter_over_median_by_yaw_bin: [0.916, 0.992, 1.004, 1.004, 0.991, 0.927]
-        L_over_R_by_yaw_bin: [0.19, 0.47, 0.83, 1.23, 2.02, 4.25]
+        inter_over_median_by_yaw_bin:
+        - 0.916
+        - 0.992
+        - 1.004
+        - 1.004
+        - 0.991
+        - 0.927
+        L_over_R_by_yaw_bin:
+        - 0.19
+        - 0.47
+        - 0.83
+        - 1.23
+        - 2.02
+        - 4.25
       render:
-        sample10: {inter: [1.000, 1.093], L_over_R: [4.29, 1.02]}
-        sample30: {inter: [1.000, 1.072], L_over_R: [7.65, 0.85]}
-        sample50: {inter: [1.000, 1.122], L_over_R: [6.39, 0.81]}
-      verdict: >-
-        BOTH OPERATOR READINGS CONFIRMED, and separated. The render reproduces genuine 3D
-        OCCLUSION — the far-side jaw distance collapses as the head turns, L/R swinging 4-9x in
-        the correct direction, stronger per unit yaw than real faces. But its in-plane metric is
-        inconsistent: the projected interocular GROWS 7-12% with yaw where a true projection
-        holds it flat or shrinks it ~8%. The model has learned what gets hidden without getting
-        the projective geometry consistent.
-      cross_check_standard_ladder: >-
-        Re-run under fullcfg_id3_geo2 (identity anchored at 3.0, so the face is not free to
-        drift for lack of an identity anchor): SAME pattern. inter 1.000 -> 1.096 / 1.066 /
-        1.093 for samples 10/30/50, face width growing up to +21%, L/R swinging 2.38 -> 0.85.
-        So the in-plane widening is a property of the geometry handling, not an artefact of
-        the identity-free ladder. Occlusion remains quantitatively plausible under both ladders
-        (the L/R range corresponds to real faces at yaw +-0.15..0.25).
-      implication: >-
-        This is a partially correct 3D solution, not a 2D fake: the occlusion is data-grounded
-        (real faces carry it durably; unlike the eye-grey patch, which the data does NOT carry).
-        The residual error is a global projective inconsistency, which requires coordinating the
-        whole face rather than a local patch — consistent with the case for a longer run.
+        sample10:
+          inter:
+          - 1.0
+          - 1.093
+          L_over_R:
+          - 4.29
+          - 1.02
+        sample30:
+          inter:
+          - 1.0
+          - 1.072
+          L_over_R:
+          - 7.65
+          - 0.85
+        sample50:
+          inter:
+          - 1.0
+          - 1.122
+          L_over_R:
+          - 6.39
+          - 0.81
+      verdict: 'BOTH OPERATOR READINGS CONFIRMED, and separated. The render reproduces genuine 3D OCCLUSION
+        — the far-side jaw distance collapses as the head turns, L/R swinging 4-9x in the correct direction,
+        stronger per unit yaw than real faces. But its in-plane metric is inconsistent: the projected
+        interocular GROWS 7-12% with yaw where a true projection holds it flat or shrinks it ~8%. The
+        model has learned what gets hidden without getting the projective geometry consistent.'
+      cross_check_standard_ladder: 'Re-run under fullcfg_id3_geo2 (identity anchored at 3.0, so the face
+        is not free to drift for lack of an identity anchor): SAME pattern. inter 1.000 -> 1.096 / 1.066
+        / 1.093 for samples 10/30/50, face width growing up to +21%, L/R swinging 2.38 -> 0.85. So the
+        in-plane widening is a property of the geometry handling, not an artefact of the identity-free
+        ladder. Occlusion remains quantitatively plausible under both ladders (the L/R range corresponds
+        to real faces at yaw +-0.15..0.25).'
+      implication: 'This is a partially correct 3D solution, not a 2D fake: the occlusion is data-grounded
+        (real faces carry it durably; unlike the eye-grey patch, which the data does NOT carry). The residual
+        error is a global projective inconsistency, which requires coordinating the whole face rather
+        than a local patch — consistent with the case for a longer run.'
+    data_coverage_audit:
+      method: yaw/pitch/roll proxies from pose.npy over n=10000 FFHQ training images; dim0->yaw regression
+        on the same images
+      ffhq_yaw:
+        std: 0.195
+        p1: -0.515
+        p5: -0.31
+        p25: -0.106
+        median: 0.001
+        p75: 0.104
+        p95: 0.311
+        p99: 0.511
+        min: -1.036
+        max: 1.235
+        sign_split:
+        - 0.496
+        - 0.504
+      ffhq_yaw_tail_fractions:
+        gt_0.10: 0.514
+        gt_0.25: 0.166
+        gt_0.40: 0.051
+        gt_0.60: 0.011
+      ffhq_pitch:
+        std: 0.121
+        p1: 0.227
+        p99: 0.821
+        median: 0.545
+      ffhq_roll_deg:
+        std: 1.974
+        p1: -5.58
+        p99: 5.63
+      dim0_to_yaw:
+        formula: yaw = -0.0037 - 0.1831 * dim0
+        r: -0.937
+        note: 'slope is NEGATIVE, matching the render''s monotone-decreasing response in all 12 rows:
+          the model learned the correct sign of the axis.'
+      sweep_support:
+        dim0_-3.0:
+          implied_yaw: 0.5456
+          n_within_0.05: 53
+          n_total: 10000
+          in_support: false
+        dim0_-1.5:
+          implied_yaw: 0.271
+          n_within_0.05: 592
+          in_support: true
+        dim0_0.0:
+          implied_yaw: -0.0037
+          n_within_0.05: 2798
+          in_support: true
+        dim0_1.5:
+          implied_yaw: -0.2783
+          n_within_0.05: 576
+          in_support: true
+        dim0_3.0:
+          implied_yaw: -0.553
+          n_within_0.05: 58
+          n_total: 10000
+          in_support: false
+      verdict: 'FFHQ is PEAKED AT FRONTAL WITH THIN TAILS, not evenly distributed. The sweep''s +/-3 sigma
+        commands implied yaw +/-0.55, beyond the data p99 (+/-0.51) with 0.5% local support: the strongest
+        demonstrations of rotation are partly OUT-OF-DISTRIBUTION EXTRAPOLATION. The occlusion component
+        matched real faces at yaw +/-0.15..0.25, where the data IS dense (16.6%). The model is accurate
+        where the data is dense and inventive where it is thin - the best current explanation of the in-plane
+        widening, and one that more training will not fix because the evidence is absent.'
+      obligations:
+      - 'Measure the hegre pose distribution (20k personas, 1/3 of effective data): path unresolved, numbers
+        unknown.'
+      - Report a +/-1.5 sigma sweep row as the IN-DISTRIBUTION claim and label +/-3 sigma as extrapolation.
+      - If synthetic yaw is introduced it must be 3D (3DMM reposing / multiview). 2D-warp augmentation
+        would reinforce the measured in-plane deformation defect and make it worse.
+      - 'Cheapest real-geometry option first: re-weight/oversample the existing tails (5.1% of FFHQ is
+        beyond +/-0.40).'
   lr_schedule_implication:
-    schedule: "linear warmup 500 -> cosine decay to min_lr over total_steps=10000 (train.py:677)"
-    observation: >-
-      lr is 3.0e-4 at warmup end, ~1.1e-4 at step 6000, and reaches min_lr 1e-6 at 10k.
-      The remaining 4k steps therefore have little capacity to acquire NEW structure
-      (head rotation), which is consistent with the plan for a longer attempt.
-    consequence: >-
-      A 50k/100k attempt CANNOT be a continuation of this run: the cosine has already
-      decayed to 1e-6 over a 10k horizon, so continuing would train at ~1e-6 and freeze.
-      It needs a fresh schedule over the longer horizon (warm-start from the 10k checkpoint
-      with re-warmed lr is far cheaper than from scratch).
+    schedule: linear warmup 500 -> cosine decay to min_lr over total_steps=10000 (train.py:677)
+    observation: lr is 3.0e-4 at warmup end, ~1.1e-4 at step 6000, and reaches min_lr 1e-6 at 10k. The
+      remaining 4k steps therefore have little capacity to acquire NEW structure (head rotation), which
+      is consistent with the plan for a longer attempt.
+    consequence: 'A 50k/100k attempt CANNOT be a continuation of this run: the cosine has already decayed
+      to 1e-6 over a 10k horizon, so continuing would train at ~1e-6 and freeze. It needs a fresh schedule
+      over the longer horizon (warm-start from the 10k checkpoint with re-warmed lr is far cheaper than
+      from scratch).'
   evidence:
     arm_o_control: experiment-configs/eidolon-identity-renderer/audit/armo_control/
     dilution_test_step3006: experiment-configs/eidolon-identity-renderer/audit/dilution_step3006/
-    scripts: [scripts/diag_eidolon_zg_dilution.py, scripts/diag_identity_seed_consistency.py]
-
-# --- instrument + holdout provenance (measured BEFORE this arm) ---
+    scripts:
+    - scripts/diag_eidolon_zg_dilution.py
+    - scripts/diag_identity_seed_consistency.py
 pre_registration_evidence:
   instrument_dir: research/results/eidolon-identity-instrument/
   instrument_findings:
-    - "Step 0 replication REPRODUCED: cosine R@1 0.8910 vs recorded 0.8879 (delta = one query of 321); R@5/R@10 exact."
-    - "THE CEILING IS INDEX-SIZE DEPENDENT: 0.9504 at 32 personas, 0.9005 at 96, 0.8180 at 313 (leave-one-shoot-out)."
-    - "Identity margin is ~0.0015 cosine; own (0.9985) and wrong-centroid (max 0.9981) distributions OVERLAP -> rank/margin only, no threshold."
-    - "VAE round-trip costs ~0.0002 of identity (a1 = 0.9998), so a render is judged against the cross-shoot ceiling, not a VAE-degraded floor."
-    - "Detection convention moves the vector ~0.0002 (det_size 512 vs 640) -> immaterial; but DETECTION SURVIVAL is not: a face-filling crop returns no_face 24/24 at default 640."
-    - "Identity basis fingerprint: 120e1c5a1dc4f423 (all three consumed trees); a mixed-basis slot is refused by the loader guard (commit 1b5a03b)."
+  - 'Step 0 replication REPRODUCED: cosine R@1 0.8910 vs recorded 0.8879 (delta = one query of 321); R@5/R@10
+    exact.'
+  - 'THE CEILING IS INDEX-SIZE DEPENDENT: 0.9504 at 32 personas, 0.9005 at 96, 0.8180 at 313 (leave-one-shoot-out).'
+  - Identity margin is ~0.0015 cosine; own (0.9985) and wrong-centroid (max 0.9981) distributions OVERLAP
+    -> rank/margin only, no threshold.
+  - VAE round-trip costs ~0.0002 of identity (a1 = 0.9998), so a render is judged against the cross-shoot
+    ceiling, not a VAE-degraded floor.
+  - 'Detection convention moves the vector ~0.0002 (det_size 512 vs 640) -> immaterial; but DETECTION
+    SURVIVAL is not: a face-filling crop returns no_face 24/24 at default 640.'
+  - 'Identity basis fingerprint: 120e1c5a1dc4f423 (all three consumed trees); a mixed-basis slot is refused
+    by the loader guard (commit 1b5a03b).'
   holdout_manifest: experiment-configs/eidolon-identity-renderer/holdout.json
   holdout_builder: scripts/build_identity_holdout.py
   holdout_seed: 20260925
-  ffhq_holdout_sha256: 2967fafac71f2a75          # 6,996 identities
-  hegre_holdout_sha256: 705936d1c0f3b805         # 32 personas of a 313 pool
-  hegre_pool_note: >-
-    pool reproduced with the CEILING's eligibility rule (corpus dirs resolving into the
-    LDA tree, >=2 sets among their own corpus samples) = 313, not the looser
-    ">=2 set dirs exist" rule = 320; otherwise the 0.9504 reference is not exact.
+  ffhq_holdout_sha256: 2967fafac71f2a75
+  hegre_holdout_sha256: 705936d1c0f3b805
+  hegre_pool_note: pool reproduced with the CEILING's eligibility rule (corpus dirs resolving into the
+    LDA tree, >=2 sets among their own corpus samples) = 313, not the looser ">=2 set dirs exist" rule
+    = 320; otherwise the 0.9504 reference is not exact.
   holdout_is_never_touched_test: false
-  holdout_note: >-
-    both holdouts are monitored in-training as well as used for the verdict; the plan's
-    separate never-touched slice is a Stage B reconciliation, not invented here.
+  holdout_note: both holdouts are monitored in-training as well as used for the verdict; the plan's separate
+    never-touched slice is a Stage B reconciliation, not invented here.
