@@ -159,6 +159,60 @@ axis_verification:
     invariance does not survive into the PCA space. It does not affect this arm — the data is
     what it is — but that provenance must NOT be read as "z_g carries no yaw".
 
+# --- in-run diagnostics (2026-09-25): the pose question, and what it does to the gate ---
+pose_diagnostics:
+  summary: >-
+    z_g dim0 is a validated yaw axis (see axis_verification). The rendered sweep does NOT turn the head
+    at step 3006 under ANY conditioning ladder, including geometry-only at 10x. A positive control against
+    Arm O (zg-token-basis-cfg-guard, the ledger's PASS arm) shows this is the NORMAL state at ~3k steps,
+    not a failure of this arm.
+  metric_validation:
+    how: "The identical sweep + DWPose yaw proxy (nose offset / interocular, COCO-133, CPU) run against Arm O's own checkpoints."
+    arm_o_step3000: "yaw spread 0-3 px, non-monotone at every ladder -> the ledger's step-3000 'visible yaw' is NOT reproducible by metric."
+    arm_o_step5000: "8-15 px, MONOTONE (consistently signed) under geometry-dominant ladders -> the metric does detect a real binding, and the ledger's step-5000 claim is confirmed."
+    verdict: >-
+      METRIC VALIDATED. Consequence: a flat yaw at ~3k steps is unremarkable (Arm O was equally flat at
+      3000), so this arm's step-3006 null is NOT evidence of failure. Re-test at 5000+ before judging.
+    evidence: experiment-configs/eidolon-identity-renderer/audit/armo_control/
+  binding_is_weak: >-
+    8-15 px of nose movement is a few degrees, not the ~42 deg the sweep's 14 deg/sigma premise assumes.
+    The binding is directional and real but far smaller than advertised — relevant before the identity
+    gate leans on z_g for pose diversity.
+  validator_ladder_blindness:
+    finding: >-
+      The binding appears ONLY under geometry-dominant conditioning (geoonly 0.0/4.0, 0.0/10.0, id1_geo8).
+      Under this arm's validator ladder (identity 3.0 / geometry 2.0) it stays flat even at Arm O's step
+      5000, where the binding demonstrably exists.
+    consequence: >-
+      The in-run `eidolon_geometry_sweep` cannot see a real yaw binding, so a 'no yaw' reading from it is
+      unfalsifiable — which is also why the ledger's yaw was 'visually assessed'.
+    obligation: "Add a geometry-dominant ladder to the sweep BEFORE any arm's yaw is judged."
+  cfg_guard_defect:
+    finding: >-
+      adapters.py:284 guards the per-dim token basis with `not cfg_drop_geo.all()`, but train.py:282 draws
+      the CFG dropout PER SAMPLE (`torch.rand(B)`). The basis is therefore skipped only when the ENTIRE
+      batch is geometry-dropped — 0.3^B, i.e. ~0.8% of steps at B=4. On the other ~99% it is added even to
+      geometry-zeroed samples, the 'pure noise injection' the ledger blames for Arm N's collapse.
+    introduced: "86bab8a (2026-07-19) — Arm O's own fix commit, so Arm O trained under the same defect."
+    inference_time: "Correct: drop_all skips the basis, keep_all adds it."
+    status: "REAL DEFECT, unfixed. Not the cause of the step-3006 null (Arm O carries it too and binds by 5k)."
+  vacuous_pass_risk:
+    finding: >-
+      The registered gate is identity consistency (R@1 > 0.5 on three probes) across different z_g. If z_g
+      produces no pose diversity, the model renders the same frontal face whatever z_g says, and 'same
+      identity across different poses' is satisfied because there are no different poses.
+    consequence: >-
+      A PASS on the registered gate would be VACUOUS if the geometry stream never produces pose variation.
+      This must be reported WITH the verdict, not discovered after it.
+    mitigation: >-
+      Report measured pose diversity (sweep response under a geometry-dominant ladder) alongside the gate
+      result, and prefer the seed-variation identity probe (same identity, different noise seeds), which
+      does not depend on geometry working at all.
+  evidence:
+    arm_o_control: experiment-configs/eidolon-identity-renderer/audit/armo_control/
+    dilution_test_step3006: experiment-configs/eidolon-identity-renderer/audit/dilution_step3006/
+    scripts: [scripts/diag_eidolon_zg_dilution.py, scripts/diag_identity_seed_consistency.py]
+
 # --- instrument + holdout provenance (measured BEFORE this arm) ---
 pre_registration_evidence:
   instrument_dir: research/results/eidolon-identity-instrument/
