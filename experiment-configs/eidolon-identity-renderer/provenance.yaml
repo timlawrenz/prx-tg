@@ -272,6 +272,13 @@ pose_diagnostics:
         inconsistent: the projected interocular GROWS 7-12% with yaw where a true projection
         holds it flat or shrinks it ~8%. The model has learned what gets hidden without getting
         the projective geometry consistent.
+      cross_check_standard_ladder: >-
+        Re-run under fullcfg_id3_geo2 (identity anchored at 3.0, so the face is not free to
+        drift for lack of an identity anchor): SAME pattern. inter 1.000 -> 1.096 / 1.066 /
+        1.093 for samples 10/30/50, face width growing up to +21%, L/R swinging 2.38 -> 0.85.
+        So the in-plane widening is a property of the geometry handling, not an artefact of
+        the identity-free ladder. Occlusion remains quantitatively plausible under both ladders
+        (the L/R range corresponds to real faces at yaw +-0.15..0.25).
       implication: >-
         This is a partially correct 3D solution, not a 2D fake: the occlusion is data-grounded
         (real faces carry it durably; unlike the eye-grey patch, which the data does NOT carry).
