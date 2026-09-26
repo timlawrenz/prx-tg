@@ -1,0 +1,510 @@
+{
+  "config": "/home/tim/.hermes/profiles/prx-tg/cache/scratch/armo_control/armo_config_guarded.yaml",
+  "checkpoint": "/mnt/nas-ai-models/training-data/prx-tg/zg-token-basis-cfg-guard/runs/2026-07-20_0603/checkpoints/checkpoint_step0005000.pt",
+  "sweep_dim": 0,
+  "sweep_values": [
+    -3.0,
+    -1.5,
+    0.0,
+    1.5,
+    3.0
+  ],
+  "sample_indices": [
+    10,
+    30,
+    50
+  ],
+  "seed": 1234,
+  "num_steps": 50,
+  "gamma": 1.0,
+  "latent_space": false,
+  "cfg_configs": [
+    {
+      "name": "fullcfg_id3_geo2",
+      "identity_scale": 3.0,
+      "geometry_scale": 2.0
+    },
+    {
+      "name": "geoonly_id0_geo4",
+      "identity_scale": 0.0,
+      "geometry_scale": 4.0
+    },
+    {
+      "name": "geoonly_id0_geo10",
+      "identity_scale": 0.0,
+      "geometry_scale": 10.0
+    },
+    {
+      "name": "id1_geo8",
+      "identity_scale": 1.0,
+      "geometry_scale": 8.0
+    }
+  ],
+  "notes": [
+    "18/60 panels had no detectable face; their yaw is recorded as null and excluded from spread/monotonicity. No value was substituted."
+  ],
+  "configs": [
+    {
+      "name": "fullcfg_id3_geo2",
+      "identity_scale": 3.0,
+      "geometry_scale": 2.0,
+      "samples": [
+        {
+          "sample_idx": 10,
+          "image_id": "00010",
+          "base_zg_dim0": -0.44044360518455505,
+          "sweep_values": [
+            -3.0,
+            -1.5,
+            0.0,
+            1.5,
+            3.0
+          ],
+          "yaw_proxy": [
+            -0.024996528500989296,
+            -0.03332870466798587,
+            -0.03332870466798587,
+            -0.033328704667986264,
+            -0.0333287046679861
+          ],
+          "det_conf": [
+            0.5471879839897156,
+            0.5530583262443542,
+            0.5554680228233337,
+            0.5583323836326599,
+            0.5588752031326294
+          ],
+          "n_keypoints": [
+            133,
+            133,
+            133,
+            133,
+            133
+          ],
+          "no_face_panels": 0,
+          "yaw_spread": 0.008332176166996969,
+          "monotone": "non-monotone"
+        },
+        {
+          "sample_idx": 30,
+          "image_id": "00030",
+          "base_zg_dim0": -0.17061088979244232,
+          "sweep_values": [
+            -3.0,
+            -1.5,
+            0.0,
+            1.5,
+            3.0
+          ],
+          "yaw_proxy": [
+            -0.0378097864392592,
+            -0.046216855587892756,
+            -0.054619920240237,
+            -0.054619920240236985,
+            -0.05462184873949614
+          ],
+          "det_conf": [
+            0.5594171285629272,
+            0.569391667842865,
+            0.5746687650680542,
+            0.577471137046814,
+            0.5817192792892456
+          ],
+          "n_keypoints": [
+            133,
+            133,
+            133,
+            133,
+            133
+          ],
+          "no_face_panels": 0,
+          "yaw_spread": 0.016812062300236935,
+          "monotone": "non-monotone"
+        },
+        {
+          "sample_idx": 50,
+          "image_id": "00050",
+          "base_zg_dim0": -0.08720739930868149,
+          "sweep_values": [
+            -3.0,
+            -1.5,
+            0.0,
+            1.5,
+            3.0
+          ],
+          "yaw_proxy": [
+            -0.054619920240236666,
+            -0.05462184873949546,
+            -0.06302521008403375,
+            -0.06302298489258121,
+            -0.0630252100840343
+          ],
+          "det_conf": [
+            0.5850694179534912,
+            0.5948245525360107,
+            0.6031973958015442,
+            0.6057130098342896,
+            0.6085519194602966
+          ],
+          "n_keypoints": [
+            133,
+            133,
+            133,
+            133,
+            133
+          ],
+          "no_face_panels": 0,
+          "yaw_spread": 0.00840528984379764,
+          "monotone": "non-monotone"
+        }
+      ]
+    },
+    {
+      "name": "geoonly_id0_geo4",
+      "identity_scale": 0.0,
+      "geometry_scale": 4.0,
+      "samples": [
+        {
+          "sample_idx": 10,
+          "image_id": "00010",
+          "base_zg_dim0": -0.44044360518455505,
+          "sweep_values": [
+            -3.0,
+            -1.5,
+            0.0,
+            1.5,
+            3.0
+          ],
+          "yaw_proxy": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "det_conf": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "n_keypoints": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "no_face_panels": 5,
+          "yaw_spread": null,
+          "monotone": null
+        },
+        {
+          "sample_idx": 30,
+          "image_id": "00030",
+          "base_zg_dim0": -0.17061088979244232,
+          "sweep_values": [
+            -3.0,
+            -1.5,
+            0.0,
+            1.5,
+            3.0
+          ],
+          "yaw_proxy": [
+            -0.012392885771580415,
+            -0.032776977015156,
+            -0.03277697701515574,
+            -0.045448337513318664,
+            -0.057369340837553774
+          ],
+          "det_conf": [
+            0.523279070854187,
+            0.5328598618507385,
+            0.5401535630226135,
+            0.5290048122406006,
+            0.5274207592010498
+          ],
+          "n_keypoints": [
+            133,
+            133,
+            133,
+            133,
+            133
+          ],
+          "no_face_panels": 0,
+          "yaw_spread": 0.04497645506597336,
+          "monotone": "non-monotone"
+        },
+        {
+          "sample_idx": 50,
+          "image_id": "00050",
+          "base_zg_dim0": -0.08720739930868149,
+          "sweep_values": [
+            -3.0,
+            -1.5,
+            0.0,
+            1.5,
+            3.0
+          ],
+          "yaw_proxy": [
+            -0.03278248047860145,
+            -0.04097810059825277,
+            -0.05283854384932536,
+            -0.06096755059537548,
+            -0.06450773887304025
+          ],
+          "det_conf": [
+            0.5404047966003418,
+            0.5344399809837341,
+            0.5369306206703186,
+            0.5374586582183838,
+            0.5377838015556335
+          ],
+          "n_keypoints": [
+            133,
+            133,
+            133,
+            133,
+            133
+          ],
+          "no_face_panels": 0,
+          "yaw_spread": 0.03172525839443879,
+          "monotone": "decreasing"
+        }
+      ]
+    },
+    {
+      "name": "geoonly_id0_geo10",
+      "identity_scale": 0.0,
+      "geometry_scale": 10.0,
+      "samples": [
+        {
+          "sample_idx": 10,
+          "image_id": "00010",
+          "base_zg_dim0": -0.44044360518455505,
+          "sweep_values": [
+            -3.0,
+            -1.5,
+            0.0,
+            1.5,
+            3.0
+          ],
+          "yaw_proxy": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "det_conf": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "n_keypoints": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "no_face_panels": 5,
+          "yaw_spread": null,
+          "monotone": null
+        },
+        {
+          "sample_idx": 30,
+          "image_id": "00030",
+          "base_zg_dim0": -0.17061088979244232,
+          "sweep_values": [
+            -3.0,
+            -1.5,
+            0.0,
+            1.5,
+            3.0
+          ],
+          "yaw_proxy": [
+            null,
+            null,
+            0.008473359271644134,
+            -0.016664352333993056,
+            -0.02065480961930059
+          ],
+          "det_conf": [
+            null,
+            null,
+            0.5155181884765625,
+            0.5087884664535522,
+            0.5186474323272705
+          ],
+          "n_keypoints": [
+            null,
+            null,
+            133,
+            133,
+            133
+          ],
+          "no_face_panels": 2,
+          "yaw_spread": 0.029128168890944724,
+          "monotone": "decreasing"
+        },
+        {
+          "sample_idx": 50,
+          "image_id": "00050",
+          "base_zg_dim0": -0.08720739930868149,
+          "sweep_values": [
+            -3.0,
+            -1.5,
+            0.0,
+            1.5,
+            3.0
+          ],
+          "yaw_proxy": [
+            null,
+            -0.02892166932665723,
+            -0.05282981698520217,
+            -0.06450773887303958,
+            -0.06450773887304026
+          ],
+          "det_conf": [
+            null,
+            0.5368878841400146,
+            0.5295827984809875,
+            0.5332664251327515,
+            0.535528302192688
+          ],
+          "n_keypoints": [
+            null,
+            133,
+            133,
+            133,
+            133
+          ],
+          "no_face_panels": 1,
+          "yaw_spread": 0.035586069546383034,
+          "monotone": "decreasing"
+        }
+      ]
+    },
+    {
+      "name": "id1_geo8",
+      "identity_scale": 1.0,
+      "geometry_scale": 8.0,
+      "samples": [
+        {
+          "sample_idx": 10,
+          "image_id": "00010",
+          "base_zg_dim0": -0.44044360518455505,
+          "sweep_values": [
+            -3.0,
+            -1.5,
+            0.0,
+            1.5,
+            3.0
+          ],
+          "yaw_proxy": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "det_conf": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "n_keypoints": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "no_face_panels": 5,
+          "yaw_spread": null,
+          "monotone": null
+        },
+        {
+          "sample_idx": 30,
+          "image_id": "00030",
+          "base_zg_dim0": -0.17061088979244232,
+          "sweep_values": [
+            -3.0,
+            -1.5,
+            0.0,
+            1.5,
+            3.0
+          ],
+          "yaw_proxy": [
+            0.004062892818198305,
+            -0.008194244253788015,
+            -0.03277697701515502,
+            -0.04916546552273388,
+            -0.057359709776523
+          ],
+          "det_conf": [
+            0.5032919049263,
+            0.5245329737663269,
+            0.5312389135360718,
+            0.5364872217178345,
+            0.5369752049446106
+          ],
+          "n_keypoints": [
+            133,
+            133,
+            133,
+            133,
+            133
+          ],
+          "no_face_panels": 0,
+          "yaw_spread": 0.06142260259472131,
+          "monotone": "decreasing"
+        },
+        {
+          "sample_idx": 50,
+          "image_id": "00050",
+          "base_zg_dim0": -0.08720739930868149,
+          "sweep_values": [
+            -3.0,
+            -1.5,
+            0.0,
+            1.5,
+            3.0
+          ],
+          "yaw_proxy": [
+            -0.020319160378923302,
+            -0.052838543849325896,
+            -0.060967550595375467,
+            -0.06450773887304025,
+            -0.07257120623217032
+          ],
+          "det_conf": [
+            0.5345235466957092,
+            0.5455365180969238,
+            0.5493831038475037,
+            0.5558554530143738,
+            0.5591922402381897
+          ],
+          "n_keypoints": [
+            133,
+            133,
+            133,
+            133,
+            133
+          ],
+          "no_face_panels": 0,
+          "yaw_spread": 0.052252045853247026,
+          "monotone": "decreasing"
+        }
+      ]
+    }
+  ],
+  "panels_total": 60,
+  "no_face_panels_total": 18
+}
