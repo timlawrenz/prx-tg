@@ -234,6 +234,49 @@ pose_diagnostics:
       Also consistent with the pre-existing measurement that dim0 <-> real yaw IS a true
       axis in the data (|r|=0.942): the input carries yaw, and the renderer has not yet
       turned that into rotation. NOT evidence of a dead or detached conditioning path.
+  yaw_emergence_and_mechanism:
+    emergence: >-
+      The z_g dim0 -> head rotation response appeared BETWEEN step 5000 and step 7000, inside
+      the 10k budget. Probe (4 CFG ladders x 3 samples, seed 1234, 50-step sampler, latent
+      space, VAE-decoded): step 5000 = 7-35 px nose displacement, mostly non-monotone under the
+      standard ladder; step 7000 = 46-93 px, MONOTONE decreasing in all 12 ladder/sample rows.
+      Prediction recorded earlier ("yaw should appear around 4-5k if this arm follows Arm O's
+      schedule") was directionally right; it arrived by 7k.
+    validator_ladder_note_corrected: >-
+      The earlier note that the validator's ladder (identity 3.0 / geometry 2.0) is BLIND to the
+      binding is too strong. It was INSENSITIVE while the signal was weak (<=5000: 7-9 px). At
+      step 7000 the same standard ladder shows 46-52 px, monotone. A geometry-dominant ladder is
+      still the more sensitive instrument early on, but the standard ladder is not blind.
+    mechanism_test:
+      question: >-
+        Operator read of the step-7000 geometry-dominant grid: "partial deformation (the sides
+        are shortened), partial real 3d occlusion (the nose shows the person's nose left side,
+        hides the nose's right side and vice versa)". Is it a real 3D projection or a 2D squash?
+      method: >-
+        Discriminating signature in the 68 iBUG landmarks: a true rotation leaves the projected
+        interocular nearly constant (eyes lie near the rotation axis) while hiding the far cheek
+        (asymmetric jaw distances to the nose tip); a 2D squash shortens both sides together and
+        changes the interocular. Reference: n=500 real FFHQ faces with yaw from pose.npy; render:
+        step-7000 geoonly_id0_geo10 panels, DWPose landmarks, identical metric definitions.
+      real_reference:
+        inter_over_median_by_yaw_bin: [0.916, 0.992, 1.004, 1.004, 0.991, 0.927]
+        L_over_R_by_yaw_bin: [0.19, 0.47, 0.83, 1.23, 2.02, 4.25]
+      render:
+        sample10: {inter: [1.000, 1.093], L_over_R: [4.29, 1.02]}
+        sample30: {inter: [1.000, 1.072], L_over_R: [7.65, 0.85]}
+        sample50: {inter: [1.000, 1.122], L_over_R: [6.39, 0.81]}
+      verdict: >-
+        BOTH OPERATOR READINGS CONFIRMED, and separated. The render reproduces genuine 3D
+        OCCLUSION — the far-side jaw distance collapses as the head turns, L/R swinging 4-9x in
+        the correct direction, stronger per unit yaw than real faces. But its in-plane metric is
+        inconsistent: the projected interocular GROWS 7-12% with yaw where a true projection
+        holds it flat or shrinks it ~8%. The model has learned what gets hidden without getting
+        the projective geometry consistent.
+      implication: >-
+        This is a partially correct 3D solution, not a 2D fake: the occlusion is data-grounded
+        (real faces carry it durably; unlike the eye-grey patch, which the data does NOT carry).
+        The residual error is a global projective inconsistency, which requires coordinating the
+        whole face rather than a local patch — consistent with the case for a longer run.
   lr_schedule_implication:
     schedule: "linear warmup 500 -> cosine decay to min_lr over total_steps=10000 (train.py:677)"
     observation: >-
