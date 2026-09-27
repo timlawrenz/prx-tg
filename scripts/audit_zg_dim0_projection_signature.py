@@ -184,7 +184,7 @@ def main():
         if f.ndim != 2 or f.shape[0] < 91:
             excl["short_face"] += 1
             continue
-        face = f[23:91]
+        face = face68_from_133(f)              # reference helper (rows 23:91)
         XY_MIN = min(XY_MIN, float(face[:, :2].min()))
         XY_MAX = max(XY_MAX, float(face[:, :2].max()))
         if face[:, 2].mean() < 0.3:
