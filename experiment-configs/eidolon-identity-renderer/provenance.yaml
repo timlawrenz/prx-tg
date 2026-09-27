@@ -46,6 +46,96 @@ pre_registered_gate: >-
   (no void/darkness onset), and the geometry sweep must move pose monotonically across
   z_g dim0 (Arm O's proven geometry diagnostic).
 
+# ============================================================================
+# GATE AMENDMENT — added 2026-09-26, BEFORE the verdict and BEFORE the 10k run
+# concluded. The original pre_registered_gate above is left VERBATIM and
+# unmodified; this block supersedes it FOR SCORING only. See reason: below.
+# ============================================================================
+gate_amendment_2026-09-26:
+  reason: >-
+    The registered gate is a single absolute bar (three R@1 probes, CI LB > 0.5) tied to a run
+    whose cosine schedule reaches min_lr 1e-6 at exactly 10,000 steps. Evidence gathered while
+    the arm was running shows it cannot distinguish "the mechanism is broken" from "the budget
+    ended before quality arrived": mean_lpips is flat 0.80-0.83 from step 4000 through 8000,
+    the yaw response is flat 7000 -> 8000, and the identity R@1 metric at this image quality is
+    confounded with quality itself (see pose_diagnostics.identity_probe_and_quality_confound).
+    A FAIL written against the original gate would therefore be a statement about the budget,
+    mislabelled as a statement about the arm.
+  authority: >-
+    Operator instruction 2026-09-26 ("Go ahead with the amendment"). Made before the verdict is
+    written, which is the only point at which amending a pre-registered gate is legitimate.
+  original_gate_status: "left verbatim above; superseded by tier_1_mechanism / tier_2_absolute_fidelity for scoring"
+  tier_1_mechanism:
+    scope: "Scoreable now, deterministic; the arm's actual claims."
+    M1_identity_binding_and_seed_invariance: >-
+      Same identity conditioning, >=3 noise seeds: within-sample pairwise cosine >= 0.99 and a
+      small seed-to-seed spread. Instrument: scripts/diag_identity_seed_consistency.py.
+      CURRENT: PASS (mean 0.9943, min 0.9917 at step 8000).
+    M2_identity_expression_quality_controlled:
+      a_render_to_render: >-
+        Rank-based identity retrieval whose index is the OTHER RENDERS, not real faces. Every
+        candidate shares the render's quality, so the real-vs-render quality asymmetry that
+        invalidates the raw R@1 disappears. Report R@1 with CI against the chance rate for that
+        index size. NOT YET RUN.
+      b_blur_calibrated_margin: >-
+        R@1_render must exceed the R@1 of real FFHQ faces degraded to the render's effective
+        quality (blur/downscale sweep on known identities), with the CI of the difference
+        excluding zero. Asks "does the model use identity beyond what the pixels' quality allows",
+        not "is the render clean". NOT YET RUN.
+    M3_geometry_non_vacuous:
+      in_distribution: >-
+        At +/-1.5 sigma of z_g dim0 (implied yaw +/-0.27, inside the data's dense support) the yaw
+        proxy must be MONOTONE across the sweep. The +/-3 sigma rows are reported as EXTRAPOLATION
+        diagnostics and are NOT scored (dim0 +/-3.0 implies yaw +/-0.55, beyond the data p99 at
+        +/-0.51, with 0.5% local support).
+      mechanism: >-
+        Under a geometry-dominant ladder the far-side occlusion asymmetry must swing in the
+        correct direction WHILE the projected interocular stays inside the real-face band
+        (|inter/median - 1| <= 0.05 across the sweep, n=500 real reference). This clause exists
+        because "monotone in dim0" alone is satisfied BOTH by the measured in-plane deformation
+        AND by the eye-region artefact - a monotone-only clause can pass vacuously.
+        CURRENT: occlusion PASS (L/R swings 4-9x, correct direction); projection FAIL (inter
+        grows 7-12% where real faces hold 0.99-1.00).
+    M4_no_collapse: "Decoded output must not collapse (no void/darkness onset). CURRENT: PASS."
+    M5_instrument_validation: >-
+      The yaw instrument must reproduce a positive control before any of its nulls are scored:
+      Arm O's step-5000 checkpoint yields a monotone 8-15 px response (audit/armo_control/).
+      CURRENT: PASS.
+  tier_2_absolute_fidelity:
+    scope: >-
+      Scored at the end of a run whose schedule is DESIGNED for it (a longer horizon with a fresh
+      cosine), NOT at 10k. The three registered probes are unchanged: FFHQ unseen-identity
+      fidelity (index 6,996, chance 1.4e-4), hegre unseen-persona generalization (index 32,
+      ceiling 0.9504, chance 0.031), hegre persistence (index 313, ceiling 0.8180, chance 0.003);
+      each a rank-based R@1 with a persona/identity-level bootstrap CI and a hard floor of
+      CI LB > 0.5.
+    at_10k: >-
+      The 10k numbers are recorded as DIAGNOSTICS with the M2 quality controls attached, and are
+      explicitly NOT scored as the gate.
+  memorization_signature: >-
+    ALWAYS scored, at whatever budget, alongside the trained-identity number: held-out scores much
+    weaker than trained-identity scores is a FAIL even when the trained number looks like success.
+    Budget-robust, and the specific risk this arm exists to expose.
+  verdict_vocabulary:
+    PIVOT: >-
+      Tier 1 passes and Tier 2 is unscored (budget). The mechanism works and the arm continues on a
+      longer schedule. This outcome replaces a FAIL-on-budget, and is what the amendment creates.
+    GO: "Tier 1 passes and Tier 2 passes at its designed budget."
+    KILL: >-
+      Tier 1 fails - a mechanism claim is falsified: identity does not bind, or does not express
+      beyond quality, or geometry does not move pose in-distribution, or moves it only by
+      deformation.
+  required_before_verdict:
+    - "run M2a render-to-render identity retrieval"
+    - "run M2b blur calibration (CPU-only, no GPU window needed)"
+    - "run the +/-1.5 sigma in-distribution sweep row and label +/-3 sigma as extrapolation"
+    - "report no_face / skipped alongside every number"
+  reporting_rules_carried_forward:
+    - "read every R@1 against the ceiling measured at the SAME index size"
+    - "no absolute cosine threshold (the identity margin is ~0.0015 cosine)"
+    - "no_face / skipped reported alongside every R@1"
+    - "a metric-path failure is not a PASS"
+
 differs_from: latent-first-pretrain
 diff_summary: |
   - conditioning: text/DINO (P1) -> Eidolon adapter, identity (LDA 64-d, adaLN) + z_g

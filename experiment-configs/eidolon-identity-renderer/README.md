@@ -233,7 +233,9 @@ set — both are monitored in-training and used for the verdict.
 1. **Amend the pre-registered gate.** The registered gate is a single absolute bar
    (three R@1 probes, CI LB > 0.5) tied to a run whose schedule ends at 10k. It cannot
    distinguish "mechanism broken" from "budget ended before quality arrived". Proposed
-   two-tier amendment (agreed in principle 2026-09-26, **not yet written**):
+   two-tier amendment — **WRITTEN into `provenance.yaml` as `gate_amendment_2026-09-26`
+   (2026-09-26)**, dated, with the reason, before the verdict; the original gate text is left
+   verbatim and superseded for scoring only:
    - **Tier 1 — mechanism, scoreable now.** M1 identity binding + seed-invariance (already
      passes: 0.9943). M2 identity expression, quality-controlled: (a) **render-to-render**
      retrieval (index = other renders, same quality — removes the confound) and (b) R@1
@@ -245,7 +247,7 @@ set — both are monitored in-training and used for the verdict.
      a schedule **designed for it** (the longer run), not to 10k.
    - **Memorization signature stays always-on** — budget-robust and the arm's purpose.
    - **Outcome vocabulary:** Tier 1 pass + Tier 2 unscored (budget) = **PIVOT**, not FAIL.
-   - Amend **now**, dated, with the reason — after the verdict it is moving goalposts.
+   - **DONE 2026-09-26** — written dated, with the reason, before the verdict.
 2. **Run the blur control** for identity (N1). CPU-only, no GPU window needed.
 3. **Run render-to-render identity retrieval** (N1/M2a) — reuses existing probe renders.
 4. **Run the ±1.5σ in-distribution sweep row** and label ±3σ as extrapolation.
