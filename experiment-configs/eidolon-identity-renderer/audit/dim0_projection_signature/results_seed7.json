@@ -1,0 +1,438 @@
+{
+  "script": "/home/tim/source/activity/prx-tg/scripts/audit_zg_dim0_projection_signature.py",
+  "stratum": "/mnt/nas-ai-models/training-data/ffhq/stratum",
+  "seed": 7,
+  "requested_n": 500,
+  "n_dirs_listed": 70001,
+  "n_sampled_dirs": 500,
+  "skipped_missing_sidecar": {
+    "z_g.npy": 2,
+    "pose.npy": 0,
+    "pixel.npy": 0
+  },
+  "n_usable": 500,
+  "excluded": {
+    "missing_pose": 0,
+    "face_conf_lt_0.3": 0,
+    "short_face": 0,
+    "inter_lt_20": 0,
+    "load_error": 0,
+    "missing_zg": 0
+  },
+  "pose_xy_range": [
+    -0.98193359375,
+    1.0908203125
+  ],
+  "pose_convention": "normalized [-1,1], converted to px as (v+1)*512 (reference convention)",
+  "acceptance": "face_conf_mean >= 0.3 and interocular >= 20 px (reference convention)",
+  "pixel_npy_spotcheck": [
+    {
+      "id": "40760",
+      "shape": [
+        3,
+        1024,
+        1024
+      ],
+      "dtype": "float16"
+    },
+    {
+      "id": "17747",
+      "shape": [
+        3,
+        1024,
+        1024
+      ],
+      "dtype": "float16"
+    },
+    {
+      "id": "22738",
+      "shape": [
+        3,
+        1024,
+        1024
+      ],
+      "dtype": "float16"
+    },
+    {
+      "id": "30792",
+      "shape": [
+        3,
+        1024,
+        1024
+      ],
+      "dtype": "float16"
+    },
+    {
+      "id": "04837",
+      "shape": [
+        3,
+        1024,
+        1024
+      ],
+      "dtype": "float16"
+    }
+  ],
+  "median_interocular_px": 252.57829959762722,
+  "median_face_width_px": 575.5,
+  "dim0_quintile_edges": [
+    -2.775792121887207,
+    -0.859661054611206,
+    -0.25550286471843675,
+    0.1831620424985883,
+    0.9203023195266724,
+    3.0392651557922363
+  ],
+  "dim0_bins": [
+    {
+      "n": 100,
+      "inter_over_median": 0.9513332705668089,
+      "width_over_inter": 2.4725001038433705,
+      "left_over_inter": 1.8523213484917378,
+      "right_over_inter": 0.6201787553516328,
+      "LR_ratio": 2.986753951998077,
+      "dim0_mean": -1.3637964046001434,
+      "yaw_mean": 0.26002671014523426,
+      "pitch_mean": 0.5637937501456937,
+      "roll_mean_deg": 0.20408739886848948,
+      "dim0_median": -1.2566905617713928,
+      "lo": -2.775792121887207,
+      "hi": -0.859661054611206,
+      "pred_by_yaw_inter_over_median": 0.9562855606772475,
+      "resid_vs_yaw_pred": -0.0049522901104385175
+    },
+    {
+      "n": 100,
+      "inter_over_median": 1.002299284859798,
+      "width_over_inter": 2.2447576378130574,
+      "left_over_inter": 1.3002821863235219,
+      "right_over_inter": 0.9444754514895354,
+      "LR_ratio": 1.3767241745381973,
+      "dim0_mean": -0.5480744001269341,
+      "yaw_mean": 0.07642648612732988,
+      "pitch_mean": 0.5107179935542498,
+      "roll_mean_deg": 0.061088639707315234,
+      "dim0_median": -0.5401104688644409,
+      "lo": -0.859661054611206,
+      "hi": -0.25550286471843675,
+      "pred_by_yaw_inter_over_median": 0.9958650800705203,
+      "resid_vs_yaw_pred": 0.006434204789277698
+    },
+    {
+      "n": 100,
+      "inter_over_median": 1.0000694027418553,
+      "width_over_inter": 2.2268683691298743,
+      "left_over_inter": 1.110601633678219,
+      "right_over_inter": 1.1162667354516556,
+      "LR_ratio": 0.9949249569179857,
+      "dim0_mean": -0.025996225213166326,
+      "yaw_mean": -0.0018643193617605095,
+      "pitch_mean": 0.5237077112259123,
+      "roll_mean_deg": 0.09551673573075795,
+      "dim0_median": -0.018632140941917896,
+      "lo": -0.25550286471843675,
+      "hi": 0.1831620424985883,
+      "pred_by_yaw_inter_over_median": 0.999572360667196,
+      "resid_vs_yaw_pred": 0.0004970420746592819
+    },
+    {
+      "n": 100,
+      "inter_over_median": 1.0047213932651125,
+      "width_over_inter": 2.256622685330389,
+      "left_over_inter": 0.9033834042525313,
+      "right_over_inter": 1.3532392810778577,
+      "LR_ratio": 0.6675710769591203,
+      "dim0_mean": 0.5790626163780689,
+      "yaw_mean": -0.09417449441905253,
+      "pitch_mean": 0.5324403966976748,
+      "roll_mean_deg": 0.22678894733770394,
+      "dim0_median": 0.575447142124176,
+      "lo": 0.1831620424985883,
+      "hi": 0.9203023195266724,
+      "pred_by_yaw_inter_over_median": 0.9942630684105294,
+      "resid_vs_yaw_pred": 0.01045832485458309
+    },
+    {
+      "n": 100,
+      "inter_over_median": 0.9480312466222515,
+      "width_over_inter": 2.522441299341811,
+      "left_over_inter": 0.5918700542535421,
+      "right_over_inter": 1.9305712450882688,
+      "LR_ratio": 0.3065776804452927,
+      "dim0_mean": 1.5251831877231599,
+      "yaw_mean": -0.27731260328185814,
+      "pitch_mean": 0.5672123923932143,
+      "roll_mean_deg": -0.41196279408049014,
+      "dim0_median": 1.4003791809082031,
+      "lo": 0.9203023195266724,
+      "hi": 3.0392651557922363,
+      "pred_by_yaw_inter_over_median": 0.9464458813491686,
+      "resid_vs_yaw_pred": 0.0015853652730828394
+    }
+  ],
+  "yaw_bins_control": [
+    {
+      "n": 46,
+      "inter_over_median": 0.8944131083710593,
+      "width_over_inter": 2.687400088441715,
+      "left_over_inter": 0.4296769723370388,
+      "right_over_inter": 2.2577231161046765,
+      "LR_ratio": 0.1903142902121561,
+      "dim0_mean": 1.8554721293242082,
+      "yaw_mean": -0.3888319010451509,
+      "pitch_mean": 0.5911418498011143,
+      "roll_mean_deg": -1.1781499847227521,
+      "dim0_median": 1.7770555019378662,
+      "lo": -9.0,
+      "hi": -0.25
+    },
+    {
+      "n": 94,
+      "inter_over_median": 0.9968798284318563,
+      "width_over_inter": 2.3387064414352574,
+      "left_over_inter": 0.766665421802762,
+      "right_over_inter": 1.5720410196324952,
+      "LR_ratio": 0.4876879243150981,
+      "dim0_mean": 0.9979894235730171,
+      "yaw_mean": -0.16577297433906663,
+      "pitch_mean": 0.5311979453885494,
+      "roll_mean_deg": 0.3986889120947091,
+      "dim0_median": 0.9511750638484955,
+      "lo": -0.25,
+      "hi": -0.1
+    },
+    {
+      "n": 115,
+      "inter_over_median": 1.005201376175799,
+      "width_over_inter": 2.2267963567915467,
+      "left_over_inter": 1.003320491464301,
+      "right_over_inter": 1.2234758653272462,
+      "LR_ratio": 0.8200574444481914,
+      "dim0_mean": 0.28073715346096,
+      "yaw_mean": -0.04357988499821803,
+      "pitch_mean": 0.5495654933462563,
+      "roll_mean_deg": 0.2185118918921154,
+      "dim0_median": 0.2283795177936554,
+      "lo": -0.1,
+      "hi": 0.0
+    },
+    {
+      "n": 122,
+      "inter_over_median": 1.0012814354018595,
+      "width_over_inter": 2.2318678075605587,
+      "left_over_inter": 1.2230020673184014,
+      "right_over_inter": 1.008865740242157,
+      "LR_ratio": 1.2122545335168637,
+      "dim0_mean": -0.34167121169271836,
+      "yaw_mean": 0.04522108338974182,
+      "pitch_mean": 0.5105426861828598,
+      "roll_mean_deg": -0.081284912990889,
+      "dim0_median": -0.32525038719177246,
+      "lo": 0.0,
+      "hi": 0.1
+    },
+    {
+      "n": 78,
+      "inter_over_median": 0.9937474546484083,
+      "width_over_inter": 2.3364505705675698,
+      "left_over_inter": 1.56408206702262,
+      "right_over_inter": 0.7723685035449491,
+      "LR_ratio": 2.0250464122293095,
+      "dim0_mean": -1.0198468329050603,
+      "yaw_mean": 0.1628782363651957,
+      "pitch_mean": 0.5234920038920075,
+      "roll_mean_deg": -0.03643213144874104,
+      "dim0_median": -1.0198848843574524,
+      "lo": 0.1,
+      "hi": 0.25
+    },
+    {
+      "n": 45,
+      "inter_over_median": 0.900643513468885,
+      "width_over_inter": 2.6277244872206813,
+      "left_over_inter": 2.165059163644173,
+      "right_over_inter": 0.4626653235765076,
+      "LR_ratio": 4.679536272370223,
+      "dim0_mean": -1.6350595156351726,
+      "yaw_mean": 0.3682070471488847,
+      "pitch_mean": 0.5854105931465479,
+      "roll_mean_deg": 0.48665849748930173,
+      "dim0_median": -1.5868134498596191,
+      "lo": 0.25,
+      "hi": 9.0
+    }
+  ],
+  "yaw_bin_edges_control": [
+    [
+      -9.0,
+      -0.25
+    ],
+    [
+      -0.25,
+      -0.1
+    ],
+    [
+      -0.1,
+      0.0
+    ],
+    [
+      0.0,
+      0.1
+    ],
+    [
+      0.1,
+      0.25
+    ],
+    [
+      0.25,
+      9.0
+    ]
+  ],
+  "correlations_dim0": {
+    "yaw": -0.9502665714880599,
+    "pitch": 0.05367673578406482,
+    "roll_deg": -0.1871601046587056
+  },
+  "dim0_yaw_regression": {
+    "intercept": -0.001222561965754418,
+    "slope": -0.18503208186608952,
+    "r": -0.9502665714880599,
+    "r2": 0.9030065568876721
+  },
+  "shape_test": {
+    "inter_ratio_ols_linear_dim0": {
+      "r2": 0.0037165922060564682,
+      "const": {
+        "coef": 0.9814271164644174,
+        "se": 0.003095114007145329,
+        "t": 317.08916511595726
+      },
+      "dim0": {
+        "coef": -0.004092975619587548,
+        "se": 0.0030029180417840344,
+        "t": -1.362999443420011
+      }
+    },
+    "inter_ratio_ols_dim0_and_dim0sq": {
+      "r2": 0.41361409428464035,
+      "const": {
+        "coef": 1.0148381204298886,
+        "se": 0.002977057069650832,
+        "t": 340.88635074399673
+      },
+      "dim0": {
+        "coef": 0.005902738151884416,
+        "se": 0.002367645081517334,
+        "t": 2.4930840344117686
+      },
+      "dim0_sq": {
+        "coef": -0.03171589413508497,
+        "se": 0.0017015820317053713,
+        "t": -18.6390626746913
+      }
+    },
+    "inter_ratio_ols_cos_arcsin_yaw": {
+      "r2": 0.5425952275041126,
+      "const": {
+        "coef": -0.06413717636628116,
+        "se": 0.04306326318266578,
+        "t": -1.4893710236083142
+      },
+      "cos_arcsin_yaw": {
+        "coef": 1.0620897713205861,
+        "se": 0.043697733930101935,
+        "t": 24.305374118929937
+      }
+    },
+    "inter_ratio_ols_abs_yaw": {
+      "r2": 0.44456039733335373,
+      "const": {
+        "coef": 1.030556275002302,
+        "se": 0.0033800060570414684,
+        "t": 304.8977598295642
+      },
+      "abs_yaw": {
+        "coef": -0.3361840476949454,
+        "se": 0.016838967753880926,
+        "t": -19.964647038264214
+      }
+    },
+    "inter_ratio_ols_dim0_plus_cos_arcsin_yaw": {
+      "r2": 0.5438049724961004,
+      "const": {
+        "coef": -0.07066654522922781,
+        "se": 0.04342360021467459,
+        "t": -1.6273764699350455
+      },
+      "dim0": {
+        "coef": 0.002354999638605859,
+        "se": 0.0020513558657747235,
+        "t": 1.1480210127833965
+      },
+      "cos_arcsin_yaw": {
+        "coef": 1.0686435896952624,
+        "se": 0.044055237546608055,
+        "t": 24.25690222563652
+      }
+    },
+    "linear_slope_pct_per_unit_dim0": -0.40929756195875483,
+    "linear_slope_pct_across_bin_range": -1.0875321676331346,
+    "dim0_slope_pct_per_unit_after_controlling_yaw_projection": 0.23549996386058591,
+    "dim0_slope_pct_per_unit_after_controlling_yaw_projection_ci95": [
+      -0.16656578583125992,
+      0.6375657135524317
+    ],
+    "bin_range_dim0": [
+      -1.2566905617713928,
+      1.4003791809082031
+    ],
+    "render_shear_prediction_pct_per_unit_dim0": [
+      1.1666666666666667,
+      2.0
+    ],
+    "symmetric_dip_mean_ends_minus_centre": -0.05038714414732515,
+    "predicted_dip_from_true_yaw": -0.04820663965398797,
+    "asymmetry_q5_minus_q1": -0.003302023944557475,
+    "rms_obs_vs_yaw_rotation_prediction": 0.005967598532833459,
+    "rms_obs_vs_render_shear_prediction": {
+      "1.17": 0.034472835496977924,
+      "2.00": 0.03805451677556519
+    },
+    "rms_obs_vs_flat": 0.03192737058804435
+  },
+  "signature_summary": {
+    "dim0_inter_over_median_range": [
+      0.9480312466222515,
+      1.0047213932651125
+    ],
+    "dim0_inter_over_median_extreme_span_pct": 5.669014664286099,
+    "dim0_inter_vs_centre_dev_pct": [
+      -4.873613217504635,
+      0.22298821179427275,
+      0.0,
+      0.46519905232571546,
+      -5.203815611960383
+    ],
+    "dim0_LR_ratio_range": [
+      0.3065776804452927,
+      2.986753951998077
+    ],
+    "dim0_LR_swing_factor": 9.742241991197558,
+    "dim0_width_over_inter_range": [
+      2.2268683691298743,
+      2.522441299341811
+    ],
+    "yaw_inter_over_median_range": [
+      0.8944131083710593,
+      1.005201376175799
+    ],
+    "yaw_inter_over_median_span_pct": 11.078826780473971,
+    "yaw_LR_ratio_range": [
+      0.1903142902121561,
+      4.679536272370223
+    ],
+    "yaw_LR_swing_factor": 24.588465044604007
+  },
+  "verdict": "ROTATION",
+  "verdict_reason": "inter/median dips at BOTH |dim0| extremes (dip -0.0504 -- the true yaw of the same faces predicts -0.0482 -- with ends 0.9513/0.9480 around the centre 1.0001); the yaw-controlled dim0 slope is +0.235 %/unit, 95% CI -0.167..+0.638, which EXCLUDES the render's 1.17-2.00 %/unit shear band; L/R swings 9.7x.",
+  "verdict_rule": "SHAPE-based, not span-based. SHEAR if dim0's slope of inter/median is >= the render's 7-12%-over-+/-3 shear band (>=1.17 %%/unit) either raw or after controlling the yaw projection (CI lower bound), or if the span is monotone with the ends on opposite sides of the centre bin. ROTATION if inter/median dips at BOTH |dim0| extremes (dip < -0.005) with L/R swing >= 2x AND the yaw-controlled dim0 slope CI upper bound excludes the render's shear band. Else AMBIGUOUS."
+}

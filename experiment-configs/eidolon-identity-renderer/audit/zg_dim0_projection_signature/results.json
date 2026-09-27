@@ -96,7 +96,9 @@
       "roll_mean_deg": -0.044517639923714,
       "dim0_median": -1.3167679905891418,
       "lo": -2.444556951522827,
-      "hi": -0.9869611263275145
+      "hi": -0.9869611263275145,
+      "pred_by_yaw_inter_over_median": 0.9556619661192427,
+      "resid_vs_yaw_pred": -0.0025310352426255456
     },
     {
       "n": 100,
@@ -111,7 +113,9 @@
       "roll_mean_deg": -0.28964107503674724,
       "dim0_median": -0.653822660446167,
       "lo": -0.9869611263275145,
-      "hi": -0.3547043204307556
+      "hi": -0.3547043204307556,
+      "pred_by_yaw_inter_over_median": 0.9937208807351265,
+      "resid_vs_yaw_pred": 0.0023905267254720197
     },
     {
       "n": 100,
@@ -126,7 +130,9 @@
       "roll_mean_deg": -0.06407424647605957,
       "dim0_median": -0.1209624893963337,
       "lo": -0.3547043204307556,
-      "hi": 0.13986320793628684
+      "hi": 0.13986320793628684,
+      "pred_by_yaw_inter_over_median": 0.999350850450243,
+      "resid_vs_yaw_pred": 0.003917675689117162
     },
     {
       "n": 100,
@@ -141,7 +147,9 @@
       "roll_mean_deg": 0.14061895853276835,
       "dim0_median": 0.4087456911802292,
       "lo": 0.13986320793628684,
-      "hi": 0.746947634220124
+      "hi": 0.746947634220124,
+      "pred_by_yaw_inter_over_median": 0.9965882769345477,
+      "resid_vs_yaw_pred": -0.0005567437559114152
     },
     {
       "n": 100,
@@ -156,7 +164,9 @@
       "roll_mean_deg": 0.12297969286579322,
       "dim0_median": 1.2678203582763672,
       "lo": 0.746947634220124,
-      "hi": 3.1050283908843994
+      "hi": 3.1050283908843994,
+      "pred_by_yaw_inter_over_median": 0.9657615820902617,
+      "resid_vs_yaw_pred": 0.005406099845986501
     }
   ],
   "yaw_bins_control": [
@@ -288,6 +298,107 @@
     "r": -0.9442759641250494,
     "r2": 0.8916570964242917
   },
+  "shape_test": {
+    "inter_ratio_ols_linear_dim0": {
+      "r2": 0.008633629387765462,
+      "const": {
+        "coef": 0.9843887111616959,
+        "se": 0.0027391077800985025,
+        "t": 359.3829780317355
+      },
+      "dim0": {
+        "coef": 0.005792033936335436,
+        "se": 0.002781229432765913,
+        "t": 2.082544456095195
+      }
+    },
+    "inter_ratio_ols_dim0_and_dim0sq": {
+      "r2": 0.24615973644157307,
+      "const": {
+        "coef": 1.0087832648899624,
+        "se": 0.0030849150840650775,
+        "t": 327.00519703144016
+      },
+      "dim0": {
+        "coef": 0.013998443253814257,
+        "se": 0.0025147165514177662,
+        "t": 5.566608787746717
+      },
+      "dim0_sq": {
+        "coef": -0.02460019006552251,
+        "se": 0.0019658223016853237,
+        "t": -12.513943932995602
+      }
+    },
+    "inter_ratio_ols_cos_arcsin_yaw": {
+      "r2": 0.3819341536954507,
+      "const": {
+        "coef": -0.05459737029412051,
+        "se": 0.05924057496475722,
+        "t": -0.9216212085483809
+      },
+      "cos_arcsin_yaw": {
+        "coef": 1.0514951813656117,
+        "se": 0.05993986220351746,
+        "t": 17.5425024801593
+      }
+    },
+    "inter_ratio_ols_abs_yaw": {
+      "r2": 0.28929398934469197,
+      "const": {
+        "coef": 1.0211740759596393,
+        "se": 0.003490571606395646,
+        "t": 292.5521063909933
+      },
+      "abs_yaw": {
+        "coef": -0.26963977206545914,
+        "se": 0.018938455986287208,
+        "t": -14.237685071090143
+      }
+    },
+    "inter_ratio_ols_dim0_plus_cos_arcsin_yaw": {
+      "r2": 0.3843517943131053,
+      "const": {
+        "coef": -0.04847990231340954,
+        "se": 0.05934582041923526,
+        "t": -0.8169050822944923
+      },
+      "dim0": {
+        "coef": 0.003072750792405987,
+        "se": 0.002199477797039442,
+        "t": 1.3970365131859912
+      },
+      "cos_arcsin_yaw": {
+        "coef": 1.0455413319256928,
+        "se": 0.06003413040587884,
+        "t": 17.415782070248962
+      }
+    },
+    "linear_slope_pct_per_unit_dim0": 0.5792033936335436,
+    "linear_slope_pct_across_bin_range": 1.4970023428086199,
+    "dim0_slope_pct_per_unit_after_controlling_yaw_projection": 0.3072750792405987,
+    "dim0_slope_pct_per_unit_after_controlling_yaw_projection_ci95": [
+      -0.12382256897913185,
+      0.7383727274603293
+    ],
+    "bin_range_dim0": [
+      -1.3167679905891418,
+      1.2678203582763672
+    ],
+    "render_shear_prediction_pct_per_unit_dim0": [
+      1.1666666666666667,
+      2.0
+    ],
+    "symmetric_dip_mean_ends_minus_centre": -0.041119219732927426,
+    "predicted_dip_from_true_yaw": -0.0386390763454908,
+    "asymmetry_q5_minus_q1": 0.018036751059631095,
+    "rms_obs_vs_yaw_rotation_prediction": 0.0033765313380518113,
+    "rms_obs_vs_render_shear_prediction": {
+      "1.17": 0.025419756745843597,
+      "2.00": 0.028283807128773656
+    },
+    "rms_obs_vs_flat": 0.024777269217551877
+  },
   "signature_summary": {
     "dim0_inter_over_median_range": [
       0.9531309308766172,
@@ -314,12 +425,14 @@
       0.9078288961776507,
       1.0016098920817573
     ],
+    "yaw_inter_over_median_span_pct": 9.37809959041066,
     "yaw_LR_ratio_range": [
       0.24227354371917156,
       4.520256235786821
     ],
     "yaw_LR_swing_factor": 18.65765517107564
   },
-  "verdict": "SHEAR",
-  "verdict_rule": "SHEAR if dim0 inter/median span >= 5%; ROTATION if span <= 2% AND L/R swing >= 3x; else AMBIGUOUS"
+  "verdict": "ROTATION",
+  "verdict_reason": "inter/median dips at BOTH |dim0| extremes (dip -0.0411 -- the true yaw of the same faces predicts -0.0386 -- with ends 0.9531/0.9712 around the centre 1.0033); the yaw-controlled dim0 slope is +0.307 %/unit, 95% CI -0.124..+0.738, which EXCLUDES the render's 1.17-2.00 %/unit shear band; L/R swings 8.1x.",
+  "verdict_rule": "SHAPE-based, not span-based. SHEAR if dim0's slope of inter/median is >= the render's 7-12%-over-+/-3 shear band (>=1.17 %%/unit) either raw or after controlling the yaw projection (CI lower bound), or if the span is monotone with the ends on opposite sides of the centre bin. ROTATION if inter/median dips at BOTH |dim0| extremes (dip < -0.005) with L/R swing >= 2x AND the yaw-controlled dim0 slope CI upper bound excludes the render's shear band. Else AMBIGUOUS."
 }

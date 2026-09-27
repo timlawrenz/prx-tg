@@ -189,6 +189,44 @@ zg_encoder_provenance_check_2026-09-27:
       is scale-invariant; pose.npy was independently confirmed normalized (-0.93..1.44, p99.9 0.95).
   status: "PROVENANCE BRANCH CLOSED: shipped z_g = frontalized encoder, bit-exact, post-fix. The raw-2D/shear-from-stale-sidecars hypothesis is dead. Open: which of the two remaining explanations accounts for dim0<->yaw |r|=0.942, plus the z_g fingerprint gap. The dim0 re-binning test (projection signature) is the live discriminator."
 
+zg_dim0_projection_signature_2026-09-27:
+  question: >-
+    Is z_g dim0 a 3D head rotation or a 2D in-plane shear? Both correlate with yaw; they separate on
+    PROJECTION - a rotation swings the far-side jaw while the projected interocular HOLDS ~1.00, a
+    shear widens it.
+  method: >-
+    scripts/audit_zg_dim0_projection_signature.py, CPU-only, n=500 real FFHQ images, seed-7
+    replication. Bin by the shipped z_g dim0 and measure inter/median and L/R jaw asymmetry; the same
+    statistics binned by true DWPose yaw in the same run as an internal control; plus a
+    yaw-controlled dim0 slope.
+  results:
+    dim0_bins_inter_over_median: "0.9513 / 1.0023 / 1.0001 / 1.0047 / 0.9480 across the five dim0 quintiles (span 5.7%)"
+    yaw_control: "the yaw-binned control spans 11.1% and reproduces the published flat-about-1.00 shape"
+    signature: "a COS-LIKE DIP about the centre: dip -0.0504, symmetric (q5-q1 = -0.0033)"
+    model_comparison: "RMS(observed - yaw-rotation prediction) = 0.0060, where the true yaw of those same faces predicts -0.0482; RMS vs render-shear at 1.17 %/unit = 0.0345; at 2.00 %/unit = 0.0381; vs flat = 0.0319"
+    yaw_controlled_dim0_slope: "+0.235 %/unit, 95% CI -0.167..+0.638, which EXCLUDES the render's 1.17-2.00 %/unit shear band"
+    L/R_swing: "9.7x"
+  verdict: >-
+    Z_G DIM0 IN THE REAL DATA IS A ROTATION. The inter/median along dim0 is a cos-like dip about the
+    centre, not a widening: the axis turns the head in 3D.
+  consequence: >-
+    The renders' 7-12% interocular WIDENING is NOT inherited from the conditioning data - it is a
+    model/projection artifact. This kills the shear-from-conditioning hypothesis in BOTH of its
+    branches (stale-encoder: refuted bit-exactly in verification_result_2026-09-27; shear-axis:
+    refuted here), and it STRENGTHENS finding F3: the model learned what the axis MEANS (3D occlusion
+    correct, far-side jaw collapsing) but does not respect projective geometry.
+  resolves:
+    - "dim0<->yaw |r| = 0.942 is neither a proxy artifact nor merely residual leakage: dim0 is a genuine rotation axis in the data. (The earlier 'exactly mirror-invariant' claim is thereby also dismissed - a mirror-symmetric encode could not track signed yaw.)"
+    - "The operator's visual read is vindicated: identity is preserved while pose is adhered to. The residual defect is rendering quality/projection, not the conditioning."
+  bearing_on_the_gate: >-
+    M3's in-distribution monotonicity and occlusion clauses rest on the data axis being a real rotation
+    - supported. M3's projection clause fails on the MODEL. That is a model defect, not a broken
+    conditioner, and it is what the data arm and a longer quality run address.
+  artifacts:
+    script: scripts/audit_zg_dim0_projection_signature.py
+    results: experiment-configs/eidolon-identity-renderer/audit/dim0_projection_signature/results_seed7.json
+    figure: experiment-configs/eidolon-identity-renderer/audit/dim0_projection_signature/zg_dim0_projection_signature.png
+
 operator_assessment_2026-09-27:
   context: "Step-10000 final artifacts reviewed visually by the operator (geometry sweeps, identity-swap collages, M2a contact sheet, one 10k reconstruction)."
   verbatim_core: >-

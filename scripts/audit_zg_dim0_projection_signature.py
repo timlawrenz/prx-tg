@@ -349,9 +349,14 @@ def main():
     rot_pred = rot_pred / float(np.median(rot_pred))
     m_rot = ols([rot_pred], ratio, ["cos_arcsin_yaw"])
     m_ay = ols([np.abs(yaw)], ratio, ["abs_yaw"])
+    # partial test: does dim0 still carry a stretch once the yaw projection is controlled?
+    m_part = ols([dim0, rot_pred], ratio, ["dim0", "cos_arcsin_yaw"])
 
-    shear_pct_per_unit = [100 * 7.0 / 6.0, 100 * 12.0 / 6.0]         # 7-12% over a +/-3 sweep
+    shear_pct_per_unit = [7.0 / 6.0, 12.0 / 6.0]     # 7-12% over the +/-3 sweep = 6 units
     lin_pct_per_unit = 100 * m_lin["dim0"]["coef"]
+    part_pct_per_unit = 100 * m_part["dim0"]["coef"]
+    part_ci95 = [100 * (m_part["dim0"]["coef"] - 1.96 * m_part["dim0"]["se"]),
+                 100 * (m_part["dim0"]["coef"] + 1.96 * m_part["dim0"]["se"])]
     span_lo = float(dim0_bins[0]["dim0_median"] if dim0_bins else ctr)
     span_hi = float(dim0_bins[-1]["dim0_median"] if dim0_bins else ctr)
     lin_pct_across_range = lin_pct_per_unit * (span_hi - span_lo)
@@ -367,9 +372,14 @@ def main():
           % (m_quad["dim0_sq"]["coef"], m_quad["dim0_sq"]["t"], m_quad["r2"]))
     print("    vs the yaw-derived rotation predictor cos(arcsin(yaw)): coef=%+.4f (t=%+.2f) r2=%.4f"
           % (m_rot["cos_arcsin_yaw"]["coef"], m_rot["cos_arcsin_yaw"]["t"], m_rot["r2"]))
+    print("    full: inter_ratio = %+.4f %+.4f*dim0 %+.4f*cos_arcsin_yaw   r2=%.4f"
+          % (m_part["const"]["coef"], m_part["dim0"]["coef"], m_part["cos_arcsin_yaw"]["coef"],
+             m_part["r2"]))
     print("  linear dim0 slope = %+.3f %%/unit dim0  -> %+.2f%% across the observed bin range "
           "[%+.2f,%+.2f]" % (lin_pct_per_unit, lin_pct_across_range, span_lo, span_hi))
-    print("  the render's shear would put this slope at %+.2f..%+.2f %%/unit dim0"
+    print("  dim0 slope AFTER controlling the yaw projection = %+.3f %%/unit "
+          "(95%% CI %+.3f..%+.3f)" % (part_pct_per_unit, part_ci95[0], part_ci95[1]))
+    print("  the render's shear would need %+.2f..%+.2f %%/unit dim0"
           % (shear_pct_per_unit[0], shear_pct_per_unit[1]))
     print("  symmetry: dip = mean(ends)-centre = %+.4f ; asymmetry = q5-q1 = %+.4f  "
           "-> %s" % (dip, asym, "SYMMETRIC dip (rotation-like)" if abs(dip) > abs(asym)
@@ -393,37 +403,54 @@ def main():
                  b["resid_vs_yaw_pred"], b["yaw_mean"]))
     obs_v = np.array(obs_v); pred_v = np.array(pred_v)
     rms_rot = float(np.sqrt(np.mean((obs_v - pred_v) ** 2)))
-    fit_shear = 1.0 + (np.mean(shear_pct_per_unit) / 100.0) * \
-        np.array([b["dim0_median"] - ctr for b in dim0_bins if b["n"] >= 10])
-    rms_shear = float(np.sqrt(np.mean((obs_v - fit_shear) ** 2)))
+    pred_dip = float((pred_v[0] + pred_v[-1]) / 2.0 - pred_v[len(pred_v) // 2])
+    idc = np.array([b["dim0_median"] - ctr for b in dim0_bins if b["n"] >= 10])
+    rms_shear = {("%.2f" % r): float(np.sqrt(np.mean(
+        (obs_v - (1.0 + (r / 100.0) * idc)) ** 2))) for r in shear_pct_per_unit}
     rms_flat = float(np.sqrt(np.mean((obs_v - 1.0) ** 2)))
+    print("    predicted dip from true yaw = %+.4f   observed dip = %+.4f" % (pred_dip, dip))
     print("    RMS(observed - yaw_rotation_prediction) = %.4f" % rms_rot)
-    print("    RMS(observed - render_shear_prediction) = %.4f  (7-12%% over +/-3 dim0)" % rms_shear)
+    for k, v in rms_shear.items():
+        print("    RMS(observed - render_shear @ %s %%/unit)  = %.4f" % (k, v))
     print("    RMS(observed - flat 1.000)              = %.4f" % rms_flat)
 
     # ---- explicit verdict -------------------------------------------------------
+    # The discriminator is the SHAPE plus a CI test, not the raw span:
+    #   * does inter/median dip at BOTH |dim0| extremes (rotation) or rise monotonically (shear)?
+    #   * once the true-yaw projection is controlled, can dim0 still carry a stretch as
+    #     large as the renders show (>= 1.17 %/unit)? Its 95% CI answers that.
     widen_pct = summary["dim0_inter_over_median_extreme_span_pct"]
     lr_swing = summary["dim0_LR_swing_factor"]
     shear_slope_lo, shear_slope_hi = shear_pct_per_unit
-    if lin_pct_per_unit >= shear_slope_lo and asym > 0 and dip < 0.002:
+    shear_supported = part_ci95[0] >= shear_slope_lo
+    shear_excluded = part_ci95[1] < shear_slope_lo
+    if shear_supported or (asym > 0 and dip >= 0.002 and lin_pct_per_unit >= shear_slope_lo):
         verdict = "SHEAR"
-        why = ("inter/median rises monotonically with dim0 at %.2f %%/unit, inside the "
-               "render-shear band %.2f..%.2f %%/unit, and the two extremes sit on "
-               "opposite sides of the centre bin." % (lin_pct_per_unit, shear_slope_lo, shear_slope_hi))
-    elif dip < -0.005 and lin_pct_per_unit < 0.5 * shear_slope_lo and lr_swing >= 2.0:
+        why = ("inter/median rises with dim0 at %.2f %%/unit (yaw-controlled %.2f %%/unit, "
+               "95%% CI %+.2f..%+.2f), reaching the render's %.2f-%.2f %%/unit shear band, and the "
+               "two extremes sit on opposite sides of the centre bin (dip %+.4f, asym %+.4f)."
+               % (lin_pct_per_unit, part_pct_per_unit, part_ci95[0], part_ci95[1],
+                  shear_slope_lo, shear_slope_hi, dip, asym))
+    elif dip < -0.005 and lr_swing >= 2.0 and shear_excluded:
         verdict = "ROTATION"
-        why = ("inter/median dips at BOTH |dim0| extremes (dip %+.4f, ends %+.4f/%+.4f around "
-               "centre %+.4f), the linear dim0 slope is %+.2f %%/unit -- below half the "
-               "render-shear band %.2f..%.2f -- and L/R swings %.1fx."
-               % (dip, d_inter[0], d_inter[-1], d_inter[len(d_inter) // 2],
-                  lin_pct_per_unit, shear_slope_lo, shear_slope_hi, lr_swing))
+        why = ("inter/median dips at BOTH |dim0| extremes (dip %+.4f -- the true yaw of the same "
+               "faces predicts %+.4f -- with ends %.4f/%.4f around the centre %.4f); the "
+               "yaw-controlled dim0 slope is %+.3f %%/unit, 95%% CI %+.3f..%+.3f, which EXCLUDES "
+               "the render's %.2f-%.2f %%/unit shear band; L/R swings %.1fx."
+               % (dip, pred_dip, d_inter[0], d_inter[-1], d_inter[len(d_inter) // 2],
+                  part_pct_per_unit, part_ci95[0], part_ci95[1],
+                  shear_slope_lo, shear_slope_hi, lr_swing))
     else:
         verdict = "AMBIGUOUS"
-        why = ("the shape matches neither signature cleanly (dip %+.4f, asymmetry %+.4f, "
-               "linear slope %+.2f %%/unit, L/R swing %.1fx)." % (dip, asym, lin_pct_per_unit, lr_swing))
+        why = ("the shape matches neither signature cleanly (dip %+.4f, asymmetry %+.4f, raw "
+               "slope %+.2f %%/unit, yaw-controlled slope %+.3f %%/unit CI %+.3f..%+.3f, "
+               "L/R swing %.1fx)." % (dip, asym, lin_pct_per_unit, part_pct_per_unit,
+                                      part_ci95[0], part_ci95[1], lr_swing))
     print("\n--- VERDICT ---------------------------------------------------------")
     print("  dim0 bins span %.1f%% of inter/median end-to-end; the yaw-binned control spans "
           "%.1f%%." % (widen_pct, summary["yaw_inter_over_median_span_pct"]))
+    print("  RMS vs the yaw-projection model %.4f  |  vs render-shear %.4f  |  vs flat %.4f"
+          % (rms_rot, rms_shear["%.2f" % shear_slope_lo], rms_flat))
     print("  %s" % why)
     print("  => Z_G DIM0 IN THE REAL DATA: %s" % verdict)
     if verdict == "ROTATION":
@@ -433,6 +460,8 @@ def main():
     elif verdict == "SHEAR":
         print("     The data's inter/median widens along dim0 the way the renders do: the axis")
         print("     carries a 2D in-plane stretch, and the renders pass it through.")
+    else:
+        print("     Neither signature is established cleanly; do not pick a side.")
 
     # ---- outputs ----------------------------------------------------------------
     results = {
@@ -463,11 +492,15 @@ def main():
             "inter_ratio_ols_dim0_and_dim0sq": m_quad,
             "inter_ratio_ols_cos_arcsin_yaw": m_rot,
             "inter_ratio_ols_abs_yaw": m_ay,
+            "inter_ratio_ols_dim0_plus_cos_arcsin_yaw": m_part,
             "linear_slope_pct_per_unit_dim0": float(lin_pct_per_unit),
             "linear_slope_pct_across_bin_range": float(lin_pct_across_range),
+            "dim0_slope_pct_per_unit_after_controlling_yaw_projection": float(part_pct_per_unit),
+            "dim0_slope_pct_per_unit_after_controlling_yaw_projection_ci95": [float(x) for x in part_ci95],
             "bin_range_dim0": [span_lo, span_hi],
             "render_shear_prediction_pct_per_unit_dim0": [float(x) for x in shear_pct_per_unit],
             "symmetric_dip_mean_ends_minus_centre": dip,
+            "predicted_dip_from_true_yaw": pred_dip,
             "asymmetry_q5_minus_q1": asym,
             "rms_obs_vs_yaw_rotation_prediction": rms_rot,
             "rms_obs_vs_render_shear_prediction": rms_shear,
@@ -476,10 +509,13 @@ def main():
         "signature_summary": summary,
         "verdict": verdict,
         "verdict_reason": why,
-        "verdict_rule": ("SHEAR if the linear dim0 slope of inter/median reaches the render's "
-                         "7-12%-over-+/-3 band (>=1.17 %%/unit) with the ends on opposite sides; "
-                         "ROTATION if inter/median dips at BOTH |dim0| extremes (dip < -0.005) with "
-                         "linear slope < 0.58 %%/unit and L/R swing >= 2x; else AMBIGUOUS"),
+        "verdict_rule": ("SHAPE-based, not span-based. SHEAR if dim0's slope of inter/median is "
+                         ">= the render's 7-12%-over-+/-3 shear band (>=1.17 %%/unit) either raw or "
+                         "after controlling the yaw projection (CI lower bound), or if the span is "
+                         "monotone with the ends on opposite sides of the centre bin. ROTATION if "
+                         "inter/median dips at BOTH |dim0| extremes (dip < -0.005) with L/R swing "
+                         ">= 2x AND the yaw-controlled dim0 slope CI upper bound excludes the "
+                         "render's shear band. Else AMBIGUOUS."),
     }
     rj = out / "results.json"
     rj.write_text(json.dumps(results, indent=2))
@@ -494,11 +530,14 @@ def main():
 
     ax = axes[0, 0]
     xs = np.arange(len(d_inter))
+    idc_plot = np.array([b["dim0_median"] - ctr for b in dim0_bins if b["n"] >= 10])
+    sh_lo = 1.0 + (shear_pct_per_unit[0] / 100.0) * idc_plot
+    sh_hi = 1.0 + (shear_pct_per_unit[1] / 100.0) * idc_plot
+    ax.fill_between(xs, sh_lo, sh_hi, color="#27ae60", alpha=0.18,
+                    label="render-shear prediction band\n(7-12% over +/-3 dim0)")
     ax.plot(xs, d_inter, "o-", color="#c0392b", label="observed, binned by z_g dim0")
     ax.plot(xs, [b["pred_by_yaw_inter_over_median"] for b in dim0_bins if b["n"] >= 10],
             "^--", color="#2471a3", label="predicted from the SAME faces' true yaw\n(cos(arcsin yaw))")
-    ax.plot(xs, fit_shear, ":", color="#27ae60",
-            label="render-shear model (7-12% over +/-3 dim0)")
     ax.axhline(1.0, color="k", lw=0.8, ls="--")
     ax.set_xticks(xs)
     ax.set_xticklabels(["[%+.2f,%+.2f]" % (b["lo"], b["hi"]) for b in dim0_bins if b["n"] >= 10],
@@ -558,12 +597,14 @@ def main():
            "  inter/median  %.3f .. %.3f\n"
            "  L/R jaw       %.2f .. %.2f  (%.1fx swing)\n\n"
            "RMS vs yaw-rotation model %.4f\n"
-           "RMS vs render-shear model %.4f\n\n"
+           "RMS vs render-shear model %.4f (7%%/unit)\n"
+           "RMS vs flat 1.000        %.4f\n\n"
            "dim0 is yaw-only: r(yaw)=%+.3f r(pitch)=%+.3f\nr(roll)=%+.3f"
            % (verdict, n, *d_inter, *d_lr, dip, asym,
               m_lin["const"]["coef"], m_lin["dim0"]["coef"], lin_pct_per_unit,
               n, y_inter.min(), y_inter.max(), y_lr.min(), y_lr.max(),
-              summary["yaw_LR_swing_factor"], rms_rot, rms_shear,
+              summary["yaw_LR_swing_factor"], rms_rot,
+              rms_shear["%.2f" % shear_pct_per_unit[0]], rms_flat,
               corrs["yaw"], corrs["pitch"], corrs["roll_deg"]))
     ax.text(0.0, 0.98, txt, va="top", ha="left", fontsize=8, family="monospace")
 
