@@ -200,12 +200,21 @@ zg_dim0_projection_signature_2026-09-27:
     statistics binned by true DWPose yaw in the same run as an internal control; plus a
     yaw-controlled dim0 slope.
   results:
-    dim0_bins_inter_over_median: "0.9513 / 1.0023 / 1.0001 / 1.0047 / 0.9480 across the five dim0 quintiles (span 5.7%)"
-    yaw_control: "the yaw-binned control spans 11.1% and reproduces the published flat-about-1.00 shape"
-    signature: "a COS-LIKE DIP about the centre: dip -0.0504, symmetric (q5-q1 = -0.0033)"
-    model_comparison: "RMS(observed - yaw-rotation prediction) = 0.0060, where the true yaw of those same faces predicts -0.0482; RMS vs render-shear at 1.17 %/unit = 0.0345; at 2.00 %/unit = 0.0381; vs flat = 0.0319"
-    yaw_controlled_dim0_slope: "+0.235 %/unit, 95% CI -0.167..+0.638, which EXCLUDES the render's 1.17-2.00 %/unit shear band"
-    L/R_swing: "9.7x"
+    canonical_artifact: "experiment-configs/eidolon-identity-renderer/audit/zg_dim0_projection_signature/results.json (seed 0) + the 6-panel figure; robustness copy results_seed7.json"
+    dim0_bins_inter_over_median: "seed 0, quintiles 0.953 / 0.996 / 1.003 / 0.996 / 0.971 (span 5.0%)"
+    yaw_control: "the yaw-binned control spans 9.4% (inter/med 0.951 / 0.986 / 1.002 / 0.999 / 0.994 / 0.908) and reproduces the published flat-about-1.00 shape; its L/R swings 18.7x"
+    signature: "a COS-LIKE DIP about the centre: dip -0.0411, asymmetry +0.0180 (seed 7: dip -0.0504, symmetric). A monotone shear CANNOT put both ends below the centre - shape, not span, decides."
+    model_comparison: "seed 0: RMS(observed - yaw-rotation prediction) = 0.0034 vs 0.0254 for the render-shear model and 0.0248 for flat; the yaw-predicted dip is -0.0386 vs observed -0.0411. Seed 7: 0.0060 vs 0.0345/0.0381/0.0319, predicted -0.0482 vs observed -0.0504."
+    yaw_controlled_dim0_slope: "seed 0: +0.307 %/unit, 95% CI [-0.124, +0.738]; seed 7: +0.235 %/unit, CI [-0.167, +0.638]. Both EXCLUDE the render's 1.17-2.00 %/unit (7-12% over +/-3) shear band - there is no residual stretch of the renders' magnitude anywhere in the data."
+    L/R_swing: "8.1x at seed 0 (the canonical committed artifact); 9.7x at the seed-7 replication. NOTE: commit 92c71db's message cites 9.7x, which is the seed-7 figure - the canonical number is 8.1x, same verdict either way."
+    dim0_is_yaw_only: "r(dim0, yaw) = -0.9443, r(dim0, pitch) = -0.0506, r(dim0, roll) = -0.0015 (n=500); yaw = -0.0008 - 0.1768*dim0, R2 = 0.892"
+    methodological_rule: >-
+      Span alone is NOT evidence either way: dim0 spans 5.0% against the control's 9.4%, and naively
+      comparing spans against the shear band would FLIP the verdict. The call is made on SHAPE (the
+      symmetric dip) plus the yaw-controlled CI, and the rule is written into
+      results.json:verdict_rule so the next reader cannot re-derive it wrongly.
+    scope_limit: "The renders' 7-12% widening was NOT re-measured here. What is falsified is only the claim that the conditioning DATA carries the shear."
+    sampling: "70,001 dirs listed, 500 sampled with all three sidecars, 500 usable, 0 excluded (2 skipped for a missing z_g.npy). Every statistic is a within-image ratio, so the normalized-vs-pixel trap cannot move it."
   verdict: >-
     Z_G DIM0 IN THE REAL DATA IS A ROTATION. The inter/median along dim0 is a cos-like dip about the
     centre, not a widening: the axis turns the head in 3D.
