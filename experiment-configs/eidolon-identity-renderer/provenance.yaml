@@ -145,7 +145,49 @@ zg_encoder_provenance_check_2026-09-27:
       max-abs error). The shipped vectors reveal which encoder produced them. A match to the raw
       path would mean the sidecars predate the frontalization fix and every sweep to date was run
       on a 2D shear axis - which would also explain the measured in-plane widening.
-  status: "Documentation check done: encoder = posenorm per the ledger; the post's pose-invariance probe is retracted as circular. Fingerprint test against the shipped files NOT yet run."
+  verification_result_2026-09-27:
+    verdict: >-
+      THE SHIPPED SIDECARS ARE THE FRONTALIZED (EPnP/posenorm) PATH, REPRODUCED BIT-FOR-BIT. The
+      raw-2D hypothesis is FALSIFIED. Two independent subagent lines agree: max abs diff 0.0 and
+      cos 1.000000 over 300/300 sampled images (600/600 across two seeds), all 50 dims r = 1.0000.
+    discriminating_evidence:
+      closest_non_match: "flat 2D GPA + encoder_production.npz: relative L2 error 1.41 (141%); cos 0.015. flat 2D + Phase-1 encoder.npz: relL2 1.41. pre-fix frontalize (b07986e^): relL2 25.5."
+      negative_control: "a deliberately mismatched pairing gives relL2 1.39 -> the test discriminates; the script exits 3 if a mismatch ever looks like a match (proven to fire)."
+      chain: "z_g.npy is a byte-identical copy of ffhq/zg/<id>/zg.npy (producer prx-tg/scripts/batch_extract_eidolon_data.py uses shutil.copy2); the source zg.npy is written by eidolon/scripts/pipeline/extract_zg_and_averages.py calling encode_zg() -> frontalize() (EPnP)."
+      dating: "shipped z_g written 2026-06-26, three days AFTER the EPnP Z-shear fix b07986e (2026-06-23 23:59) and after encoder_production.npz (2026-06-23 23:50). Phase-1 raw encoder.npz is 2026-06-09."
+      whitening: "per-dim std mean 1.003 (median 0.998, range 0.90-1.16), global mean 0.003 - consistent with the k=50 whitened production encoder."
+    correction_to_this_file: >-
+      An earlier revision of this note recorded "encoder artifacts 2026-07-23". That is the mtime of
+      the output/ DIRECTORY (an AuraFace-LDA refit), not the geometry encoder. encoder_production.npz
+      is 2026-06-23 23:50, md5 95da033a6e8f5fce..., sha256 2309b823e67e7ee...
+    yaw_entanglement_is_real_and_internal:
+      finding: >-
+        dim0 <-> yaw proxy |r| = 0.942 (rank 1 of 50; seed variation 0.935) is NOT a provenance
+        artifact - it is inside the frozen frontalized encoder. Regression reproduced:
+        yaw = +0.0012 - 0.1770*dim0 (this arm's earlier independent fit: -0.1831). It is not a
+        whitening artifact (r identical pre/post-whitening; amplification 0.96). The weak-perspective
+        scale s is not the carrier (r ~ -0.06).
+      two_live_explanations:
+        - "Residual yaw leakage in the frontalized space: frontalization is imperfect (the producer's own ledger shows the pose-invariance claim was retracted), leaving a pose-driven residual whose leading axis dim0 is."
+        - "The yaw proxy itself: this arm's yaw estimate is nose-offset based. A mirror-symmetric encode cannot correlate with a SIGNED antisymmetric quantity, yet r = 0.942 with sign is measured - so either the leak or the proxy needs re-examination. Unresolved."
+      NOT_accepting_two_claims: >-
+        Two subagent inferences are recorded but NOT accepted as settled: (a) "decoded z_g vs the
+        observed face R2 = -0.229, so the frontalized encode barely carries face shape" - that
+        comparison crosses coordinate frames (a pose-normalized space decoded and compared to a posed
+        observation), which would fail by construction; (b) "exactly mirror-invariant" - expected
+        after frontalization, so it is not evidence against yaw by itself.
+    governance_gap_found: >-
+      z_g has ZERO on-disk provenance: the .npy files carry a bare header only (no version, hash,
+      date or extractor command), and the stratum-level stamps (BASIS_FINGERPRINT.json,
+      _auraface_lda.reproject_manifest.json, 2026-09-24, git b35a3e6) cover only the auraface_lda
+      identity slot. The prx-tg loader guard verifies the identity basis but NOTHING guards or stamps
+      the geometry encoder. Recommend a z_g fingerprint + loader guard - this is the exact failure
+      class AGENTS.md credits with losing 21 of 37 arms.
+    limitation: >-
+      The match identifies the code + artifact, not the invoking script (any caller of encode_zg with
+      this artifact yields identical numbers). Input units cannot be proven because center_and_scale
+      is scale-invariant; pose.npy was independently confirmed normalized (-0.93..1.44, p99.9 0.95).
+  status: "PROVENANCE BRANCH CLOSED: shipped z_g = frontalized encoder, bit-exact, post-fix. The raw-2D/shear-from-stale-sidecars hypothesis is dead. Open: which of the two remaining explanations accounts for dim0<->yaw |r|=0.942, plus the z_g fingerprint gap. The dim0 re-binning test (projection signature) is the live discriminator."
 
 operator_assessment_2026-09-27:
   context: "Step-10000 final artifacts reviewed visually by the operator (geometry sweeps, identity-swap collages, M2a contact sheet, one 10k reconstruction)."
