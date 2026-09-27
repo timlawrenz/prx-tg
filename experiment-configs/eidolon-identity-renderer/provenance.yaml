@@ -89,6 +89,51 @@ m2b_blur_calibration_2026-09-26:
     figure: experiment-configs/eidolon-identity-renderer/audit/blur_calibration/identity_blur_calibration.png
   status: "M2b first pass: quality explanation NOT supported. M2a decisive, pending."
 
+operator_assessment_2026-09-27:
+  context: "Step-10000 final artifacts reviewed visually by the operator (geometry sweeps, identity-swap collages, M2a contact sheet, one 10k reconstruction)."
+  verbatim_core: >-
+    "The identity swaps show three different people, all front facing. These images are not good
+    enough for AuraFace to detect real identities. Generally I consider the pure sweeps a success,
+    or at least the correct path to success: as a user, i could pick an identity from a plane (or
+    globe, or 64-d space) and apply different poses, and identity seems to be approved and pose
+    adhered to. This is pretty good. Just the image quality sucks."
+  reading:
+    - "Identity conditioning is accepted by the operator's eye: swapping the identity vector yields visibly different people at fixed geometry (all frontal - the swap holds geometry constant by construction, so it cannot show pose)."
+    - "The geometry sweeps are judged a success, or the correct path to success: identity preserved while pose is followed."
+    - "The residual defect is image QUALITY - judged insufficient for a real-face recogniser to match identities, which is exactly what M2a render->real measures."
+  measurement_nuance: >-
+    M2b shows the deficit is NOT smoothness or broadband noise: a real face degraded to the render's
+    own high-frequency energy still scores R@1 1.0000. The renders are grain-dominated and
+    geometrically warped (the M3 projection failure), so their identity manifold is internally
+    perfectly consistent while sitting off the real-face manifold. "Quality" therefore means
+    render-texture plus projection fidelity, not blur - which is why the fix is a long-horizon
+    quality run and/or the data arm, not more noise robustness.
+
+gate_scorecard_2026-09-27:
+  scored_against: "gate_amendment_2026-09-26"
+  M1_identity_binding_and_seed_invariance: "PASS - 0.9943 mean, 0.9917 floor (step 8000)"
+  M2a_render_to_render_retrieval: "PASS - R@1 1.0000, CI [1.0000,1.0000], median rank 1, margin +0.0037 (pool 33, chance 0.0312, no_face 7/40 reported)"
+  M2b_blur_calibrated_margin: "FAIL - render->real R@1 0.0303 (chance 0.0256, CI [0.0000,0.0909]) against a quality-matched real baseline of R@1 1.0000"
+  M3_geometry_non_vacuous: >-
+    PARTIAL - occlusion PASS (far-side L/R swings 4-9x in the correct direction); projection FAIL
+    (projected interocular grows 7-12% where real faces hold ~1.00). The +/-1.5 sigma
+    in-distribution row is scoreable from the step-8000 default sweep (values -3,-1.5,0,1.5,3);
+    the focused 9000/10000 run was skipped because the queued runner's flag syntax missed after a
+    mid-flight edit - the runner's default-sweep fallback never executed.
+  M4_no_collapse: "PASS"
+  M5_instrument_validation: "PASS - Arm O step-5000 positive control, monotone 8-15 px"
+  tier_2_absolute_fidelity: "UNSCORED - the three registered probes require a schedule designed for their horizon"
+  memorization_signature: "not yet probed; required with the verdict, at any budget"
+  verdict_reading: >-
+    Tier 1 mixed: the identity mechanism is vindicated (binding, render-to-render retrieval, and the
+    operator's visual read agree), while the fidelity/projection claims fail. Under the amendment's
+    vocabulary this reads as PIVOT rather than KILL, with the absolute-fidelity tier deferred to a
+    run whose schedule is designed for it.
+  still_owed: >-
+    the ledger entry in docs/EXPERIMENTS_AND_RESULTS.md with numbered conclusions, the
+    arm/eidolon-identity-renderer/concluded-PIVOT tag, the blog brief, the memorization-signature
+    probe, the tier-2 probes on a fit schedule, and scripts/check_arm_records.py at zero exit.
+
 gate_amendment_2026-09-26:
   reason: >-
     The registered gate is a single absolute bar (three R@1 probes, CI LB > 0.5) tied to a run
