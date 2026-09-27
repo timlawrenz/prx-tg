@@ -89,6 +89,28 @@ m2b_blur_calibration_2026-09-26:
     figure: experiment-configs/eidolon-identity-renderer/audit/blur_calibration/identity_blur_calibration.png
   status: "M2b first pass: quality explanation NOT supported. M2a decisive, pending."
 
+source_of_the_arms_assumption:
+    correction: >-
+      The blog post was NOT an input to this arm's reasoning. The assistant introduced it as
+      background and then mis-attributed the arm's assumption to it. The arm's "dim0 = yaw"
+      premise has its own, independent provenance in THIS repo.
+    actual_chain:
+      - "prx-tg docs/EXPERIMENTS_AND_RESULTS.md, arm 'eidolon-conditioning' (2026-07-08 -> 07-10), Goal line: 'Diagnose why the EidolonAdapter renders all faces frontal despite z_g cleanly encoding head yaw (dim0, R2=0.996)'; adversarial pass: 'Input verified - z_g -> yaw R2=0.996 on full corpus, cleanly isolated on dim0'; root cause: 'cross-attention cannot address a specific z_g axis (e.g., dim0 = yaw)'."
+      - "The EIR arm inherited that premise verbatim, then independently re-confirmed it this session: |r| = 0.942 vs DWPose yaw (n=300, rank 1/50) and yaw = -0.0037 - 0.1831*dim0 (r = -0.937, n=10,000)."
+    therefore: >-
+      dim0 <-> yaw is OUR measurement, replicated twice, and it is solid. The error is narrower
+      than a provenance failure: a CORRELATION was written into the ledger as a semantic fact
+      ("cleanly encoding head yaw", "cleanly isolated on dim0") and never tested for the property
+      that actually distinguishes the two candidate mechanisms. A 3D rotation and a 2D in-plane
+      shear are both yaw-correlated; they differ in PROJECTION. We ran one instrument and asserted
+      the axis kind.
+    open_lead: >-
+      The July number (R2 = 0.996, r ~ 0.998) does not match this session's |r| = 0.942 (R2 ~ 0.888)
+      on the same data family. If the July yaw came from the encoder's OWN EPnP rotation - the same
+      model that built z_g - that measurement is circular, exactly the failure the producer's ledger
+      warns about ("never trust a synthetic probe that reverses its own math"). Check what the July
+      script compared against before trusting either number.
+
 zg_encoder_provenance_check_2026-09-27:
   question: >-
     Which encoder version produced the shipped z_g.npy sidecars? The arm's data audit found
