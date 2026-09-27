@@ -355,6 +355,37 @@ pose_diagnostics:
         - If synthetic yaw is introduced it must be 3D (3DMM reposing / multiview). 2D-warp augmentation would reinforce
           the measured in-plane deformation defect and make it worse.
         - 'Cheapest real-geometry option first: re-weight/oversample the existing tails (5.1% of FFHQ is beyond +/-0.40).'
+  identity_probe_and_quality_confound:
+    probe: >-
+      scripts/diag_identity_seed_consistency.py at step 8000: 18 renders, 6 seeds x 3 identities.
+      Within-sample pairwise cosine across seeds: mean 0.9943, min 0.9917 -> the identity
+      conditioning is reproducible across noise seeds.
+    instrument_result: >-
+      R@1 0.0588 (chance 0.0196), R@5 0.1176, median rank 32/51. cos to OWN identity mean 0.9940 vs
+      cos to BEST OTHER identity mean 0.9960: margin NEGATIVE (-0.0020). Every render sits at
+      0.994-0.996 against every identity: the embeddings are compressed into a tiny region.
+    operator_read: >-
+      Direct visual assessment CONTRADICTS a reading of "no identity". Within a set the same people
+      recur across seeds, and across sets the renders differ in identity-typed ways: one identity
+      renders with what reads as glasses (or garbled pixels arranged around the eyes), another with
+      clearly darker skin. Operator verdict: "I would attribute the identity overlap to a lack of
+      quality, not a lack of identity-understanding."
+    verdict: >-
+      DO NOT read R@1 0.0588 as an identity FAILURE. It is confounded with image quality. The
+      AuraFace recogniser is validated on real, clean faces (R@1 0.891 at step 0), NOT on renders at
+      this quality; low-quality faces collapse toward the embedding mean, so this instrument measures
+      quality as much as identity at 8000 steps. The identity stream demonstrably EXPRESSES identity
+      coarsely; whether it discriminates finely is UNRESOLVED and must not be scored as a fail.
+    required_control: >-
+      Blur/downscale real FFHQ images (known identities) to the render's effective quality and measure
+      the instrument's R@1 versus degradation. If R@1 collapses to ~6% at comparable quality, the
+      8000 R@1 is a quality ceiling rather than an identity failure, and the registered gate must not
+      be scored on it without that control. Same discipline as the yaw proxy, which needed a positive
+      control on generated images before its null meant anything.
+    artifact_link: >-
+      The operator's "glasses / garbled mess of pixels arranged around the eyes" on one identity is
+      the same eye-region artifact class measured at step 6000 (monotone grey mass in the left eye,
+      absent from the training data). The model's eye region remains its weak spot.
   lr_schedule_implication:
     schedule: "linear warmup 500 -> cosine decay to min_lr over total_steps=10000 (train.py:677)"
     observation: >-
