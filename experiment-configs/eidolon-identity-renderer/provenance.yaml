@@ -89,6 +89,42 @@ m2b_blur_calibration_2026-09-26:
     figure: experiment-configs/eidolon-identity-renderer/audit/blur_calibration/identity_blur_calibration.png
   status: "M2b first pass: quality explanation NOT supported. M2a decisive, pending."
 
+zg_encoder_provenance_check_2026-09-27:
+  question: >-
+    Which encoder version produced the shipped z_g.npy sidecars? The arm's data audit found
+    dim0 <-> DWPose yaw |r| = 0.942, which conflicts with the public blog post's claim that
+    after 3D frontalization C1/C2 "stay frontal and bilaterally symmetric across the full
+    +/-3 sigma range".
+  source: "eidolon/experiments/geometry_pca/provenance_zg_posenorm.yaml (the ledger entry behind the post)"
+  findings:
+    shipped_encoder_identity: >-
+      The posenorm arm, z_scale=1.0 ("anatomical mandate"). Backbone: DWPose 68-pt -> EPnP rotation
+      -> 300W template frontalization -> 2D GPA -> PCA (k=50, whitened). Fit on 69,851 FFHQ faces,
+      mean-confidence prefilter >= 0.5. 0.5 underperforms; 2.0 extrapolates depth for negligible J gain.
+    production_artifact: >-
+      experiments/geometry_pca/output/encoder_production.npz (components (50,136), canonical_template
+      (68,3), pca_mean, whiten_mu/sigma, gpa_mean). Declared FROZEN - never retrain without a new arm.
+    phase_1_status: "'Phase 1 (2D GPA) is SUPERSEDED and should never be re-run.' The 2D version is not the intended shipped artifact."
+    retraction_of_the_blog_claim: >-
+      "'The clean-C1 narrative died at n=10' and 'CRITICAL: never trust a synthetic probe that
+      reverses its own math - the initial 4.9x pose-invariance win was circular. Always use a
+      real-image identity gate.' So the post's pose-invariance table (1.45 -> 0.29) is flagged
+      circular in the ledger; the durable result is the aggregate within-identity scatter (S_W)
+      reduction on the real-image hegre gate, not per-component pose invariance.
+  implication_for_this_arm:
+    - "The shipped z_g should be the EPnP/posenorm version, so dim0<->yaw |r|=0.942 is probably NOT a stale pre-frontalization artifact - it reads as residual yaw leakage in the frontalized vectors. The reconciliation is magnitude vs correlation: the post's probe measured VARIANCE ACROSS a yaw sweep (suppressed 4.9x), the arm's audit measured linear CORRELATION ACROSS images; a small leak can still correlate strongly."
+    - "But that is inference from documentation, not measurement. It must be verified on the shipped files before any sweep is interpreted as a 3D rotation rather than an in-plane shear."
+  verification_owed:
+    test: >-
+      Decisive, CPU-only: load encoder_production.npz plus a sample of real stratum dirs
+      (pose.npy keypoints, z_g.npy, pixel.npy). Re-encode each image (a) through the documented
+      posenorm path (EPnP frontalize -> GPA -> PCA -> whiten) and (b) through the raw 2D path
+      (GPA -> PCA -> whiten), then compare both against the shipped z_g.npy (per-image cosine and
+      max-abs error). The shipped vectors reveal which encoder produced them. A match to the raw
+      path would mean the sidecars predate the frontalization fix and every sweep to date was run
+      on a 2D shear axis - which would also explain the measured in-plane widening.
+  status: "Documentation check done: encoder = posenorm per the ledger; the post's pose-invariance probe is retracted as circular. Fingerprint test against the shipped files NOT yet run."
+
 operator_assessment_2026-09-27:
   context: "Step-10000 final artifacts reviewed visually by the operator (geometry sweeps, identity-swap collages, M2a contact sheet, one 10k reconstruction)."
   verbatim_core: >-
