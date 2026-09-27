@@ -51,6 +51,44 @@ pre_registered_gate: >-
 # concluded. The original pre_registered_gate above is left VERBATIM and
 # unmodified; this block supersedes it FOR SCORING only. See reason: below.
 # ============================================================================
+# --- M2b blur calibration: a MEASUREMENT block, independent of the gate amendment below ---
+m2b_blur_calibration_2026-09-26:
+  question: >-
+    Is the render's identity R@1 (0.0588 at step 8000) explained by image quality? The amended
+    gate's M2b asks whether the renders express identity BEYOND what their pixel quality allows.
+  method: >-
+    scripts/diag_identity_blur_calibration.py, CPU-only. 150 real FFHQ identities with known LDA;
+    1-shot rank-based R@1 against the index of the other identities; bootstrap CI over identities
+    (2000 reps); three degradation families (gaussian blur, downscale/upscale, additive noise).
+    Render sharpness measured as the median variance-of-Laplacian over the arm's step-8000 probe
+    renders (geometry-dominant ladder, 1024 px).
+  results:
+    instrument_anchor: "R@1 at sigma=0 (clean real faces, pool 150): 1.0000, CI [1.000, 1.000]; chance 0.0067; no_face 0/150"
+    blur_family: "NO MATCH - the render's sharpness proxy (446.7) sits ABOVE the clean-real mean (191.7), outside the blur sweep's span [1.49, 191.66]; no blur level reproduces the render's high-frequency energy"
+    noise_family: "render matches noise sigma 0.021 -> R@1 = 1.0000 (index A) / 1.0000 (index B)"
+    worst_no_face_rate_across_levels: 0.0000
+  interpretation: >-
+    The instrument keeps FULL identity discrimination at the render's own high-frequency energy
+    level: a clean real face degraded to the render's sharpness still scores R@1 1.0000. The
+    renders are not blurred real faces - they are noise/grain-dominated, carrying MORE
+    high-frequency energy than clean real images while carrying far less identity. The
+    quality-degradation account of the low R@1 is therefore NOT supported by this control.
+  contradicts: "the identity_probe_and_quality_confound reading of 2026-09-26 (operator: 'a lack of quality, not a lack of identity-understanding')"
+  caveats:
+    - "The match is on a sharpness proxy (variance of the Laplacian), which measures high-frequency ENERGY; the renders' structured model grain inflates it. The noise control is iid gaussian, so this is a proxy match, not a perceptual one."
+    - "The render probe and the control differ in detector framing (crop/scale), which can bias the recogniser independently of identity content."
+    - "Therefore this does NOT yet falsify M2. It weakens the quality explanation and shifts the burden onto M2a."
+  decisive_pending: >-
+    M2a render-to-render identity retrieval (index = other RENDERS, same domain and quality) is the
+    appropriate control; queued for the 9000 boundary as prx-tg-eir-probes-v3. If identity is
+    retrievable among renders the recogniser can see consistently, M2 passes; if the render
+    embeddings are collapsed, M2 fails on the mechanism, not on the budget.
+  artifacts:
+    script: scripts/diag_identity_blur_calibration.py
+    results: experiment-configs/eidolon-identity-renderer/audit/blur_calibration/results.json
+    figure: experiment-configs/eidolon-identity-renderer/audit/blur_calibration/identity_blur_calibration.png
+  status: "M2b first pass: quality explanation NOT supported. M2a decisive, pending."
+
 gate_amendment_2026-09-26:
   reason: >-
     The registered gate is a single absolute bar (three R@1 probes, CI LB > 0.5) tied to a run

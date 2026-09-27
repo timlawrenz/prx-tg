@@ -24,7 +24,9 @@ the yaw sweep may not move the rendered head at all.
 
 Test
 ----
-Sweep z_g dim0 over [-3.0, -1.5, 0.0, 1.5, 3.0] for sample indices [10, 30, 50]
+Sweep z_g dim0 over [-3.0, -1.5, 0.0, 1.5, 3.0] (the default; `--sweep-values`
+overrides the list, e.g. `--sweep-values -1.5 0.0 1.5` runs a +/-1.5 sigma
+in-distribution row without editing this file) for sample indices [10, 30, 50]
 under FOUR CFG settings, including a GEOMETRY-ONLY ladder (identity_scale = 0.0)
 and saturated geometry scales:
 
@@ -336,6 +338,10 @@ def monotonicity(values):
 # Main
 # ---------------------------------------------------------------------------
 def main():
+    # `global` must precede the parser build, which reads SWEEP_VALUES for the
+    # --sweep-values default (that read happens before the reassignment below).
+    global SWEEP_VALUES
+
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--config", type=str, default=str(CONFIG_PATH),
                     help=f"arm config (default: {CONFIG_PATH})")
@@ -346,7 +352,20 @@ def main():
     ap.add_argument("--out-dir", type=str, default=str(DEFAULT_OUT_DIR),
                     help=f"output directory (default: {DEFAULT_OUT_DIR})")
     ap.add_argument("--device", type=str, default="cuda")
+    ap.add_argument("--sweep-values", type=float, nargs="+",
+                    default=list(SWEEP_VALUES),
+                    help=f"z_g dim{SWEEP_DIM} values to sweep, in sweep order "
+                         f"(default {SWEEP_VALUES}) -- e.g. pass "
+                         f"'-1.5 0.0 1.5' for a +/-1.5 sigma in-distribution row "
+                         f"without editing this file")
     args = ap.parse_args()
+
+    # CLI-overridable copy of the module default. When --sweep-values is omitted,
+    # args.sweep_values == list(SWEEP_VALUES), so behaviour is byte-identical to
+    # before this flag existed (main() is the only reader of SWEEP_VALUES).
+    SWEEP_VALUES = list(args.sweep_values)
+    if not SWEEP_VALUES:
+        raise SystemExit("--sweep-values must contain at least one value")
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
